@@ -146,18 +146,18 @@ HINT
 
 local_down() {
   require_cmd kubectl
-  require_cmd helm
+  require_cmd kind
   require_pg_client
 
   _local_use_kind_context
   if ! kctl cluster-info >/dev/null 2>&1; then
-    echo "kind cluster ${KIND_CLUSTER} is not running; nothing to uninstall"
+    echo "kind cluster ${KIND_CLUSTER} is not running; nothing to tear down"
     return
   fi
 
   # Symmetry with the cloud targets: the local DB is promoted to the canonical
   # dump before teardown, so whatever ran here is what the next deploy restores.
-  # A second `down` finds no postgres pod; skip rather than abort the uninstall.
+  # A release already uninstalled leaves no postgres pod; skip rather than abort.
   if kctl get pod "${POSTGRES_POD}" >/dev/null 2>&1; then
     local tmp
     tmp="$(mktemp_dump)"
@@ -173,15 +173,16 @@ local_down() {
     echo "no ${POSTGRES_POD} pod; skipping capture (canonical dump left unchanged)"
   fi
 
-  echo "==> helm uninstall ${HELM_RELEASE}"
-  helm --kube-context "${KUBECTL_CONTEXT}" uninstall "${HELM_RELEASE}"
+  # local_up creates the cluster, so down removes it: the kind analogue of the
+  # cloud targets' tofu destroy. Deleting the cluster takes the release and the
+  # PVCs with it, so a separate helm uninstall would only add time.
+  echo "==> kind delete cluster --name ${KIND_CLUSTER}"
+  kind delete cluster --name "${KIND_CLUSTER}"
 
   cat <<HINT
 
 local down complete. Canonical dump: ${CURRENT_DUMP}
-PVCs survive, so Postgres/OpenSearch data is still there.
-To discard the cluster and its data entirely:
-
-  kind delete cluster --name ${KIND_CLUSTER}
+The cluster, its PVCs and the :local images' node copies are gone.
+Rebuild with: deploy/scripts/run local
 HINT
 }

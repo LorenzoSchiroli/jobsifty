@@ -23,7 +23,7 @@ creates the secret, and runs `helm upgrade --install`. It is idempotent, so
 re-running it after a code change rebuilds and rolls out.
 
     deploy/scripts/run local          # up (default action)
-    deploy/scripts/run local down     # helm uninstall; PVCs and data survive
+    deploy/scripts/run local down     # capture dump, then delete the kind cluster
 
 The same command targets the clouds: `run hetzner`, `run aws`. Targets are
 independent and nothing checks whether another one is live — bring the previous
