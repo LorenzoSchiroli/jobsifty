@@ -70,6 +70,7 @@ local_up() {
   require_cmd kind
   require_cmd kubectl
   require_cmd helm
+  require_pg_client
 
   _local_require_docker_daemon
   _local_use_kind_context
@@ -91,6 +92,47 @@ local_up() {
     kctl wait --for=condition=complete "job/${HELM_RELEASE}-bootstrap" --timeout=600s
   fi
 
+  # Same canonical dump the cloud targets restore, so local matches the demo.
+  local api_replicas worker_replicas ingestion_suspend
+  api_replicas="$(kctl get deploy api -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 1)"
+  worker_replicas="$(kctl get deploy worker -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 1)"
+  ingestion_suspend="$(kctl get cronjob ingestion -o jsonpath='{.spec.suspend}' 2>/dev/null || echo false)"
+  [[ -n "${api_replicas}" ]] || api_replicas=1
+  [[ -n "${worker_replicas}" ]] || worker_replicas=1
+  [[ -n "${ingestion_suspend}" ]] || ingestion_suspend=false
+
+  echo "==> pausing writers (api=${api_replicas}, worker=${worker_replicas}, ingestion.suspend=${ingestion_suspend})"
+  kctl scale deploy/api deploy/worker --replicas=0
+  kctl patch cronjob ingestion --type merge -p '{"spec":{"suspend":true}}'
+  kctl wait --for=delete pod -l app=api --timeout=180s 2>/dev/null || true
+  kctl wait --for=delete pod -l app=worker --timeout=180s 2>/dev/null || true
+
+  local restore_ok=0
+  echo "==> restoring ${CURRENT_DUMP} into ${POSTGRES_POD}"
+  if cluster_pg_restore_from "${CURRENT_DUMP}"; then
+    restore_ok=1
+  fi
+
+  if [[ "${restore_ok}" -ne 1 ]]; then
+    cat >&2 <<RECOVERY
+error: pg_restore failed; leaving api/worker scaled to 0 and ingestion suspended.
+recovery:
+  # fix dump / retry:
+  kubectl --context ${KUBECTL_CONTEXT} cp ${CURRENT_DUMP} ${POSTGRES_POD}:${POD_DUMP_PATH}
+  kubectl --context ${KUBECTL_CONTEXT} exec ${POSTGRES_POD} -- pg_restore -U postgres -d ${POSTGRES_DB} --clean --if-exists --no-owner ${POD_DUMP_PATH}
+  # then resume:
+  kubectl --context ${KUBECTL_CONTEXT} scale deploy/api --replicas=${api_replicas}
+  kubectl --context ${KUBECTL_CONTEXT} scale deploy/worker --replicas=${worker_replicas}
+  kubectl --context ${KUBECTL_CONTEXT} patch cronjob ingestion --type merge -p '{"spec":{"suspend":${ingestion_suspend}}}'
+RECOVERY
+    exit 1
+  fi
+
+  echo "==> resuming writers"
+  kctl scale deploy/api --replicas="${api_replicas}"
+  kctl scale deploy/worker --replicas="${worker_replicas}"
+  kctl patch cronjob ingestion --type merge -p "{\"spec\":{\"suspend\":${ingestion_suspend}}}"
+
   cat <<HINT
 
 local up complete. Port-forward to reach the stack:
@@ -105,6 +147,7 @@ HINT
 local_down() {
   require_cmd kubectl
   require_cmd helm
+  require_pg_client
 
   _local_use_kind_context
   if ! kctl cluster-info >/dev/null 2>&1; then
@@ -112,12 +155,31 @@ local_down() {
     return
   fi
 
+  # Symmetry with the cloud targets: the local DB is promoted to the canonical
+  # dump before teardown, so whatever ran here is what the next deploy restores.
+  # A second `down` finds no postgres pod; skip rather than abort the uninstall.
+  if kctl get pod "${POSTGRES_POD}" >/dev/null 2>&1; then
+    local tmp
+    tmp="$(mktemp_dump)"
+    trap 'rm -f "${tmp}"' EXIT
+
+    echo "==> dumping ${POSTGRES_POD} -> temp"
+    cluster_pg_dump_to "${tmp}"
+
+    echo "==> validating and promoting"
+    promote_dump "${tmp}"
+    trap - EXIT
+  else
+    echo "no ${POSTGRES_POD} pod; skipping capture (canonical dump left unchanged)"
+  fi
+
   echo "==> helm uninstall ${HELM_RELEASE}"
   helm --kube-context "${KUBECTL_CONTEXT}" uninstall "${HELM_RELEASE}"
 
   cat <<HINT
 
-local down complete. PVCs survive, so Postgres/OpenSearch data is still there.
+local down complete. Canonical dump: ${CURRENT_DUMP}
+PVCs survive, so Postgres/OpenSearch data is still there.
 To discard the cluster and its data entirely:
 
   kind delete cluster --name ${KIND_CLUSTER}

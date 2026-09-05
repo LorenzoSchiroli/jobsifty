@@ -30,6 +30,12 @@ default_kubeconfig() {
 }
 
 kubeconfig_reachable() {
+  # An explicit context (the local kind target) needs no kubeconfig file of
+  # its own; it rides on whatever kubectl already resolves.
+  if [[ -n "${KUBECTL_CONTEXT:-}" ]]; then
+    kctl cluster-info >/dev/null 2>&1
+    return
+  fi
   local kc="${KUBECONFIG:-}"
   if [[ -z "${kc}" ]]; then
     kc="$(default_kubeconfig)"
@@ -39,6 +45,16 @@ kubeconfig_reachable() {
 }
 
 ensure_kubeconfig() {
+  # KUBECTL_CONTEXT pins the cluster directly (local kind), so the Hetzner
+  # kubeconfig is neither needed nor appropriate.
+  if [[ -n "${KUBECTL_CONTEXT:-}" ]]; then
+    require_cmd kubectl
+    if ! kctl cluster-info >/dev/null 2>&1; then
+      echo "error: kubectl cannot reach context ${KUBECTL_CONTEXT}" >&2
+      exit 1
+    fi
+    return
+  fi
   if [[ -z "${KUBECONFIG:-}" ]]; then
     export KUBECONFIG
     KUBECONFIG="$(default_kubeconfig)"
@@ -96,12 +112,15 @@ _validate_dump_docker() {
 _validate_dump_pod() {
   local file="$1"
   kubeconfig_reachable || return 1
-  local kc="${KUBECONFIG:-$(default_kubeconfig)}"
-  KUBECONFIG="${kc}" kubectl cp "${file}" "${POSTGRES_POD}:${POD_DUMP_PATH}.validate"
-  KUBECONFIG="${kc}" kubectl exec "${POSTGRES_POD}" -- \
+  local kc="${KUBECONFIG:-}"
+  if [[ -z "${kc}" && -z "${KUBECTL_CONTEXT:-}" ]]; then
+    kc="$(default_kubeconfig)"
+  fi
+  KUBECONFIG="${kc}" kctl cp "${file}" "${POSTGRES_POD}:${POD_DUMP_PATH}.validate"
+  KUBECONFIG="${kc}" kctl exec "${POSTGRES_POD}" -- \
     pg_restore -l "${POD_DUMP_PATH}.validate" >/dev/null
   local rc=$?
-  KUBECONFIG="${kc}" kubectl exec "${POSTGRES_POD}" -- \
+  KUBECONFIG="${kc}" kctl exec "${POSTGRES_POD}" -- \
     rm -f "${POD_DUMP_PATH}.validate" || true
   return "${rc}"
 }
@@ -166,10 +185,10 @@ promote_dump() {
 cluster_pg_dump_to() {
   local dest="$1"
   ensure_kubeconfig
-  kubectl exec "${POSTGRES_POD}" -- \
+  kctl exec "${POSTGRES_POD}" -- \
     pg_dump -U "${POSTGRES_USER}" -Fc "${POSTGRES_DB}" -f "${POD_DUMP_PATH}"
-  kubectl cp "${POSTGRES_POD}:${POD_DUMP_PATH}" "${dest}"
-  kubectl exec "${POSTGRES_POD}" -- rm -f "${POD_DUMP_PATH}" || true
+  kctl cp "${POSTGRES_POD}:${POD_DUMP_PATH}" "${dest}"
+  kctl exec "${POSTGRES_POD}" -- rm -f "${POD_DUMP_PATH}" || true
 }
 
 cluster_pg_restore_from() {
@@ -177,20 +196,20 @@ cluster_pg_restore_from() {
   local rc=0
   ensure_kubeconfig
   validate_dump "${src}"
-  kubectl cp "${src}" "${POSTGRES_POD}:${POD_DUMP_PATH}"
+  kctl cp "${src}" "${POSTGRES_POD}:${POD_DUMP_PATH}"
   # pg_restore often exits 1 on non-fatal warnings with --clean; treat >1 as hard fail.
   set +e
-  kubectl exec "${POSTGRES_POD}" -- \
+  kctl exec "${POSTGRES_POD}" -- \
     pg_restore -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
       --clean --if-exists --no-owner "${POD_DUMP_PATH}"
   rc=$?
   set -e
-  kubectl exec "${POSTGRES_POD}" -- rm -f "${POD_DUMP_PATH}" || true
+  kctl exec "${POSTGRES_POD}" -- rm -f "${POD_DUMP_PATH}" || true
   if [[ "${rc}" -gt 1 ]]; then
     echo "error: pg_restore failed with exit ${rc}" >&2
     return "${rc}"
   fi
-  if ! kubectl exec "${POSTGRES_POD}" -- \
+  if ! kctl exec "${POSTGRES_POD}" -- \
     psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -tAc \
       "SELECT 1 FROM jobs LIMIT 1" >/dev/null; then
     echo "error: restore finished but jobs table is not queryable" >&2
