@@ -17,7 +17,7 @@ Other top-level directories:
 - `frontend/` — React (Vite) SPA, served by nginx in Docker/k8s
 - `extension/` — Chrome extension (Tailorer side panel; calls the backend directly)
 - `deploy/` — Helm chart (`deploy/helm/jobsifty/`) + k8s runbook (`deploy/k8s/README.md`); **AWS showcase** is the ECS managed path in `deploy/infra/aws/` (OpenTofu + Fargate/RDS/OpenSearch Service — not Helm on AWS)
-- `dumps/` — `jobsifty.current.dump` is the demo database the cloud targets restore from / capture into (gitignored; seed with `deploy/scripts/seed-dump`)
+- `dumps/` — `jobsifty.current.dump` is the demo database every target restores from / captures into (gitignored; seed with `deploy/scripts/seed-dump`)
 - `tailor/` — standalone CLI predecessor of the tailorer agent (local docx/cover-letter scripts; **not** imported by `backend/` or `ingestion/`, do not wire new code to it)
 
 [`README.md`](./README.md) is the human-facing counterpart: same architecture, with diagrams and the reasoning behind each choice. Keep the two consistent when behaviour changes.
@@ -39,14 +39,19 @@ Fargate. Targets are independent and the script does **not** check whether
 another one is live; bring the previous one down first.
 
 ```bash
-deploy/scripts/run local                   # kind + Helm here (up is the default action)
+deploy/scripts/run local                   # kind + Helm here → restore dump (up is the default action)
 deploy/scripts/run hetzner up              # tofu apply → helm → restore dump, DNS follows
 deploy/scripts/run aws up --no-dns         # tofu apply → ECS, domain left where it is
 deploy/scripts/run aws down --yes          # dump → promote → tofu destroy, no prompt
 ```
 
-The cloud targets restore from / capture into `dumps/jobsifty.current.dump`
-(seed it with `deploy/scripts/seed-dump`). DNS follows the deploy: bringing a
+Every target — `local` included — restores from / captures into
+`dumps/jobsifty.current.dump` (seed it with `deploy/scripts/seed-dump`), so a
+kind cluster serves the same demo data as the cloud stacks. `up` restores it
+and `down` promotes what the stack held, which means a local `down` overwrites
+the canonical dump the next cloud deploy will restore.
+
+DNS follows the deploy: bringing a
 cloud target up points Cloudflare `app`/`api`/apex/`www` at it, and taking it
 down removes those records, so the target that is up owns the domain. `run`
 passes `manage_dns` to tofu as a `-var`, so the value in each tfvars is not

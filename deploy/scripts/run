@@ -32,8 +32,8 @@ is running — bring the previous target down yourself first. Skipping that
 makes the second apply fail on a Cloudflare record conflict rather than
 silently stealing the domain.
 
-The cloud targets restore/capture dumps/jobsifty.current.dump; run
-deploy/scripts/seed-dump first if you do not have one.
+Every target (local included) restores/captures dumps/jobsifty.current.dump;
+run deploy/scripts/seed-dump first if you do not have one.
 
 Examples:
   deploy/scripts/run local              # run on this machine

@@ -216,9 +216,10 @@ deploy/scripts/run aws up --no-dns         # tofu apply → ECS, domain left whe
 deploy/scripts/run aws down --yes          # dump → promote → tofu destroy, no prompt
 ```
 
-Cloud targets restore from and capture into `dumps/jobsifty.current.dump`
-(seed it with `deploy/scripts/seed-dump`), so the demo database follows the
-stack between providers. Bringing a cloud target up points Cloudflare
+Every target, `local` included, restores from and captures into
+`dumps/jobsifty.current.dump` (seed it with `deploy/scripts/seed-dump`), so the
+demo database follows the stack between providers and a kind cluster shows the
+same data as production. Bringing a cloud target up points Cloudflare
 `app` / `api` / apex / `www` at it; taking it down removes those records.
 `--no-dns` brings a stack up without claiming the domain — reach it by its load
 balancer hostname instead. Bring the previous target down first, or the second

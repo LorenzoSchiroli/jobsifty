@@ -298,7 +298,7 @@ staging Secret in place prevents the production issuer from replacing it.
 ## Demo dump lifecycle
 
 For bring-up / tear-down without losing Postgres, use the single-file dump
-`dumps/jobsifty.current.dump` (shared across clouds):
+`dumps/jobsifty.current.dump` (shared across local and the clouds):
 
 **Hetzner** (`deploy/infra/hetzner/README.md`):
 
