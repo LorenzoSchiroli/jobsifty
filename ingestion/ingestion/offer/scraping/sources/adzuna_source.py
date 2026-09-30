@@ -58,6 +58,7 @@ class AdzunaSource(Source):
                         description=None,
                     ))
             except Exception as e:
-                logger.warning("Adzuna fetch failed for %s: %s", country, e)
+                # requests errors embed the full URL, query string (app_key) included
+                logger.warning("Adzuna fetch failed for %s: %s", country, str(e).replace(app_key, "***"))
 
         return results
