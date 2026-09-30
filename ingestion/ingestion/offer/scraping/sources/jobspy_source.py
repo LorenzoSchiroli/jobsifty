@@ -13,6 +13,18 @@ logger = logging.getLogger(__name__)
 _INDEED_COUNTRIES = ["UK", "Germany", "France", "Netherlands", "Spain", "Italy", "Belgium", "Austria"]
 
 
+class _SkippingLinkedIn(LinkedIn):
+    """jobspy aborts the whole search when one card has a country outside its enum
+    (e.g. 'north macedonia'); drop that card instead."""
+
+    def _process_job(self, job_card, job_id, full_descr):
+        try:
+            return super()._process_job(job_card, job_id, full_descr)
+        except ValueError as e:
+            logger.info("LinkedIn job %s skipped: %s", job_id, str(e).split(". Valid")[0])
+            return None
+
+
 def _df_to_offers(df: pd.DataFrame) -> list[JobOffer]:
     results = []
     for _, row in df.iterrows():
@@ -58,7 +70,7 @@ def _linkedin_job_to_offer(job) -> JobOffer:
 
 def _scrape_linkedin(query: str, hours: int) -> list[JobOffer]:
     try:
-        scraper = LinkedIn()
+        scraper = _SkippingLinkedIn()
         response = scraper.scrape(ScraperInput(
             site_type=[Site.LINKEDIN],
             search_term=query,
