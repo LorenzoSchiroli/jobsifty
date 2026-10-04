@@ -12,13 +12,12 @@ from groq import Groq
 from langgraph.types import Command
 
 from backend.database import get_session, get_session_factory
-from backend.models import Job, User
+from backend.models import ApplicantProfile, Job, User
 from backend.schemas import JobSearchResponse
 from backend.search.models_lifecycle import get_biencoder, get_reranker
 from backend.search.query_understanding import get_groq_client
 from backend.opensearch_client import get_opensearch
 from backend.auth.dependencies import get_current_user
-from backend.tailorer.models import ApplicantProfile
 from backend.search.advanced.agent import build_graph
 from backend.search.advanced.preference_memory import get_memory, update_memory_from_session
 

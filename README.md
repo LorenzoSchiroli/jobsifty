@@ -5,10 +5,8 @@
 Jobsifty continuously scrapes job offers from several sources, has an LLM
 distil each posting into structured metadata, embeds it, and serves a hybrid
 **BM25 + k-NN** search endpoint with **cross-encoder reranking**. On top of that
-sit two LangGraph agents: an **advanced search** that asks clarifying questions
-and fit-scores every result against your CV, and a **tailorer** that drafts a
-tailored CV and cover letter and fills application forms from a Chrome side
-panel.
+sits a LangGraph agent: an **advanced search** that asks clarifying questions
+and fit-scores every result against your CV.
 
 It is a full vertical slice, deliberately: scraping and LLM enrichment →
 retrieval and ranking → REST API and SPA → and the same stack deployed two
@@ -31,7 +29,7 @@ Fargate**, from one command.
 flowchart TB
     SRC["Job sources<br/>jobspy · adzuna · arbeitnow · remotive"]
     ING["ingestion · every 2h<br/>scrape → LLM parse → embed"]
-    CLI["Clients<br/>React SPA · Chrome extension"]
+    CLI["Clients<br/>React SPA"]
     API["backend API<br/>FastAPI · JWT · search · agents"]
     PG[("Postgres<br/>source of truth + outbox")]
     WK["worker<br/>reconcile every 5 min"]
@@ -156,16 +154,6 @@ flowchart TB
 | **Fit scoring returns `fit_score`, `fit_rationale` *and* `fit_gaps`** | A bare 0-100 number is unactionable. The gaps field turns the ranker into advice: what you would have to learn or show to become a plausible candidate. |
 | **Preference memory is distilled in a background task** | The user gets results at once; the LLM that merges this session's signals into their long-term preference summary runs after the response is sent. A `user_edited` flag protects a hand-written summary — the distiller may only *append* to it, never rewrite it. |
 | **Every LLM response is parsed defensively** | Each call has a typed fallback (empty question list, `need_refine: false`, zero-score results), so a malformed model output degrades the ranking instead of returning a 500. |
-
-### Tailorer
-
-A second LangGraph agent (`backend/tailorer/`), driven over a WebSocket from the
-Chrome side panel: it maps the fields of the application form in front of you,
-drafts a tailored CV and cover letter from your `ApplicantProfile`, and streams
-fill instructions back to the page. The graph *interrupts* to hand those
-commands to the browser and waits for what the page actually managed to fill
-before continuing — the extension, not the model, is the thing that touches the
-DOM.
 
 ---
 
@@ -412,12 +400,11 @@ Offer sources: `jobspy`, `adzuna`, `arbeitnow`, `remotive` (default: all).
 | `backend/` | FastAPI service — REST API, Postgres (SQLAlchemy async), OpenSearch hybrid search, outbox worker, LangGraph agents |
 | `ingestion/` | Pipeline — job scraping, LLM offer parsing, company enrichment, embedding, POST to the backend |
 | `frontend/` | React (Vite) SPA, served by nginx in Docker/k8s |
-| `extension/` | Chrome extension (Tailorer side panel; talks to the backend directly) |
 | `deploy/helm/` | Helm chart for the whole stack + `values-local` / `values-cloud` / `values-hetzner` |
 | `deploy/infra/hetzner/` | OpenTofu — kube-hetzner k3s cluster + Cloudflare records |
 | `deploy/infra/aws/` | OpenTofu — VPC, ALB, ECS Fargate, RDS, OpenSearch Service, EventBridge, budget |
 | `deploy/scripts/run` | Single entrypoint for `local` / `hetzner` / `aws`, `up` / `down` |
-| `tailor/` | Standalone CLI predecessor of the tailorer agent (local scripts, not wired into the backend) |
+| `tailor/` | Standalone CV-tailoring CLI scripts (gitignored, local only, not wired into the backend) |
 
 `backend/` and `ingestion/` are the two members of a `uv` workspace (Python 3.13).
 
@@ -430,9 +417,8 @@ Offer sources: `jobspy`, `adzuna`, `arbeitnow`, `remotive` (default: all).
 | `POST /companies/`, `GET /companies/{id}` | |
 | `POST /jobs/search` | Hybrid search + rerank |
 | `POST /jobs/search/advanced`, `.../resume` | Agent search (WIP) |
-| `POST /users/cv`, `GET /users/cv` | CV upload for fit scoring / tailoring |
+| `POST /users/cv`, `GET /users/cv` | CV upload for fit scoring |
 | `GET/PUT /me/preference-memory` | Per-user search preferences |
-| `GET/PUT /tailorer/profile`, `WS /tailorer/ws/{job_id}`, `GET /tailorer/files/...` | Tailorer agent + generated documents |
 | `GET /health` | Liveness probe for k8s and the ALB |
 
 Most endpoints depend on `get_current_user`.
@@ -446,7 +432,7 @@ Most endpoints depend on `get_current_user`.
   seniority, required languages) plus a `summary` JSONB.
 - **`Outbox`** — transient sync table; `processed_at` is NULL until the worker
   drains it.
-- **`User`**, **`ApplicantProfile`**, **`Application`**, **`PreferenceMemory`** —
+- **`User`**, **`ApplicantProfile`**, **`PreferenceMemory`** —
   accounts, per-user CV data, and the distilled search preferences.
 
 Schema changes go through Alembic in `backend/alembic/`. Compose runs

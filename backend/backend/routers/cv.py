@@ -5,8 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
 from backend.database import get_session
-from backend.models import User
-from backend.tailorer.models import ApplicantProfile
+from backend.models import ApplicantProfile, User
 from backend.auth.dependencies import get_current_user
 
 router = APIRouter(prefix="/users", tags=["cv"])

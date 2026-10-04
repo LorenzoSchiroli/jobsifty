@@ -5,8 +5,7 @@ from pydantic import BaseModel
 from passlib.context import CryptContext
 
 from backend.database import get_session
-from backend.models import User
-from backend.tailorer.models import ApplicantProfile
+from backend.models import ApplicantProfile, User
 from backend.auth.jwt import create_access_token
 from backend.auth.dependencies import get_current_user
 

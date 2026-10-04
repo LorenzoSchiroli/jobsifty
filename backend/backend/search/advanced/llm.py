@@ -1,11 +1,21 @@
 import json
 import re
 import logging
+import os
 from langchain_core.messages import HumanMessage, SystemMessage
-
-from backend.tailorer.llm import large_llm
+from langchain_openai import ChatOpenAI
 
 _log = logging.getLogger(__name__)
+
+_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+
+
+def large_llm() -> ChatOpenAI:
+    return ChatOpenAI(
+        model=os.environ["GROQ_MODEL_LARGE"],
+        api_key=os.environ["GROQ_API_KEY"],
+        base_url=_GROQ_BASE_URL,
+    )
 
 
 def _parse_json(raw: str):

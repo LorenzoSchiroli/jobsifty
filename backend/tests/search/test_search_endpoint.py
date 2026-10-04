@@ -9,8 +9,7 @@ from backend.database import get_session
 from backend.search.models_lifecycle import get_biencoder, get_reranker
 from backend.opensearch_client import get_opensearch
 from backend.auth.dependencies import get_current_user
-from backend.models import Company, Job, User
-from backend.tailorer.models import ApplicantProfile
+from backend.models import ApplicantProfile, Company, Job, User
 
 
 @pytest_asyncio.fixture

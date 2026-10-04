@@ -8,22 +8,11 @@ export default function JobCard({ job }: { job: Job }) {
     ...job.languages_required,
   ].filter(Boolean) as string[]
 
-  const handleClick = (_e: React.MouseEvent<HTMLAnchorElement>) => {
-    // Hand the selected job to the Tailorer extension. The content script
-    // (content/frontend_bridge.js) is the only listener; it reads the auth token
-    // and stores {token, activeJob} as the single source of truth for the panel.
-    window.postMessage(
-      { type: 'tailorer_link', job_id: job.id, job_title: `${job.title} — ${job.company.name}` },
-      '*',
-    )
-  }
-
   return (
     <a
       href={job.url}
       target="_blank"
       rel="noopener noreferrer"
-      onClick={handleClick}
       style={{
         display: 'block',
         padding: '1rem',

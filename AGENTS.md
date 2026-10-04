@@ -10,15 +10,16 @@ This file provides guidance to AI coding agents when working with code in this r
 
 This is a `uv` workspace with two packages:
 
-- **`backend/`** — FastAPI service: REST API (JWT auth), Postgres (SQLAlchemy async), OpenSearch hybrid search, outbox reconcile worker, LangGraph agents (advanced search, tailorer)
+- **`backend/`** — FastAPI service: REST API (JWT auth), Postgres (SQLAlchemy async), OpenSearch hybrid search, outbox reconcile worker, LangGraph agent (advanced search)
 - **`ingestion/`** — Pipeline: job scraping, LLM-based offer parsing, company enrichment, embedding, and HTTP posting to backend
 
 Other top-level directories:
 - `frontend/` — React (Vite) SPA, served by nginx in Docker/k8s
-- `extension/` — Chrome extension (Tailorer side panel; calls the backend directly)
 - `deploy/` — Helm chart (`deploy/helm/jobsifty/`) + k8s runbook (`deploy/k8s/README.md`); **AWS showcase** is the ECS managed path in `deploy/infra/aws/` (OpenTofu + Fargate/RDS/OpenSearch Service — not Helm on AWS)
 - `dumps/` — `jobsifty.current.dump` is the demo database every target restores from / captures into (gitignored; seed with `deploy/scripts/seed-dump`)
-- `tailor/` — standalone CLI predecessor of the tailorer agent (local docx/cover-letter scripts; **not** imported by `backend/` or `ingestion/`, do not wire new code to it)
+- `tailor/` — standalone CV-tailoring CLI scripts (gitignored, local docx/cover-letter scripts; **not** imported by `backend/` or `ingestion/`, do not wire new code to it)
+
+The autofill feature (Chrome extension + tailorer LangGraph agent that drafted CVs/cover letters and filled application forms) lives on the `autofill` branch, not on `main`.
 
 [`README.md`](./README.md) is the human-facing counterpart: same architecture, with diagrams and the reasoning behind each choice. Keep the two consistent when behaviour changes.
 
@@ -132,7 +133,7 @@ BACKUP_SBOX_USER=...
 **Non-secrets** — committed in `.env.public` (edit in git):
 
 ```
-GROQ_MODEL_LARGE=...                    # advanced search, tailorer + cover letter generation
+GROQ_MODEL_LARGE=...                    # advanced search
 GROQ_MODEL_BASE=...                     # offer/company parsing
 OFFER_QUERY=...                         # ingestion Docker / CronJob query
 ACCESS_TOKEN_EXPIRE_DAYS=7
@@ -187,7 +188,7 @@ Jobs and companies are written atomically to Postgres with an `outbox` row. Ever
 - **`Company`** — unique by `name`; enriched with employee_count, founded_year, review_score, financial_health_score (int 0-10), is_consulting, is_startup, industry, country
 - **`Job`** — unique by `url`; stores parsed fields (employment_type, location_type, seniority, languages_required) and `summary` JSONB
 - **`Outbox`** — transient sync table; `processed_at` is NULL until worker drains it
-- **`User`** (`models.py`), **`ApplicantProfile`** / **`Application`** (`tailorer/models.py`) — auth accounts and per-user CV/profile data
+- **`User`**, **`ApplicantProfile`** (`models.py`) — auth accounts and per-user CV text
 - **`PreferenceMemory`** (`search/advanced/models.py`) — one row per user; `memory_text` is LLM-distilled from advanced-search sessions in a background task, and `user_edited` marks a hand-written summary the distiller may only append to
 
 ### OpenSearch Index (`jobs`)
@@ -208,7 +209,7 @@ Alembic is in `backend/alembic/`. Add schema changes there; the compose backend 
 | Bi-encoder (embed) | sentence-transformers (`BAAI/bge-small-en-v1.5`) |
 | Cross-encoder (rerank) | sentence-transformers (`cross-encoder/ms-marco-MiniLM-L-6-v2`) |
 | LLM | Groq SDK; agents use `langchain-openai` `ChatOpenAI` pointed at Groq's OpenAI-compatible API |
-| Agents / checkpointing | LangGraph + `langgraph-checkpoint-postgres` (advanced search, tailorer) |
+| Agents / checkpointing | LangGraph + `langgraph-checkpoint-postgres` (advanced search) |
 | Auth | python-jose (JWT) + passlib[bcrypt] |
 | Scraping | python-jobspy, Playwright, trafilatura, ddgs |
 | Package manager | uv workspace |

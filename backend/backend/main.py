@@ -12,7 +12,6 @@ from backend.routers import companies, jobs
 from backend.routers.search import router as search_router
 from backend.routers.auth import router as auth_router
 from backend.routers.cv import router as cv_router
-from backend.tailorer.router import router as tailorer_router
 from backend.routers.preferences import router as preferences_router
 from backend.routers.search_advanced import router as search_advanced_router
 from backend.search.models_lifecycle import init_models
@@ -55,9 +54,6 @@ app = FastAPI(title="Jobsifty backend", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins(),
-    # The Tailorer side panel (chrome-extension:// origin) calls /auth/me and other
-    # endpoints directly; a concrete regex (not "*") is allowed alongside credentials.
-    allow_origin_regex=r"chrome-extension://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -68,7 +64,6 @@ app.include_router(jobs.router)
 app.include_router(search_router)
 app.include_router(auth_router)
 app.include_router(cv_router)
-app.include_router(tailorer_router)
 app.include_router(preferences_router)
 app.include_router(search_advanced_router)
 

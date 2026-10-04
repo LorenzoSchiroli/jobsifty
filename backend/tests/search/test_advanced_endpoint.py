@@ -14,8 +14,7 @@ from backend.search.models_lifecycle import get_biencoder, get_reranker
 from backend.search.query_understanding import get_groq_client
 from backend.opensearch_client import get_opensearch
 from backend.auth.dependencies import get_current_user
-from backend.models import Company, Job, User
-from backend.tailorer.models import ApplicantProfile
+from backend.models import ApplicantProfile, Company, Job, User
 
 pytestmark = pytest.mark.asyncio
 
