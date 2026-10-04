@@ -13,6 +13,8 @@ export interface Job {
   id: string
   title: string
   url: string
+  source: string | null
+  created_at: string
   location: string | null
   employment_type: string | null
   location_type: string | null

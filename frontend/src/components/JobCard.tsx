@@ -8,6 +8,16 @@ export default function JobCard({ job }: { job: Job }) {
     ...job.languages_required,
   ].filter(Boolean) as string[]
 
+  const scrapedAt = new Date(job.created_at)
+  const scrapedLabel = Number.isNaN(scrapedAt.getTime())
+    ? null
+    : new Intl.DateTimeFormat(undefined, {
+        dateStyle: 'medium',
+      }).format(scrapedAt)
+  const locationLabel = [job.location, job.company.country].filter(Boolean).join(' · ')
+  const displaySource = job.source?.split(':').pop() || null
+  const sourceAndDate = [displaySource, scrapedLabel].filter(Boolean).join(' – ')
+
   const handleClick = (_e: React.MouseEvent<HTMLAnchorElement>) => {
     // Hand the selected job to the Tailorer extension. The content script
     // (content/frontend_bridge.js) is the only listener; it reads the auth token
@@ -34,7 +44,14 @@ export default function JobCard({ job }: { job: Job }) {
         background: '#141414',
       }}
     >
-      <div style={{ fontWeight: 600 }}>{job.title} — {job.company.name}</div>
+      <div>
+        <div>
+          <div style={{ fontWeight: 600 }}>{job.title}</div>
+          <div style={{ fontSize: '0.875rem', opacity: 0.7, marginTop: '0.15rem' }}>
+            {job.company.name}
+          </div>
+        </div>
+      </div>
       {typeof job.fit_score === 'number' && (
         <div style={{ marginTop: '0.4rem' }}>
           <span style={{
@@ -52,8 +69,9 @@ export default function JobCard({ job }: { job: Job }) {
           )}
         </div>
       )}
-      <div style={{ fontSize: '0.875rem', opacity: 0.5, marginTop: '0.2rem' }}>
-        {[job.location, job.company.country].filter(Boolean).join(' · ')}
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', fontSize: '0.875rem', opacity: 0.5, marginTop: '0.2rem' }}>
+        <span>{locationLabel}</span>
+        {sourceAndDate && <span style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>{sourceAndDate}</span>}
       </div>
       {tags.length > 0 && (
         <div style={{ marginTop: '0.5rem', display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
