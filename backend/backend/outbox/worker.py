@@ -3,7 +3,7 @@ import logging
 import uuid
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import defer, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from opensearchpy import AsyncOpenSearch
 from opensearchpy.helpers import async_bulk
@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 RECONCILE_INTERVAL_SECONDS = 300
 RETENTION_INTERVAL_SECONDS = 21600
 RECONCILE_BATCH_SIZE = 2000
+# Jobs loaded and bulk-indexed per slice; each carries several 384-d chunk
+# vectors, so a full batch at once does not fit the worker's memory limit.
+RECONCILE_SLICE_SIZE = 250
 RECONCILE_WINDOW_DAYS = 30
 RETENTION_MAX_AGE_DAYS = 30
 
@@ -41,7 +44,7 @@ def _build_job_doc(job: Job) -> dict:
         "title": job.title,
         "description": job.description or "",
         "summary_text": _flatten_summary(job.summary),
-        "embedding": job.embedding,
+        "chunks": [{"text": c["text"], "embedding": c["embedding"]} for c in job.chunks or []],
         "employment_type": job.employment_type,
         "location_type": job.location_type,
         "seniority": job.seniority,
@@ -116,22 +119,35 @@ async def reconcile(
     to_index = changed_job_ids | missing_ids
     indexed_ids: set[uuid.UUID] = set()
     if to_index:
-        jobs = (
-            await session.execute(
-                select(Job)
-                .options(selectinload(Job.company))
-                .where(Job.id.in_(to_index))
-                .order_by(Job.created_at.desc())
-                .limit(batch_size)
-            )
-        ).scalars().all()
-        if jobs:
+        batch_ids = [
+            jid
+            for (jid,) in (
+                await session.execute(
+                    select(Job.id)
+                    .where(Job.id.in_(to_index))
+                    .order_by(Job.created_at.desc())
+                    .limit(batch_size)
+                )
+            ).all()
+        ]
+        for start in range(0, len(batch_ids), RECONCILE_SLICE_SIZE):
+            slice_ids = batch_ids[start:start + RECONCILE_SLICE_SIZE]
+            jobs = (
+                await session.execute(
+                    select(Job)
+                    .options(selectinload(Job.company), defer(Job.embedding))
+                    .where(Job.id.in_(slice_ids))
+                )
+            ).scalars().all()
             actions = [
                 {"_index": INDEX_NAME, "_id": str(j.id), "_source": _build_job_doc(j)}
                 for j in jobs
             ]
             await async_bulk(os_client, actions)
-            indexed_ids = {j.id for j in jobs}
+            indexed_ids.update(j.id for j in jobs)
+            # Drop the loaded rows before the next slice; outbox events stay attached.
+            for j in jobs:
+                session.expunge(j)
 
     # 4. Company changes: patch derived fields on their jobs' docs.
     for event in company_events:

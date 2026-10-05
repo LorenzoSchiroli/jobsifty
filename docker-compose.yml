@@ -40,6 +40,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/jobsifty
       OPENSEARCH_URL: http://opensearch:9200
+      TORCH_NUM_THREADS: "2"
+      OMP_NUM_THREADS: "2"
     ports:
       - "8000:8000"
     depends_on:

@@ -6,7 +6,9 @@ from sqlalchemy import select
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from backend.database import get_session_factory
-from backend.opensearch_client import init_opensearch, get_opensearch, INDEX_NAME
+from backend.opensearch_client import (
+    init_opensearch, get_opensearch, drop_legacy_index, INDEX_NAME, LEGACY_INDEX_NAME,
+)
 from backend.models import Job
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
@@ -31,6 +33,8 @@ async def backfill_created_at() -> None:
 
 async def main() -> None:
     await init_opensearch()
+    if await drop_legacy_index(get_opensearch()):
+        logger.info("Dropped legacy OpenSearch index %r; reconcile repopulates %r", LEGACY_INDEX_NAME, INDEX_NAME)
 
     db_url = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
     async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:

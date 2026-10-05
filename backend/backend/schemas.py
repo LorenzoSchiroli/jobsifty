@@ -28,6 +28,11 @@ class CompanyResponse(CompanyRequest):
     model_config = {"from_attributes": True}
 
 
+class JobChunk(BaseModel):
+    text: str
+    embedding: list[float]
+
+
 class JobRequest(BaseModel):
     url: str
     title: str
@@ -45,6 +50,7 @@ class JobRequest(BaseModel):
     text_language: str | None = None
     summary: dict | None = None
     embedding: list[float] | None = None
+    chunks: list[JobChunk] | None = None
 
 
 class JobResponse(BaseModel):
@@ -72,6 +78,22 @@ class JobResponse(BaseModel):
     @classmethod
     def coerce_null(cls, v: list[str] | None) -> list[str]:
         return v or []
+
+
+class JobListItem(BaseModel):
+    id: uuid.UUID
+    url: str
+    title: str
+    company_name: str
+    location: str | None = None
+    source: str | None = None
+    posted_at: datetime | None = None
+    description: str | None = None
+
+
+class JobListResponse(BaseModel):
+    items: list[JobListItem]
+    next_after: uuid.UUID | None = None
 
 
 class CompanyInSearch(BaseModel):

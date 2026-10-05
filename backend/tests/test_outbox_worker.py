@@ -13,7 +13,8 @@ async def _company(session, name="Acme") -> Company:
 
 
 async def _job(session, company_id, url="https://ex.com/1") -> Job:
-    j = Job(url=url, title="Engineer", company_id=company_id, embedding=[0.1] * 384)
+    j = Job(url=url, title="Engineer", company_id=company_id,
+            chunks=[{"text": "Engineer\npython", "embedding": [0.1] * 384}])
     session.add(j)
     await session.flush()
     return j
@@ -39,7 +40,8 @@ async def test_reconcile_reindexes_changed_job_even_when_present(db_session):
     assert count == 1
     actions = list(mock_bulk.call_args.args[1])
     assert actions[0]["_id"] == str(job.id)
-    assert actions[0]["_source"]["embedding"] == [0.1] * 384
+    assert actions[0]["_source"]["chunks"] == [{"text": "Engineer\npython", "embedding": [0.1] * 384}]
+    assert "embedding" not in actions[0]["_source"]
     row = (await db_session.execute(select(Outbox))).scalar_one()
     assert row.processed_at is not None
 

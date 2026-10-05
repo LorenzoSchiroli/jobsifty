@@ -155,3 +155,75 @@ async def test_upsert_job_does_not_overwrite_existing_embedding(client, db_sessi
     result = await db_session.execute(select(Job).where(Job.id == job_id))
     job = result.scalar_one()
     assert job.embedding == [0.1] * 384
+
+
+_CHUNKS_V1 = [{"text": "old chunk", "embedding": [0.1] * 384}]
+_CHUNKS_V2 = [{"text": "new chunk", "embedding": [0.2] * 384}]
+
+
+async def test_post_with_description_overwrites_derived_fields(client, db_session):
+    from sqlalchemy import select
+    from backend.models import Job
+    await client.post("/jobs/", json={
+        "url": "https://example.com/derive/1", "title": "ML Engineer", "company_name": "Stripe",
+        "description": "Senior ML role in Berlin.", "seniority": "senior", "office": "berlin",
+        "summary": {"requirements": []}, "chunks": _CHUNKS_V1,
+    })
+    resp = await client.post("/jobs/", json={
+        "url": "https://example.com/derive/1", "title": "ML Engineer", "company_name": "Stripe",
+        "description": "Lead ML role, remote.", "location": "Berlin", "seniority": "lead", "office": None,
+        "summary": {"requirements": ["python"]}, "chunks": _CHUNKS_V2,
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["seniority"] == "lead"
+    assert data["office"] is None
+    assert data["location"] == "Berlin"
+    job = (await db_session.execute(select(Job).where(Job.url == "https://example.com/derive/1"))).scalar_one()
+    await db_session.refresh(job)
+    assert job.summary == {"requirements": ["python"]}
+    assert job.chunks == _CHUNKS_V2
+
+
+async def test_post_without_description_only_fills_empty_fields(client):
+    await client.post("/jobs/", json={
+        "url": "https://example.com/derive/2", "title": "ML Engineer", "company_name": "Stripe",
+        "description": "Senior ML role.", "seniority": "senior", "chunks": _CHUNKS_V1,
+    })
+    for description in (None, "", "   "):
+        resp = await client.post("/jobs/", json={
+            "url": "https://example.com/derive/2", "title": "ML Engineer", "company_name": "Stripe",
+            "description": description, "seniority": "junior", "employment_type": "full-time",
+            "chunks": _CHUNKS_V2,
+        })
+        data = resp.json()
+        assert data["seniority"] == "senior"
+        assert data["employment_type"] == "full-time"
+        assert data["description"] == "Senior ML role."
+
+
+async def test_list_jobs_pages_by_id(client):
+    for i in range(5):
+        await client.post("/jobs/", json={
+            "url": f"https://example.com/list/{i}", "title": f"Job {i}", "company_name": "Stripe",
+            "description": f"desc {i}",
+        })
+    first = await client.get("/jobs/", params={"limit": 3})
+    assert first.status_code == 200
+    page1 = first.json()
+    assert len(page1["items"]) == 3
+    assert page1["next_after"] == page1["items"][-1]["id"]
+    assert page1["items"][0]["company_name"] == "stripe"
+
+    second = (await client.get("/jobs/", params={"limit": 3, "after": page1["next_after"]})).json()
+    assert len(second["items"]) == 2
+    assert second["next_after"] is None
+    ids = [it["id"] for it in page1["items"] + second["items"]]
+    assert ids == sorted(ids)
+    assert len(set(ids)) == 5
+    assert {it["description"] for it in page1["items"] + second["items"]} == {f"desc {i}" for i in range(5)}
+
+
+async def test_list_jobs_rejects_limit_over_max(client):
+    resp = await client.get("/jobs/", params={"limit": 5000})
+    assert resp.status_code == 422

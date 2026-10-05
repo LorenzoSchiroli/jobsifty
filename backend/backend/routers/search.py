@@ -13,7 +13,7 @@ from backend.database import get_session
 from backend.models import Job, User
 from backend.schemas import JobSearchResponse
 from backend.search.filters import SearchFilters
-from backend.search.models_lifecycle import get_biencoder, get_reranker
+from backend.search.models_lifecycle import get_biencoder, get_reranker, encode_query
 from backend.search.query_parsing import parse_query
 from backend.search.retrieval import hybrid_retrieve
 from backend.search.reranker import rerank
@@ -42,13 +42,13 @@ async def search_jobs(
     filters: SearchFilters = parse_query(body.query)
     t1 = time.perf_counter()
 
-    query_embedding: list[float] = biencoder.encode(filters.semantic_query).tolist()
+    query_embedding: list[float] = encode_query(biencoder, filters.semantic_query)
     t2 = time.perf_counter()
 
     hits = await hybrid_retrieve(os_client, query_embedding, filters)
     t3 = time.perf_counter()
 
-    ranked_hits = rerank(reranker, hits, filters.semantic_query)
+    ranked_hits = rerank(reranker, hits, filters.semantic_query, query_embedding)
     t4 = time.perf_counter()
 
     if not ranked_hits:

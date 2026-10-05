@@ -13,7 +13,11 @@ def build_hybrid_query(
 ) -> dict:
     legs = [
         {"bool": {"must": {"match": {"description": semantic_query}}}},
-        {"bool": {"must": {"knn": {"embedding": {"vector": query_embedding, "k": 100}}}}},
+        {"bool": {"must": {"nested": {
+            "path": "chunks",
+            "score_mode": "max",
+            "query": {"knn": {"chunks.embedding": {"vector": query_embedding, "k": 100}}},
+        }}}},
     ]
     clauses = build_clauses(filters)
 

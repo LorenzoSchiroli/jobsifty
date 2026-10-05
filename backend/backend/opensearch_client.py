@@ -3,7 +3,10 @@ from opensearchpy import AsyncOpenSearch
 
 _client: AsyncOpenSearch | None = None
 
-INDEX_NAME = "jobs"
+INDEX_NAME = "jobs_v2"
+# Pre-chunking index (single `embedding` vector). Its knn mapping can't be
+# changed in place, so bootstrap drops it and reconcile repopulates INDEX_NAME.
+LEGACY_INDEX_NAME = "jobs"
 PIPELINE_NAME = "hybrid-pipeline"
 
 _INDEX_BODY = {
@@ -15,10 +18,16 @@ _INDEX_BODY = {
             "title":                    {"type": "text"},
             "description":              {"type": "text"},
             "summary_text":             {"type": "text"},
-            "embedding": {
-                "type": "knn_vector",
-                "dimension": 384,
-                "method": {"name": "hnsw", "space_type": "cosinesimil", "engine": "lucene"},
+            "chunks": {
+                "type": "nested",
+                "properties": {
+                    "text": {"type": "text"},
+                    "embedding": {
+                        "type": "knn_vector",
+                        "dimension": 384,
+                        "method": {"name": "hnsw", "space_type": "cosinesimil", "engine": "lucene"},
+                    },
+                },
             },
             "employment_type":          {"type": "keyword"},
             "location_type":            {"type": "keyword"},
@@ -65,6 +74,13 @@ async def get_existing_job_ids(
             if doc.get("found"):
                 found.add(doc["_id"])
     return found
+
+
+async def drop_legacy_index(os_client: AsyncOpenSearch) -> bool:
+    if await os_client.indices.exists(index=LEGACY_INDEX_NAME):
+        await os_client.indices.delete(index=LEGACY_INDEX_NAME)
+        return True
+    return False
 
 
 async def init_opensearch() -> None:

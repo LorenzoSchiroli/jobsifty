@@ -20,6 +20,11 @@ spec:
         envFrom:
         - secretRef:
             name: {{ .Values.existingSecret }}
+        env:
+        - name: TORCH_NUM_THREADS
+          value: {{ .Values.api.torchThreads | quote }}
+        - name: OMP_NUM_THREADS
+          value: {{ .Values.api.torchThreads | quote }}
         ports:
         - containerPort: 8000
         readinessProbe:

@@ -9,8 +9,20 @@ def test_build_hybrid_query_has_two_legs():
     legs = q["query"]["hybrid"]["queries"]
     assert len(legs) == 2
     assert "match" in legs[0]["bool"]["must"]
-    assert "knn" in legs[1]["bool"]["must"]
+    nested = legs[1]["bool"]["must"]["nested"]
+    assert nested["path"] == "chunks"
+    assert nested["score_mode"] == "max"
+    assert nested["query"]["knn"]["chunks.embedding"]["vector"] == [0.1] * 384
+    assert "inner_hits" not in nested  # hybrid queries drop them; the reranker picks the chunk
     assert q["size"] == 20
+
+
+def test_build_hybrid_query_soft_boosts_stay_outside_nested():
+    f = SearchFilters(semantic_query="x", seniority="senior", max_age_hours=None)
+    q = build_hybrid_query("x", [0.0] * 384, f)
+    knn_leg = q["query"]["hybrid"]["queries"][1]
+    assert knn_leg["bool"]["should"]
+    assert "should" not in knn_leg["bool"]["must"]["nested"]
 
 
 def test_build_hybrid_query_soft_applies_boosts_to_both_legs():
@@ -35,6 +47,8 @@ def test_build_hybrid_query_strict_uses_large_prefetch():
     f = SearchFilters(semantic_query="x", is_startup=True, strict=True)
     q = build_hybrid_query("x", [0.0] * 384, f)
     assert q["size"] == 200
+    assert "_source" not in q  # chunk vectors are needed by the reranker
+    assert "nested" in q["query"]["hybrid"]["queries"][1]["bool"]["must"]
 
 
 def test_build_hybrid_query_strict_no_post_filter_when_no_clauses():

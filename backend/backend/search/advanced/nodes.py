@@ -3,6 +3,7 @@ from langgraph.types import interrupt
 from backend.search.query_understanding import extract_filters
 from backend.search.retrieval import hybrid_retrieve
 from backend.search.reranker import rerank
+from backend.search.models_lifecycle import encode_query
 from backend.search.advanced.llm import (
     generate_clarify_questions, critique_results, score_fit,
 )
@@ -29,9 +30,9 @@ async def node_search(state: dict, *, biencoder, reranker, os_client, groq_clien
         f"Preferences: {state.get('preference_memory', '')}"
     )
     filters = await extract_filters(groq_client, state.get("cv_text", ""), augmented)
-    embedding = biencoder.encode(filters.semantic_query).tolist()
+    embedding = encode_query(biencoder, filters.semantic_query)
     hits = await hybrid_retrieve(os_client, embedding, filters)
-    ranked = rerank(reranker, hits, filters.semantic_query)
+    ranked = rerank(reranker, hits, filters.semantic_query, embedding)
     return {"hits": ranked}
 
 

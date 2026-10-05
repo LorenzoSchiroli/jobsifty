@@ -2,7 +2,7 @@ data "aws_caller_identity" "current" {}
 
 resource "aws_opensearch_domain" "main" {
   domain_name    = "${var.project}-search"
-  engine_version = "OpenSearch_2.11"
+  engine_version = "OpenSearch_2.19"
 
   cluster_config {
     instance_type          = var.opensearch_instance_type

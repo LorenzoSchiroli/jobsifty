@@ -100,12 +100,14 @@ resource "aws_ecs_task_definition" "frontend" {
   ])
 }
 
+# 2 vCPU for the search models (embedder + reranker); Fargate's minimum memory
+# at 2 vCPU is 4 GB, so this roughly doubles the api task cost.
 resource "aws_ecs_task_definition" "api" {
   family                   = "${var.project}-api"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = "1024"
-  memory                   = "2048"
+  cpu                      = "2048"
+  memory                   = "4096"
   execution_role_arn       = aws_iam_role.ecs_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
 
@@ -129,6 +131,10 @@ resource "aws_ecs_task_definition" "api" {
           containerPort = 8000
           protocol      = "tcp"
         }
+      ]
+      environment = [
+        { name = "TORCH_NUM_THREADS", value = "2" },
+        { name = "OMP_NUM_THREADS", value = "2" },
       ]
       secrets = local.app_container_secrets
       logConfiguration = {
