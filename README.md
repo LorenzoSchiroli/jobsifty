@@ -16,7 +16,7 @@ Fargate**, from one command.
 | | |
 |---|---|
 | **Retrieval** | OpenSearch hybrid search — BM25 + HNSW k-NN, score-normalised in a single round trip, then reranked by a cross-encoder |
-| **Models** | `bge-small-en-v1.5` (384-d embeddings) + `ms-marco-MiniLM-L-6-v2` (rerank), both CPU-only; Groq-hosted LLMs for offline enrichment and agents |
+| **Models** | `multilingual-e5-small` (384-d chunk embeddings) + `mmarco-mMiniLMv2-L12` (multilingual rerank), both CPU-only; Groq-hosted LLMs only for company judgement fields and agents |
 | **Durability** | Postgres is the source of truth; the search index is derived and rebuildable, kept in sync by a transactional **outbox** |
 | **Agents** | LangGraph graphs checkpointed in Postgres — they interrupt, ask, and resume across HTTP requests |
 | **Infra** | OpenTofu + Helm (k3s on Hetzner) *and* OpenTofu + ECS Fargate (AWS), same images, same env contract, `deploy/scripts/run <target> up` |
@@ -53,9 +53,11 @@ Three processes, split so they scale and fail independently:
 | `python -m backend.bootstrap` | One-shot. Checkpointer tables + `created_at` backfill; migrations run alongside it. |
 
 **Ingestion** runs out-of-process as a scheduled batch (k8s CronJob / EventBridge
-RunTask): scrape → fill missing descriptions with trafilatura → LLM-parse each
-offer into an `OfferSummary` → embed `title + summary` → `POST` to the backend,
-then upsert companies and enrich the ones whose profile is more than half empty.
+RunTask): scrape → fill missing descriptions with trafilatura → parse each
+offer with rules (strip boilerplate sections, regex fields, language detection — no LLM)
+→ embed ≤4 ~400-token chunks → `POST` to the backend, then upsert companies and
+enrich the ones whose profile is more than half empty (Wikidata/JSON-LD/regex first,
+LLM only for what is still missing).
 
 ### Why it is built this way
 
@@ -65,7 +67,7 @@ then upsert companies and enrich the ones whose profile is more than half empty.
 | **Transactional outbox instead of dual writes** | Writing to Postgres *and* OpenSearch in one request means either a distributed transaction or silent divergence when the second write fails. The job and its `outbox` row are committed atomically; the worker drains the outbox and additionally re-indexes any live job (≤30 days) missing from the index, so the system self-heals instead of drifting. |
 | **Ingestion talks to the public REST API, not to the database** | The pipeline holds no DB credentials and no ORM models. It is just another client, which is what lets it run as a CronJob on Kubernetes or a Fargate task on AWS with zero extra wiring — and what keeps validation in exactly one place. |
 | **LLMs only offline and on the opt-in agent path** | Parsing a posting is a batch job where a 2-second LLM call is free; a search request is not. The hot search path is regex + two small local models, so it is fast, cheap, deterministic and unit-testable. |
-| **CPU-only models** | `bge-small` (384-d) and `MiniLM-L-6` were chosen to fit a demo budget with no GPU anywhere in the stack — the whole thing runs on a single small Hetzner x86 VPS and on `db.t4g.micro` / `t3.small.search`-class AWS resources. |
+| **CPU-only models** | `multilingual-e5-small` (384-d) and `mmarco-mMiniLMv2-L12` were benchmarked on CPU (e5-small embeds a 512-token chunk in ~57 ms, same as the previous `bge-small`; long-context and 0.5B+ models were 10–500× slower) and chosen to fit a demo budget with no GPU anywhere in the stack — the whole thing runs on a single small Hetzner x86 VPS and on `db.t4g.micro` / `t3.small.search`-class AWS resources. |
 | **uv workspace, two Python packages** | `backend` and `ingestion` share a lockfile and Python version but ship as separate images with separate dependency sets — the API image does not carry Playwright, the scraper does not carry SQLAlchemy models. |
 
 ---
@@ -83,7 +85,7 @@ every query, and an agentic one for when you want the system to think.
 flowchart TB
     Q["query text"]
     P["1 · parse_query<br/>regex → SearchFilters + semantic_query"]
-    E["2 · embed<br/>bge-small-en-v1.5 → 384-d"]
+    E["2 · embed<br/>multilingual-e5-small → 384-d"]
     H["3 · hybrid retrieve<br/>OpenSearch: BM25 + k-NN, fused"]
     R["4 · rerank<br/>cross-encoder → top 20"]
     D["5 · hydrate<br/>Postgres, by job_id"]
@@ -118,8 +120,8 @@ flowchart TB
 | **Fusion inside an OpenSearch search pipeline** | BM25 scores and cosine similarities live on incomparable scales, so they are min-max normalised before an arithmetic mean with 50/50 weights. Doing it server-side in the `hybrid` query means one round trip and one ranked list, instead of two queries merged in Python. |
 | **Filters are *soft* by default** | The filterable fields (`seniority`, `location_type`, `languages_required`, …) come from an LLM parse of free-text postings, so they are good but not perfect. A hard filter turns one bad extraction into a silently missing result. Instead the clauses are scored `should` clauses with `boost: 2.0` — matching documents win, near-misses still surface. Writing *"strictly"*, *"exactly"* or *"no exceptions"* flips `SearchFilters.strict`, which applies them as a real `post_filter` and raises the prefetch to 200 so the filter has candidates left to keep. |
 | **Cross-encoder rerank on the shortlist only** | The bi-encoder scores query and document independently — necessary, because embeddings must be computed at index time. A cross-encoder reads the pair jointly and is markedly more accurate, but costs one forward pass *per candidate*. Applying it to the top 20–200 retrieved hits buys most of the accuracy for a bounded, predictable cost. |
-| **Rerank on `summary_text`, not the raw description** | Postings are padded with boilerplate ("we are an equal opportunity employer", benefits, legal notes). The LLM-generated summary is the signal; feeding it to a 512-token cross-encoder avoids spending the whole window on scaffolding. |
-| **384 dimensions, HNSW + cosine on the Lucene engine** | Small vectors keep index size and HNSW memory low, `bge-small` is near the top of its size class on MTEB, and the Lucene engine needs no native plugin and supports filtered k-NN. |
+| **Chunks instead of an LLM summary** | Descriptions run ~1k tokens (p99 ~2.7k), twice the 512-token window of small CPU encoders. Instead of an LLM summary (which made ingestion depend on Groq quotas), boilerplate sections are stripped by rules and the rest is embedded as ≤4 overlapping chunks; k-NN scores a job by its best chunk and the reranker reads that same chunk. |
+| **384 dimensions, HNSW + cosine on the Lucene engine** | Small vectors keep index size and HNSW memory low, `multilingual-e5-small` covers the non-English offers, and the Lucene engine needs no native plugin and supports filtered k-NN. |
 | **A `parse=… embed=… retrieve=… rerank=… db=…` timing line per query** | Each stage is logged separately, so a latency regression points at a stage instead of at "search is slow". |
 
 ### Advanced search — a checkpointed LangGraph agent (WIP)
@@ -183,8 +185,9 @@ could actually still apply to". With `BACKUP_SBOX_*` set, the worker also runs a
 daily `pg_dump` + rclone upload to a Hetzner Storage Box on a 7-day rolling
 retention.
 
-The `jobs` index carries the embedding, the two text fields used for scoring
-(`description` for BM25, `summary_text` for reranking), and the keyword/numeric
+The `jobs_v2` index carries the nested `chunks` (text + embedding; the reranker
+re-picks the best chunk from them, since hybrid queries drop `inner_hits`), the text fields used for scoring (`description` for BM25,
+`summary_text` as reranker fallback), and the keyword/numeric
 fields the filter clauses target — `employment_type`, `location_type`,
 `seniority`, `languages_required`, `is_consulting`, `is_startup`, `industry`,
 `country`, `review_score`, `financial_health_score`, `created_at`.
@@ -332,7 +335,7 @@ cp .env.example .env      # then fill in the keys below
 | `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | `.env` | Optional job source |
 | `DDGS_PROXY` | `.env` | Optional proxy for DuckDuckGo scraping |
 | `BACKUP_SBOX_HOST` / `_USER` / `_RCLONE_PASS` | `.env` | Optional nightly Postgres backup |
-| `GROQ_MODEL_LARGE` / `GROQ_MODEL_BASE` | `.env.public` | Model IDs for agents / parsing |
+| `GROQ_MODEL_LARGE` / `GROQ_MODEL_BASE` | `.env.public` | Model IDs for agents / company enrichment |
 | `OFFER_QUERY` | `.env.public` | Query used by the ingestion container / CronJob |
 | `CORS_ORIGINS` | `.env.public` | Extra browser origins for the API |
 | `VITE_API_URL` | `.env.public` | API base URL baked into the frontend image |
@@ -398,7 +401,7 @@ Offer sources: `jobspy`, `adzuna`, `arbeitnow`, `remotive` (default: all).
 | Path | What it is |
 |------|------------|
 | `backend/` | FastAPI service — REST API, Postgres (SQLAlchemy async), OpenSearch hybrid search, outbox worker, LangGraph agents |
-| `ingestion/` | Pipeline — job scraping, LLM offer parsing, company enrichment, embedding, POST to the backend |
+| `ingestion/` | Pipeline — job scraping, rule-based offer parsing, company enrichment, chunked embedding, POST to the backend |
 | `frontend/` | React (Vite) SPA, served by nginx in Docker/k8s |
 | `deploy/helm/` | Helm chart for the whole stack + `values-local` / `values-cloud` / `values-hetzner` |
 | `deploy/infra/hetzner/` | OpenTofu — kube-hetzner k3s cluster + Cloudflare records |
@@ -446,8 +449,8 @@ runs it before rollout; on AWS it is the one-shot bootstrap RunTask.
 | API framework | FastAPI + uvicorn |
 | ORM / async DB | SQLAlchemy async + asyncpg |
 | Vector search | opensearch-py[async] |
-| Bi-encoder (embed) | sentence-transformers (`BAAI/bge-small-en-v1.5`) |
-| Cross-encoder (rerank) | sentence-transformers (`cross-encoder/ms-marco-MiniLM-L-6-v2`) |
+| Bi-encoder (embed) | sentence-transformers (`intfloat/multilingual-e5-small`) |
+| Cross-encoder (rerank) | sentence-transformers (`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`) |
 | LLM | Groq SDK; agents use `langchain-openai` against Groq's OpenAI-compatible API |
 | Agents / checkpointing | LangGraph + `langgraph-checkpoint-postgres` |
 | Auth | python-jose (JWT) + passlib[bcrypt] |

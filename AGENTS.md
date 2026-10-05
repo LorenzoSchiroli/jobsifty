@@ -4,14 +4,14 @@ This file provides guidance to AI coding agents when working with code in this r
 
 ## Project Overview
 
-**Jobsifty** is a job search ranking system. It scrapes job offers from multiple sources, enriches them with LLM-parsed metadata and dense embeddings, stores them in Postgres + OpenSearch, and serves a hybrid BM25 + k-NN search endpoint with cross-encoder reranking.
+**Jobsifty** is a job search ranking system. It scrapes job offers from multiple sources, enriches them with rule-based metadata and chunked multilingual embeddings (no LLM on the offer path), stores them in Postgres + OpenSearch, and serves a hybrid BM25 + k-NN search endpoint with cross-encoder reranking.
 
 ## Repository Structure
 
 This is a `uv` workspace with two packages:
 
 - **`backend/`** — FastAPI service: REST API (JWT auth), Postgres (SQLAlchemy async), OpenSearch hybrid search, outbox reconcile worker, LangGraph agent (advanced search)
-- **`ingestion/`** — Pipeline: job scraping, LLM-based offer parsing, company enrichment, embedding, and HTTP posting to backend
+- **`ingestion/`** — Pipeline: job scraping, deterministic offer parsing, company enrichment (LLM only for judgement fields), chunked embedding, and HTTP posting to backend
 
 Other top-level directories:
 - `frontend/` — React (Vite) SPA, served by nginx in Docker/k8s
@@ -134,7 +134,7 @@ BACKUP_SBOX_USER=...
 
 ```
 GROQ_MODEL_LARGE=...                    # advanced search
-GROQ_MODEL_BASE=...                     # offer/company parsing
+GROQ_MODEL_BASE=...                     # company enrichment (offers no longer use an LLM)
 OFFER_QUERY=...                         # ingestion Docker / CronJob query
 ACCESS_TOKEN_EXPIRE_DAYS=7
 CORS_ORIGINS=...                        # extra API browser origins (optional)
@@ -157,8 +157,8 @@ Keep values UNQUOTED: `kubectl create secret --from-env-file` stores quotes verb
    `search/query_understanding.py` is used only by the separate advanced-search
    endpoint (`POST /jobs/search/advanced`, `search/advanced/`), which is
    work-in-progress.
-2. **Hybrid retrieval** — OpenSearch hybrid query: BM25 on `description` + k-NN on `embedding` (384-dim, `BAAI/bge-small-en-v1.5`), results combined via min-max normalization with 50/50 weights (`search/retrieval.py`). Filter clauses are soft by default (scored `should` with boost=2) so near-misses still surface; words like "strictly" / "exactly" / "no exceptions" in the query set `SearchFilters.strict`, applying them as a hard `post_filter` with a larger prefetch (200).
-3. **Cross-encoder reranking** — `cross-encoder/ms-marco-MiniLM-L-6-v2` reranks retrieved hits on `summary_text`, returns top 20 (`search/reranker.py`)
+2. **Hybrid retrieval** — OpenSearch hybrid query: BM25 on `description` + nested k-NN on `chunks.embedding` (384-dim, `intfloat/multilingual-e5-small`, query encoded with a `query: ` prefix via `encode_query()`; a job scores by its best chunk via `score_mode: max`; hybrid queries drop `inner_hits`, so hits return the chunk vectors in `_source`), results combined via min-max normalization with 50/50 weights (`search/retrieval.py`). Filter clauses are soft by default (scored `should` with boost=2) so near-misses still surface; words like "strictly" / "exactly" / "no exceptions" in the query set `SearchFilters.strict`, applying them as a hard `post_filter` with a larger prefetch (200).
+3. **Cross-encoder reranking** — `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` (override with `RERANKER_MODEL`, `max_length=256`) reranks retrieved hits on the chunk closest to the query embedding, picked in Python from `_source.chunks` (falls back to `summary_text`, then title), returns top 20; torch threads follow `TORCH_NUM_THREADS` (default 2, matching the api pod's 2-CPU limit) (`search/reranker.py`)
 4. **Postgres round-trip** — full `Job` + `Company` records fetched by ID for the response
 
 **Auth**: `backend/auth/` + `routers/auth.py` — JWT bearer tokens (`POST /auth/register`, `POST /auth/login`, `GET /auth/me`); most endpoints depend on `get_current_user`.
@@ -179,9 +179,11 @@ Jobs and companies are written atomically to Postgres with an `outbox` row. Ever
 `ingestion/pipeline/__main__.py` runs end-to-end (`--hours` defaults to 72):
 1. Scrape job offers from sources (jobspy, adzuna, arbeitnow, remotive) via `ingestion.offer.scraping`
 2. Fetch full description if missing (requests + trafilatura; Playwright is used only by company-page scraping)
-3. LLM-parse each offer with Groq → `OfferSummary` (role_info, requirements, responsibilities, domain)
-4. Embed: `title + summary_text` → 384-dim vector via `BAAI/bge-small-en-v1.5`
-5. POST jobs and companies to backend REST API; enrich companies whose profile is mostly empty (≥ half fields null)
+3. Parse each offer **without an LLM** (`offer/parsing/`): `sections.py` splits the description on headings and drops company/benefits/apply/legal blocks and EEO boilerplate; `rules.py` derives seniority, employment/location type, office, salary, text language (lingua) and required languages from multilingual tables in `lexicon.py`. `OfferSummary` keeps its shape (requirements/responsibilities/role_info from sections, `domain=[]`).
+4. Embed: kept text → ≤4 chunks of ~400 tokens (64 overlap), each `title\nwindow`, encoded with `passage: ` by `intfloat/multilingual-e5-small` (`embedder.embed_chunks`)
+5. POST jobs (with `chunks`) and companies to the backend; companies whose profile is mostly empty are enriched deterministically first (JSON-LD → Wikidata → Glassdoor snippet regex → heuristics) and the Groq LLM only fills what is still missing (topic, financial health, …). LLM failures return nothing instead of an empty record, and a circuit breaker stops LLM calls for the rest of the run after a daily-quota/auth error. The run exits 1 when >20% of job posts fail.
+
+After changing the rules or the embedder, `uv run python -m ingestion.backfill` re-derives every stored job (pages `GET /jobs/?after=&limit=`). `POST /jobs/` overwrites the derived fields whenever the post carries a description (they are a pure function of it); without one it only fills empty fields. Companies always use fill-empty, since their data comes from network lookups and the LLM.
 
 ### Data Models
 
@@ -191,9 +193,9 @@ Jobs and companies are written atomically to Postgres with an `outbox` row. Ever
 - **`User`**, **`ApplicantProfile`** (`models.py`) — auth accounts and per-user CV text
 - **`PreferenceMemory`** (`search/advanced/models.py`) — one row per user; `memory_text` is LLM-distilled from advanced-search sessions in a background task, and `user_edited` marks a hand-written summary the distiller may only append to
 
-### OpenSearch Index (`jobs`)
+### OpenSearch Index (`jobs_v2`)
 
-Embedding dimension: 384. HNSW with cosine similarity via Lucene engine. Hybrid pipeline name: `hybrid-pipeline` (configured at startup via `PUT /_search/pipeline`).
+Chunk vectors live in a nested `chunks` field (`text` + 384-dim `embedding`); bootstrap drops the legacy `jobs` index and reconcile repopulates `jobs_v2` from Postgres (`jobs.chunks` JSONB). Embedding dimension: 384. HNSW with cosine similarity via Lucene engine. Hybrid pipeline name: `hybrid-pipeline` (configured at startup via `PUT /_search/pipeline`).
 
 ### DB Migrations
 
@@ -206,8 +208,9 @@ Alembic is in `backend/alembic/`. Add schema changes there; the compose backend 
 | API framework | FastAPI + uvicorn |
 | ORM / async DB | SQLAlchemy async + asyncpg |
 | Vector search | opensearch-py[async] |
-| Bi-encoder (embed) | sentence-transformers (`BAAI/bge-small-en-v1.5`) |
-| Cross-encoder (rerank) | sentence-transformers (`cross-encoder/ms-marco-MiniLM-L-6-v2`) |
+| Bi-encoder (embed) | sentence-transformers (`intfloat/multilingual-e5-small`) |
+| Cross-encoder (rerank) | sentence-transformers (`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`) |
+| Language detection | lingua-language-detector |
 | LLM | Groq SDK; agents use `langchain-openai` `ChatOpenAI` pointed at Groq's OpenAI-compatible API |
 | Agents / checkpointing | LangGraph + `langgraph-checkpoint-postgres` (advanced search) |
 | Auth | python-jose (JWT) + passlib[bcrypt] |
