@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ingestion.company.scraping.fetcher import fetch_html, find_relevant_links
 from ingestion.company.scraping.searcher import search_company_urls, search_financial
+from ingestion.company.scraping.wikidata import lookup as wikidata_lookup
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +19,11 @@ def scrape(name: str, location: str) -> tuple[dict, Timings]:
         return time.perf_counter()
 
     t = time.perf_counter()
-    urls, review_snippets, financial_snippets = search_company_urls(name, location)
-    t = tick("scrape / search", t)
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fut_wikidata = ex.submit(wikidata_lookup, name)
+        urls, review_snippets, financial_snippets = search_company_urls(name, location)
+        wikidata = fut_wikidata.result()
+    t = tick("scrape / search + wikidata", t)
 
     with ThreadPoolExecutor(max_workers=3) as ex:
         fut_website   = ex.submit(fetch_html, urls["website"])   if "website"   in urls else None
@@ -49,6 +53,7 @@ def scrape(name: str, location: str) -> tuple[dict, Timings]:
         "financial_html": financial_html,
         "review_snippets": review_snippets,
         "financial_snippets": financial_snippets,
+        "wikidata": wikidata,
     }, timings
 
 

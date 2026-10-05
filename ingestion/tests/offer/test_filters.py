@@ -60,7 +60,7 @@ def test_fetch_description_from_url_returns_stripped_text():
     mock_resp.text = "<html><body><p>Full job description here.</p></body></html>"
     mock_resp.raise_for_status = MagicMock()
 
-    with patch("offer.scraping.filters.requests.get", return_value=mock_resp):
+    with patch("ingestion.offer.scraping.filters.requests.get", return_value=mock_resp):
         result = _fetch_description_from_url("https://example.com/job/1")
 
     assert result is not None
@@ -69,7 +69,7 @@ def test_fetch_description_from_url_returns_stripped_text():
 
 
 def test_fetch_description_from_url_returns_none_on_error():
-    with patch("offer.scraping.filters.requests.get", side_effect=Exception("timeout")):
+    with patch("ingestion.offer.scraping.filters.requests.get", side_effect=Exception("timeout")):
         result = _fetch_description_from_url("https://example.com/job/1")
 
     assert result is None
@@ -80,7 +80,7 @@ def test_fetch_description_from_url_returns_none_on_empty_page():
     mock_resp.text = "<html><body></body></html>"
     mock_resp.raise_for_status = MagicMock()
 
-    with patch("offer.scraping.filters.requests.get", return_value=mock_resp):
+    with patch("ingestion.offer.scraping.filters.requests.get", return_value=mock_resp):
         result = _fetch_description_from_url("https://example.com/job/1")
 
     assert result is None

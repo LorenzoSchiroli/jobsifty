@@ -61,3 +61,4 @@ class EnrichedOffer(BaseModel):
     languages_required: list[str] = []
     text_language: str | None = None
     summary: OfferSummary | None = None
+    chunks: list[dict] = []

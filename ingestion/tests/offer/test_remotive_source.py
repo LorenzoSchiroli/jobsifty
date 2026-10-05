@@ -43,7 +43,7 @@ def _mock_get(response):
 
 
 def test_returns_matching_english_offers_within_hours():
-    with patch("offer.scraping.sources.remotive_source.requests.get", return_value=_mock_get(MOCK_RESPONSE)):
+    with patch("ingestion.offer.scraping.sources.remotive_source.requests.get", return_value=_mock_get(MOCK_RESPONSE)):
         results = RemotiveSource().fetch("python", hours=72)
 
     assert len(results) == 1
@@ -52,7 +52,7 @@ def test_returns_matching_english_offers_within_hours():
 
 
 def test_description_is_stripped_of_html():
-    with patch("offer.scraping.sources.remotive_source.requests.get", return_value=_mock_get(MOCK_RESPONSE)):
+    with patch("ingestion.offer.scraping.sources.remotive_source.requests.get", return_value=_mock_get(MOCK_RESPONSE)):
         results = RemotiveSource().fetch("python", hours=72)
 
     assert results[0].description is not None
@@ -61,5 +61,5 @@ def test_description_is_stripped_of_html():
 
 
 def test_returns_empty_on_error():
-    with patch("offer.scraping.sources.remotive_source.requests.get", side_effect=Exception("timeout")):
+    with patch("ingestion.offer.scraping.sources.remotive_source.requests.get", side_effect=Exception("timeout")):
         assert RemotiveSource().fetch("python", hours=72) == []

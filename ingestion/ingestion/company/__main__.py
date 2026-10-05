@@ -25,9 +25,8 @@ def main():
     location = args[1] if len(args) > 1 else ""
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
-        print("Error: GROQ_API_KEY is not set. Add it to your .env file.", file=sys.stderr)
-        sys.exit(1)
-    client = Groq(api_key=api_key)
+        print("GROQ_API_KEY is not set: deterministic enrichment only (no LLM).", file=sys.stderr)
+    client = Groq(api_key=api_key) if api_key else None
     t0 = time.perf_counter()
     profile, timings = enrich(name, location, client)
     elapsed = time.perf_counter() - t0

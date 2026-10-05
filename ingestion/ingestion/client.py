@@ -10,15 +10,26 @@ def _base() -> str:
     return url.rstrip("/")
 
 
-def post_job(offer: EnrichedOffer, embedding: list[float] | None = None) -> tuple[int, dict]:
+def post_job(offer: EnrichedOffer) -> tuple[int, dict]:
+    """Upsert a job; the payload carries `chunks`."""
     payload = offer.model_dump(mode="json")
     payload["company_name"] = payload.pop("company")
-    if embedding is not None:
-        payload["embedding"] = embedding
     resp = requests.post(f"{_base()}/jobs/", json=payload, timeout=30)
     if not resp.ok:
         raise requests.HTTPError(f"{resp.status_code} — {resp.text}", response=resp)
     return resp.status_code, resp.json()
+
+
+def list_jobs(after: str | None = None, limit: int = 500) -> tuple[list[dict], str | None]:
+    """One keyset page of stored jobs: (items, next_after)."""
+    params: dict = {"limit": limit}
+    if after:
+        params["after"] = after
+    resp = requests.get(f"{_base()}/jobs/", params=params, timeout=60)
+    if not resp.ok:
+        raise requests.HTTPError(f"{resp.status_code} — {resp.text}", response=resp)
+    body = resp.json()
+    return body["items"], body.get("next_after")
 
 
 def post_company(data: dict) -> tuple[int, dict]:

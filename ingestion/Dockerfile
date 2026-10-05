@@ -12,7 +12,7 @@ RUN uv sync --package ingestion --no-dev
 RUN uv run playwright install chromium && \
     uv run playwright install-deps chromium
 
-RUN uv run python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-en-v1.5')"
+RUN uv run python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/multilingual-e5-small')"
 
 COPY ingestion/ ./ingestion/
 

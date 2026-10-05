@@ -40,7 +40,7 @@ def _mock_get(response):
 
 
 def test_returns_matching_english_offers_within_days():
-    with patch("offer.scraping.sources.arbeitnow_source.requests.get", return_value=_mock_get(MOCK_RESPONSE)):
+    with patch("ingestion.offer.scraping.sources.arbeitnow_source.requests.get", return_value=_mock_get(MOCK_RESPONSE)):
         results = ArbeitnowSource().fetch("python", hours=72)
 
     assert len(results) == 1
@@ -50,7 +50,7 @@ def test_returns_matching_english_offers_within_days():
 
 
 def test_description_is_stripped_of_html():
-    with patch("offer.scraping.sources.arbeitnow_source.requests.get", return_value=_mock_get(MOCK_RESPONSE)):
+    with patch("ingestion.offer.scraping.sources.arbeitnow_source.requests.get", return_value=_mock_get(MOCK_RESPONSE)):
         results = ArbeitnowSource().fetch("python", hours=72)
 
     assert results[0].description is not None
@@ -60,5 +60,5 @@ def test_description_is_stripped_of_html():
 
 
 def test_returns_empty_on_network_error():
-    with patch("offer.scraping.sources.arbeitnow_source.requests.get", side_effect=Exception("timeout")):
+    with patch("ingestion.offer.scraping.sources.arbeitnow_source.requests.get", side_effect=Exception("timeout")):
         assert ArbeitnowSource().fetch("python", hours=72) == []

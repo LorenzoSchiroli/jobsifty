@@ -1,12 +1,9 @@
 import argparse
 import json
 import logging
-import os
-import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from groq import Groq
 from tabulate import tabulate
 
 from ingestion.offer.offer import enrich_all
@@ -47,14 +44,9 @@ def main() -> None:
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Save full results (including description and LLM output) to data/offers.json",
+        help="Save full results (including description and parsed fields) to data/offers.json",
     )
     args = parser.parse_args()
-
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        print("Error: GROQ_API_KEY is not set. Add it to your .env file.", file=sys.stderr)
-        sys.exit(1)
 
     source_names = [s.strip() for s in args.sources.split(",")]
     unknown = [s for s in source_names if s not in _ALL_SOURCES]
@@ -62,11 +54,10 @@ def main() -> None:
         parser.error(f"Unknown sources: {', '.join(unknown)}. Available: {', '.join(_ALL_SOURCES)}")
 
     sources = [_ALL_SOURCES[name]() for name in source_names]
-    client = Groq(api_key=api_key)
 
     print(f"Searching and parsing '{args.query}' (last {args.hours}h)...\n")
 
-    results = enrich_all(args.query, args.hours, client, sources)
+    results = enrich_all(args.query, args.hours, sources)
 
     if not results:
         print("No offers found.")

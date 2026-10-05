@@ -14,7 +14,7 @@ def test_search_returns_website_and_glassdoor_snippets():
             return glassdoor_hits
         return website_hits
 
-    with patch("company.scraping.searcher._search", side_effect=mock_search):
+    with patch("ingestion.company.scraping.searcher._search", side_effect=mock_search):
         urls, snippets, financial_snippets = search_company_urls("Acme", "Berlin")
 
     assert urls["website"] == "https://acme.com"
@@ -23,7 +23,7 @@ def test_search_returns_website_and_glassdoor_snippets():
 
 
 def test_search_omits_missing_sources():
-    with patch("company.scraping.searcher._search", return_value=[]):
+    with patch("ingestion.company.scraping.searcher._search", return_value=[]):
         urls, snippets, financial_snippets = search_company_urls("Unknown Corp", "Nowhere")
 
     assert urls == {}
@@ -41,7 +41,7 @@ def test_search_handles_search_exception_gracefully():
             return glassdoor_hits
         raise Exception("rate limited")
 
-    with patch("company.scraping.searcher._search", side_effect=mock_search):
+    with patch("ingestion.company.scraping.searcher._search", side_effect=mock_search):
         urls, snippets, financial_snippets = search_company_urls("Acme", "Berlin")
 
     assert "website" not in urls
@@ -58,7 +58,7 @@ def test_search_returns_partial_when_glassdoor_empty():
             return []
         return website_hits
 
-    with patch("company.scraping.searcher._search", side_effect=mock_search):
+    with patch("ingestion.company.scraping.searcher._search", side_effect=mock_search):
         urls, snippets, financial_snippets = search_company_urls("Acme", "Berlin")
 
     assert urls == {"website": "https://acme.com"}
@@ -72,13 +72,13 @@ def test_financial_query_uses_registration_number_when_provided():
 
 def test_financial_query_falls_back_to_baseline_without_registration_numbers():
     query = _financial_query("Acme", " Berlin", None)
-    assert '"Acme"' in query
+    assert query.startswith("Acme Berlin")
     assert "financial health" in query
 
 
 def test_search_financial_uses_registration_number_in_query():
     hits = [{"href": "https://bundesanzeiger.de/acme", "body": "Revenue €50M."}]
-    with patch("company.scraping.searcher._search", return_value=hits) as mock_search:
+    with patch("ingestion.company.scraping.searcher._search", return_value=hits) as mock_search:
         url, snippets = search_financial("Acme", "Berlin", {"VAT": "DE123456789"})
 
     query_used = mock_search.call_args[0][0]
@@ -88,7 +88,7 @@ def test_search_financial_uses_registration_number_in_query():
 
 
 def test_search_financial_falls_back_to_baseline_without_registration_numbers():
-    with patch("company.scraping.searcher._search", return_value=[]) as mock_search:
+    with patch("ingestion.company.scraping.searcher._search", return_value=[]) as mock_search:
         search_financial("Acme", "Berlin")
 
     query_used = mock_search.call_args[0][0]
@@ -108,7 +108,7 @@ def test_search_returns_financial_snippets():
             return []
         return website_hits
 
-    with patch("company.scraping.searcher._search", side_effect=mock_search):
+    with patch("ingestion.company.scraping.searcher._search", side_effect=mock_search):
         urls, glassdoor_snippets, financial_snippets = search_company_urls("Acme", "Berlin")
 
     assert urls["website"] == "https://acme.com"

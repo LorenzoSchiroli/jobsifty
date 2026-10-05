@@ -3,14 +3,14 @@ import logging
 import os
 import re
 from bs4 import BeautifulSoup
-from groq import Groq
+from groq import APIStatusError, Groq
 
 from ingestion.company.models import CompanyExtraction
 from ingestion.utils.text import MAX_COMPANY_DESCRIPTION_CHARS
 
 logger = logging.getLogger(__name__)
 
-_MODEL = os.environ["GROQ_MODEL_BASE"]
+_MODEL = os.environ.get("GROQ_MODEL_BASE", "")
 
 _ORG_TYPES = ("Organization", "LocalBusiness", "Corporation")
 
@@ -88,6 +88,8 @@ def extract_jsonld(html: str) -> dict:
 
             if url := data.get("url"):
                 result["website"] = url
+            if description := data.get("description"):
+                result["description"] = description
             if rating := data.get("aggregateRating"):
                 try:
                     result["review_score"] = float(rating["ratingValue"])
@@ -112,12 +114,55 @@ def extract_jsonld(html: str) -> dict:
     return result
 
 
+# Circuit breaker: once Groq says the key is unusable (401/403) or the daily quota is gone,
+# every further call this run would fail too — stop calling instead of burning time.
+_RATE_LIMIT_TRIP_AFTER = 3
+_breaker_open = False
+_consecutive_rate_limits = 0
+
+
+def breaker_open() -> bool:
+    return _breaker_open
+
+
+def reset_breaker() -> None:
+    global _breaker_open, _consecutive_rate_limits
+    _breaker_open = False
+    _consecutive_rate_limits = 0
+
+
+def _trip(reason: str) -> None:
+    global _breaker_open
+    if not _breaker_open:
+        _breaker_open = True
+        logger.warning("LLM circuit breaker tripped (%s); skipping LLM calls for the rest of this run", reason)
+
+
+def _record_failure(e: Exception) -> None:
+    global _consecutive_rate_limits
+    status = e.status_code if isinstance(e, APIStatusError) else None
+    if status in (401, 403):
+        _trip(f"HTTP {status}")
+    elif status == 429:
+        _consecutive_rate_limits += 1
+        message = str(e).lower()
+        if "per day" in message or "(tpd)" in message or "(rpd)" in message:
+            _trip("daily quota exhausted")
+        elif _consecutive_rate_limits >= _RATE_LIMIT_TRIP_AFTER:
+            _trip(f"{_consecutive_rate_limits} consecutive rate limits")
+
+
 def extract_with_llm(
     name: str,
     location: str,
-    client: Groq,
+    client: Groq | None,
     sources: dict,
-) -> CompanyExtraction:
+) -> CompanyExtraction | None:
+    """LLM extraction; None when there is no client, the breaker is open, or the call fails."""
+    global _consecutive_rate_limits
+    if client is None or _breaker_open:
+        return None
+
     sources_json = json.dumps(sources, ensure_ascii=False)[:MAX_COMPANY_DESCRIPTION_CHARS]
     prompt = _LLM_PROMPT.format(name=name, location=location, sources_json=sources_json)
 
@@ -127,8 +172,15 @@ def extract_with_llm(
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
         )
+    except Exception as e:
+        logger.warning("LLM extraction failed: %s", e)
+        _record_failure(e)
+        return None
+    _consecutive_rate_limits = 0
+
+    try:
         content = _strip_markdown_json(response.choices[0].message.content)
         return CompanyExtraction.model_validate_json(content)
     except Exception as e:
-        logger.warning("LLM extraction failed: %s", e)
-        return CompanyExtraction()
+        logger.warning("LLM returned unusable output: %s", e)
+        return None

@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 from ingestion.offer.models import EnrichedOffer
-from ingestion.client import post_job, post_company
+from ingestion.client import list_jobs, post_job, post_company
 
 
 @pytest.fixture(autouse=True)
@@ -89,15 +89,28 @@ def test_post_company_raises_on_http_error():
             post_company({"name": "Acme"})
 
 
-def test_post_job_includes_embedding_when_provided():
+def test_post_job_sends_chunks():
+    chunks = [{"text": "ML Engineer\nBuild models", "embedding": [0.1, 0.2]}]
     with patch("ingestion.client.requests.post") as mock_post:
         mock_post.return_value = _resp(201, {"id": "abc"})
-        post_job(_offer(), embedding=[0.1, 0.2, 0.3])
-    assert mock_post.call_args.kwargs["json"]["embedding"] == [0.1, 0.2, 0.3]
+        post_job(_offer(chunks=chunks))
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload["chunks"] == chunks
+    assert "embedding" not in payload
 
 
-def test_post_job_omits_embedding_when_none():
-    with patch("ingestion.client.requests.post") as mock_post:
-        mock_post.return_value = _resp(201, {"id": "abc"})
-        post_job(_offer(), embedding=None)
-    assert "embedding" not in mock_post.call_args.kwargs["json"]
+def test_list_jobs_passes_keyset_params():
+    with patch("ingestion.client.requests.get") as mock_get:
+        mock_get.return_value = _resp(200, {"items": [{"id": "1"}], "next_after": "1"})
+        items, next_after = list_jobs(after="0", limit=10)
+    assert mock_get.call_args.args[0] == "http://localhost:8000/jobs/"
+    assert mock_get.call_args.kwargs["params"] == {"limit": 10, "after": "0"}
+    assert items == [{"id": "1"}] and next_after == "1"
+
+
+def test_list_jobs_first_page_has_no_after():
+    with patch("ingestion.client.requests.get") as mock_get:
+        mock_get.return_value = _resp(200, {"items": [], "next_after": None})
+        items, next_after = list_jobs()
+    assert "after" not in mock_get.call_args.kwargs["params"]
+    assert items == [] and next_after is None
