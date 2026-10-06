@@ -2,8 +2,8 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-def _hit(job_id, summary):
-    return {"_source": {"job_id": job_id, "summary_text": summary}}
+def _hit(job_id, title):
+    return {"_source": {"job_id": job_id, "title": title}}
 
 
 @pytest.mark.asyncio

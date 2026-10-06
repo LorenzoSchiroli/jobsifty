@@ -3,7 +3,7 @@ import logging
 import uuid
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
-from sqlalchemy.orm import defer, selectinload
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from opensearchpy import AsyncOpenSearch
 from opensearchpy.helpers import async_bulk
@@ -24,26 +24,14 @@ RECONCILE_WINDOW_DAYS = 30
 RETENTION_MAX_AGE_DAYS = 30
 
 
-def _flatten_summary(summary: dict | None) -> str:
-    if not summary:
-        return ""
-    parts = (
-        summary.get("role_info", []) +
-        summary.get("requirements", []) +
-        summary.get("responsibilities", []) +
-        summary.get("domain", [])
-    )
-    return " ".join(parts)
-
-
 def _build_job_doc(job: Job) -> dict:
     c = job.company
     return {
         "job_id": str(job.id),
         "company_id": str(job.company_id),
+        "company_name": c.name if c else None,
         "title": job.title,
         "description": job.description or "",
-        "summary_text": _flatten_summary(job.summary),
         "chunks": [{"text": c["text"], "embedding": c["embedding"]} for c in job.chunks or []],
         "employment_type": job.employment_type,
         "location_type": job.location_type,
@@ -135,7 +123,7 @@ async def reconcile(
             jobs = (
                 await session.execute(
                     select(Job)
-                    .options(selectinload(Job.company), defer(Job.embedding))
+                    .options(selectinload(Job.company))
                     .where(Job.id.in_(slice_ids))
                 )
             ).scalars().all()

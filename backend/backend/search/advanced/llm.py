@@ -71,9 +71,28 @@ async def generate_clarify_questions(query: str, cv_text: str, preference_memory
         return []
 
 
+# Each scored job is sent as title + company + the start of its cleaned text;
+# ten jobs at this size keep a fit-scoring call around 5k tokens.
+FIT_SCORED_JOBS = 10
+FIT_TEXT_CHARS = 1500
+CRITIQUE_TEXT_CHARS = 300
+
+
+def job_text(hit: dict, limit: int) -> str:
+    """Title, company and the start of the boilerplate-stripped description."""
+    source = hit["_source"]
+    head = source.get("title") or ""
+    if source.get("company_name"):
+        head += f" at {source['company_name']}"
+    chunks = source.get("chunks") or []
+    # The first chunk is "title\n<start of the cleaned text>".
+    body = chunks[0]["text"].split("\n", 1)[1] if chunks and "\n" in chunks[0]["text"] else ""
+    return f"{head}\n{body}".strip()[:limit]
+
+
 async def critique_results(query: str, hits: list[dict]) -> dict:
     llm = large_llm()
-    titles = "\n".join(f"- {h['_source'].get('summary_text', '')[:200]}" for h in hits[:10])
+    titles = "\n".join(f"- {job_text(h, CRITIQUE_TEXT_CHARS)}" for h in hits[:10])
     resp = await llm.ainvoke([
         SystemMessage(content=_CRITIQUE_SYSTEM),
         HumanMessage(content=f"Query:\n{query}\n\nTop results:\n{titles or '(none)'}"),
@@ -88,8 +107,9 @@ async def critique_results(query: str, hits: list[dict]) -> dict:
 
 async def score_fit(cv_text: str, preference_memory: str, hits: list[dict]) -> list[dict]:
     llm = large_llm()
+    hits = hits[:FIT_SCORED_JOBS]
     jobs_blob = "\n".join(
-        f'{{"job_id": "{h["_source"].get("job_id")}", "summary": "{h["_source"].get("summary_text", "")[:400]}"}}'
+        json.dumps({"job_id": h["_source"].get("job_id"), "job": job_text(h, FIT_TEXT_CHARS)}, ensure_ascii=False)
         for h in hits
     )
     resp = await llm.ainvoke([

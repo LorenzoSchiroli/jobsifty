@@ -17,7 +17,7 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 # fields that are still empty, so a failed description fetch can't wipe them.
 _DERIVED_FIELDS = (
     "employment_type", "location_type", "office", "seniority", "salary_range",
-    "languages_required", "text_language", "summary", "chunks",
+    "languages_required", "text_language", "chunks",
 )
 
 

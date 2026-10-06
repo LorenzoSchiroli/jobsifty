@@ -1,7 +1,8 @@
-"""add chunk embeddings to jobs
+"""replace the job summary and its embedding with chunk embeddings
 
 Ingestion now derives job fields deterministically and embeds the
-description as up to a few chunks.
+description as up to a few chunks; the LLM summary and the single
+summary embedding are no longer produced or read.
 
 Revision ID: 013
 Revises: 012
@@ -20,7 +21,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     op.add_column("jobs", sa.Column("chunks", postgresql.JSONB(), nullable=True))
+    op.drop_column("jobs", "summary")
+    op.drop_column("jobs", "embedding")
 
 
 def downgrade() -> None:
+    op.add_column("jobs", sa.Column("embedding", postgresql.ARRAY(sa.Float()), nullable=True))
+    op.add_column("jobs", sa.Column("summary", postgresql.JSONB(), nullable=True))
     op.drop_column("jobs", "chunks")

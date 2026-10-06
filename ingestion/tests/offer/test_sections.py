@@ -36,10 +36,10 @@ def test_split_sections_drops_boilerplate_sections():
     assert "Build and maintain data pipelines" in s.kept_text
 
 
-def test_split_sections_fills_lists_without_bullets():
+def test_split_sections_keeps_role_sections():
     s = split_sections(DESCRIPTION)
-    assert s.responsibilities == ["Build and maintain data pipelines", "Train machine learning models"]
-    assert s.requirements == ["3+ years of Python experience", "Experience with Spark and Airflow"]
+    assert "Train machine learning models" in s.kept_text
+    assert "3+ years of Python experience" in s.kept_text
 
 
 def test_no_headings_keeps_everything_but_eeo():
@@ -48,18 +48,18 @@ def test_no_headings_keeps_everything_but_eeo():
     assert not s.headings_found
     assert "We build data tools in Berlin." in s.kept_text
     assert "equal opportunity" not in s.kept_text
-    assert s.other == ["We build data tools in Berlin.", "You will write Python every day."]
+    assert s.kept_text == "We build data tools in Berlin.\nYou will write Python every day."
 
 
 def test_inline_heading():
     s = split_sections("Requirements: Python and SQL experience\nBenefits: free lunch for everyone")
-    assert s.requirements == ["Python and SQL experience"]
+    assert s.kept_text == "Python and SQL experience"
     assert "free lunch" not in s.kept_text
 
 
 def test_empty_description():
     s = split_sections(None)
-    assert s.kept_text == "" and s.requirements == []
+    assert s.kept_text == "" and not s.headings_found
 
 
 def test_clean_markdown_unescapes():

@@ -13,7 +13,7 @@ from ingestion.utils.text import truncate_description
 logger = logging.getLogger(__name__)
 
 def derive(offer: JobOffer) -> EnrichedOffer:
-    """Parse fields, build the summary and embed chunks — no network, no LLM."""
+    """Parse fields and embed chunks — no network, no LLM."""
     extraction, body = parse_with_text(offer)
     return EnrichedOffer(
         title=offer.title,

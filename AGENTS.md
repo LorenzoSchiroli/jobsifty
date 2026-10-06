@@ -158,12 +158,12 @@ Keep values UNQUOTED: `kubectl create secret --from-env-file` stores quotes verb
    endpoint (`POST /jobs/search/advanced`, `search/advanced/`), which is
    work-in-progress.
 2. **Hybrid retrieval** — OpenSearch hybrid query: BM25 on `description` + nested k-NN on `chunks.embedding` (384-dim, `intfloat/multilingual-e5-small`, query encoded with a `query: ` prefix via `encode_query()`; a job scores by its best chunk via `score_mode: max`; hybrid queries drop `inner_hits`, so hits return the chunk vectors in `_source`), results combined via min-max normalization with 50/50 weights (`search/retrieval.py`). Filter clauses are soft by default (scored `should` with boost=2) so near-misses still surface; words like "strictly" / "exactly" / "no exceptions" in the query set `SearchFilters.strict`, applying them as a hard `post_filter` with a larger prefetch (200).
-3. **Cross-encoder reranking** — `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` (override with `RERANKER_MODEL`, `max_length=256`) reranks retrieved hits on the chunk closest to the query embedding, picked in Python from `_source.chunks` (falls back to `summary_text`, then title), returns top 20; torch threads follow `TORCH_NUM_THREADS` (default 2, matching the api pod's 2-CPU limit) (`search/reranker.py`)
+3. **Cross-encoder reranking** — `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` (override with `RERANKER_MODEL`, `max_length=256`) reranks retrieved hits on the chunk closest to the query embedding, picked in Python from `_source.chunks` (title if a job has no chunks), returns top 20; torch threads follow `TORCH_NUM_THREADS` (default 2, matching the api pod's 2-CPU limit) (`search/reranker.py`)
 4. **Postgres round-trip** — full `Job` + `Company` records fetched by ID for the response
 
 **Auth**: `backend/auth/` + `routers/auth.py` — JWT bearer tokens (`POST /auth/register`, `POST /auth/login`, `GET /auth/me`); most endpoints depend on `get_current_user`.
 
-**Advanced search (WIP)** — `POST /jobs/search/advanced` (`routers/search_advanced.py`, `search/advanced/`): a Postgres-checkpointed LangGraph agent that uses the Groq LLM and per-user preference memory. It interrupts with up to 2 clarifying questions (answered via `POST /jobs/search/advanced/resume`), can critique/refine its retrieval, and returns fit-scored results. Requires an uploaded CV (`ApplicantProfile`).
+**Advanced search (WIP)** — `POST /jobs/search/advanced` (`routers/search_advanced.py`, `search/advanced/`): a Postgres-checkpointed LangGraph agent that uses the Groq LLM and per-user preference memory. It interrupts with up to 2 clarifying questions (answered via `POST /jobs/search/advanced/resume`), can critique/refine its retrieval, and returns fit-scored results (the top 10 jobs, each sent to the LLM as title + company + the first 1,500 chars of its cleaned text). Requires an uploaded CV (`ApplicantProfile`).
 
 ### Backend Processes & Outbox Pattern
 
@@ -179,7 +179,7 @@ Jobs and companies are written atomically to Postgres with an `outbox` row. Ever
 `ingestion/pipeline/__main__.py` runs end-to-end (`--hours` defaults to 72):
 1. Scrape job offers from sources (jobspy, adzuna, arbeitnow, remotive) via `ingestion.offer.scraping`
 2. Fetch full description if missing (requests + trafilatura; Playwright is used only by company-page scraping)
-3. Parse each offer **without an LLM** (`offer/parsing/`): `sections.py` splits the description on headings and drops company/benefits/apply/legal blocks and EEO boilerplate; `rules.py` derives seniority, employment/location type, office, salary, text language (lingua) and required languages from multilingual tables in `lexicon.py`. `OfferSummary` keeps its shape (requirements/responsibilities/role_info from sections, `domain=[]`).
+3. Parse each offer **without an LLM** (`offer/parsing/`): `sections.py` splits the description on headings and drops company/benefits/apply/legal blocks and EEO boilerplate; `rules.py` derives seniority, employment/location type, office, salary, text language (lingua) and required languages from multilingual tables in `lexicon.py`. There is no job summary any more: the kept text is only chunked and embedded.
 4. Embed: kept text → ≤4 chunks of ~400 tokens (64 overlap), each `title\nwindow`, encoded with `passage: ` by `intfloat/multilingual-e5-small` (`embedder.embed_chunks`)
 5. POST jobs (with `chunks`) and companies to the backend; companies whose profile is mostly empty are enriched deterministically first (JSON-LD → Wikidata → Glassdoor snippet regex → heuristics) and the Groq LLM only fills what is still missing (topic, financial health, …). LLM failures return nothing instead of an empty record, and a circuit breaker stops LLM calls for the rest of the run after a daily-quota/auth error. The run exits 1 when >20% of job posts fail.
 
@@ -188,7 +188,7 @@ After changing the rules or the embedder, `uv run python -m ingestion.backfill` 
 ### Data Models
 
 - **`Company`** — unique by `name`; enriched with employee_count, founded_year, review_score, financial_health_score (int 0-10), is_consulting, is_startup, industry, country
-- **`Job`** — unique by `url`; stores parsed fields (employment_type, location_type, seniority, languages_required) and `summary` JSONB
+- **`Job`** — unique by `url`; stores parsed fields (employment_type, location_type, seniority, languages_required) and `chunks` JSONB (text + 384-d embedding each)
 - **`Outbox`** — transient sync table; `processed_at` is NULL until worker drains it
 - **`User`**, **`ApplicantProfile`** (`models.py`) — auth accounts and per-user CV text
 - **`PreferenceMemory`** (`search/advanced/models.py`) — one row per user; `memory_text` is LLM-distilled from advanced-search sessions in a background task, and `user_edited` marks a hand-written summary the distiller may only append to

@@ -186,8 +186,7 @@ daily `pg_dump` + rclone upload to a Hetzner Storage Box on a 7-day rolling
 retention.
 
 The `jobs_v2` index carries the nested `chunks` (text + embedding; the reranker
-re-picks the best chunk from them, since hybrid queries drop `inner_hits`), the text fields used for scoring (`description` for BM25,
-`summary_text` as reranker fallback), and the keyword/numeric
+re-picks the best chunk from them, since hybrid queries drop `inner_hits`), `description` for BM25, `company_name` for the advanced-search prompts, and the keyword/numeric
 fields the filter clauses target — `employment_type`, `location_type`,
 `seniority`, `languages_required`, `is_consulting`, `is_startup`, `industry`,
 `country`, `review_score`, `financial_health_score`, `created_at`.
@@ -432,7 +431,7 @@ Most endpoints depend on `get_current_user`.
   review score, financial health score (0–10), consulting/startup flags, industry,
   country.
 - **`Job`** — unique by `url`; parsed fields (employment type, location type,
-  seniority, required languages) plus a `summary` JSONB.
+  seniority, required languages) plus `chunks` JSONB (text + embedding each).
 - **`Outbox`** — transient sync table; `processed_at` is NULL until the worker
   drains it.
 - **`User`**, **`ApplicantProfile`**, **`PreferenceMemory`** —

@@ -1,4 +1,4 @@
-from ingestion.offer.models import OfferExtraction, OfferSummary
+from ingestion.offer.models import OfferExtraction
 from ingestion.offer.parsing import rules
 from ingestion.offer.parsing.sections import clean_markdown, split_sections
 from ingestion.offer.scraping.models import JobOffer
@@ -9,7 +9,7 @@ def parse(offer: JobOffer) -> OfferExtraction:
 
 
 def parse_with_text(offer: JobOffer) -> tuple[OfferExtraction, str]:
-    """Deterministic extraction: rules for the structured fields, sections for the summary.
+    """Deterministic extraction of the structured fields with rules.
 
     Also returns the boilerplate-stripped text the embedder should chunk.
     """
@@ -28,10 +28,5 @@ def parse_with_text(offer: JobOffer) -> tuple[OfferExtraction, str]:
         salary_range=rules.salary_range(f"{offer.title}\n{description}"),
         languages_required=rules.languages_required(body, text_language),
         text_language=text_language,
-        summary=OfferSummary(
-            requirements=sections.requirements,
-            responsibilities=sections.responsibilities,
-            role_info=sections.other,
-        ),
     )
     return extraction, body

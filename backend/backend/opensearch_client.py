@@ -15,9 +15,9 @@ _INDEX_BODY = {
         "properties": {
             "job_id":                   {"type": "keyword"},
             "company_id":               {"type": "keyword"},
+            "company_name":             {"type": "keyword"},
             "title":                    {"type": "text"},
             "description":              {"type": "text"},
-            "summary_text":             {"type": "text"},
             "chunks": {
                 "type": "nested",
                 "properties": {

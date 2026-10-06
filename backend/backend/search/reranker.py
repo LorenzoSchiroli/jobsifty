@@ -14,10 +14,7 @@ def _best_chunk(chunks: list[dict], query_embedding: list[float]) -> str | None:
 
 def _hit_text(hit: dict, query_embedding: list[float]) -> str:
     source = hit.get("_source", {})
-    best_chunk = _best_chunk(source.get("chunks") or [], query_embedding)
-    if best_chunk:
-        return best_chunk
-    return source.get("summary_text") or source.get("title") or ""
+    return _best_chunk(source.get("chunks") or [], query_embedding) or source.get("title") or ""
 
 
 def rerank(

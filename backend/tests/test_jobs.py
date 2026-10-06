@@ -96,15 +96,19 @@ async def test_get_job_returns_404_when_not_found(client):
     assert resp.status_code == 404
 
 
-async def test_create_job_accepts_summary_and_embedding(client):
+async def test_create_job_accepts_chunks(client, db_session):
+    from sqlalchemy import select
+    from backend.models import Job
+    chunks = [{"text": "ML Engineer\nbuild models", "embedding": [0.1] * 384}]
     resp = await client.post("/jobs/", json={
         "url": "https://example.com/job/schema-test",
         "title": "ML Engineer",
         "company_name": "Acme",
-        "summary": {"role_info": ["builds models"], "requirements": ["Python"], "responsibilities": [], "domain": []},
-        "embedding": [0.1] * 384,
+        "chunks": chunks,
     })
     assert resp.status_code == 201
+    job = (await db_session.execute(select(Job).where(Job.url == "https://example.com/job/schema-test"))).scalar_one()
+    assert job.chunks == chunks
 
 
 from sqlalchemy import select
@@ -116,45 +120,12 @@ async def test_job_upsert_creates_outbox_event(client, db_session):
         "url": "https://example.com/outbox-test",
         "title": "Engineer",
         "company_name": "Acme",
-        "embedding": [0.5] * 384,
     })
     result = await db_session.execute(
         select(Outbox).where(Outbox.event_type == "job_upserted")
     )
     events = result.scalars().all()
     assert len(events) == 1
-
-
-async def test_create_job_persists_embedding_in_postgres(client, db_session):
-    resp = await client.post("/jobs/", json={
-        "url": "https://example.com/embed-persist",
-        "title": "Engineer",
-        "company_name": "Acme",
-        "embedding": [0.25] * 384,
-    })
-    job_id = resp.json()["id"]
-    result = await db_session.execute(select(Job).where(Job.id == job_id))
-    job = result.scalar_one()
-    assert job.embedding == [0.25] * 384
-
-
-async def test_upsert_job_does_not_overwrite_existing_embedding(client, db_session):
-    await client.post("/jobs/", json={
-        "url": "https://example.com/embed-fill-only",
-        "title": "Engineer",
-        "company_name": "Acme",
-        "embedding": [0.1] * 384,
-    })
-    resp = await client.post("/jobs/", json={
-        "url": "https://example.com/embed-fill-only",
-        "title": "Engineer",
-        "company_name": "Acme",
-        "embedding": [0.9] * 384,
-    })
-    job_id = resp.json()["id"]
-    result = await db_session.execute(select(Job).where(Job.id == job_id))
-    job = result.scalar_one()
-    assert job.embedding == [0.1] * 384
 
 
 _CHUNKS_V1 = [{"text": "old chunk", "embedding": [0.1] * 384}]
@@ -167,12 +138,12 @@ async def test_post_with_description_overwrites_derived_fields(client, db_sessio
     await client.post("/jobs/", json={
         "url": "https://example.com/derive/1", "title": "ML Engineer", "company_name": "Stripe",
         "description": "Senior ML role in Berlin.", "seniority": "senior", "office": "berlin",
-        "summary": {"requirements": []}, "chunks": _CHUNKS_V1,
+        "chunks": _CHUNKS_V1,
     })
     resp = await client.post("/jobs/", json={
         "url": "https://example.com/derive/1", "title": "ML Engineer", "company_name": "Stripe",
         "description": "Lead ML role, remote.", "location": "Berlin", "seniority": "lead", "office": None,
-        "summary": {"requirements": ["python"]}, "chunks": _CHUNKS_V2,
+        "chunks": _CHUNKS_V2,
     })
     assert resp.status_code == 200
     data = resp.json()
@@ -181,7 +152,6 @@ async def test_post_with_description_overwrites_derived_fields(client, db_sessio
     assert data["location"] == "Berlin"
     job = (await db_session.execute(select(Job).where(Job.url == "https://example.com/derive/1"))).scalar_one()
     await db_session.refresh(job)
-    assert job.summary == {"requirements": ["python"]}
     assert job.chunks == _CHUNKS_V2
 
 

@@ -48,8 +48,6 @@ class JobRequest(BaseModel):
     salary_range: str | None = None
     languages_required: list[str] = []
     text_language: str | None = None
-    summary: dict | None = None
-    embedding: list[float] | None = None
     chunks: list[JobChunk] | None = None
 
 

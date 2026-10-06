@@ -66,7 +66,7 @@ async def test_search_returns_200_with_ranked_jobs(search_client):
         await session.commit()
 
     mock_os.search.return_value = {
-        "hits": {"hits": [{"_source": {"job_id": str(job_id), "summary_text": "ml engineer"}}]}
+        "hits": {"hits": [{"_source": {"job_id": str(job_id), "title": "ml engineer"}}]}
     }
 
     resp = await ac.post("/jobs/search", json={"query": "ml engineer"})

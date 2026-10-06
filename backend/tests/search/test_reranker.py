@@ -4,8 +4,8 @@ from backend.search.reranker import rerank
 Q = [1.0, 0.0]
 
 
-def _hit(job_id: str, summary_text: str = "") -> dict:
-    return {"_source": {"job_id": job_id, "summary_text": summary_text}}
+def _hit(job_id: str, title: str = "") -> dict:
+    return {"_source": {"job_id": job_id, "title": title}}
 
 
 def test_sorts_by_score_descending():
@@ -22,14 +22,6 @@ def test_respects_top_k():
     assert len(result) == 20
 
 
-def test_falls_back_to_empty_string_for_missing_summary():
-    reranker = MagicMock()
-    reranker.predict.return_value = [0.1]
-    rerank(reranker, [{"_source": {"job_id": "a"}}], "x", Q)
-    pairs = reranker.predict.call_args[0][0]
-    assert pairs[0][1] == ""
-
-
 def test_builds_correct_pairs():
     reranker = MagicMock()
     reranker.predict.return_value = [0.5]
@@ -40,7 +32,7 @@ def test_builds_correct_pairs():
 def test_picks_chunk_closest_to_query_embedding():
     reranker = MagicMock()
     reranker.predict.return_value = [0.5]
-    hit = {"_source": {"job_id": "a", "summary_text": "summary", "chunks": [
+    hit = {"_source": {"job_id": "a", "chunks": [
         {"text": "company benefits", "embedding": [0.0, 1.0]},
         {"text": "pytorch distributed training", "embedding": [1.0, 0.0]},
     ]}}
@@ -48,11 +40,8 @@ def test_picks_chunk_closest_to_query_embedding():
     assert reranker.predict.call_args[0][0] == [("pytorch", "pytorch distributed training")]
 
 
-def test_no_chunks_falls_back_to_summary_then_title():
+def test_job_without_chunks_is_scored_on_its_title():
     reranker = MagicMock()
-    reranker.predict.return_value = [0.5, 0.4]
-    no_chunks = {"_source": {"job_id": "a", "summary_text": "ml summary", "chunks": []}}
-    title_only = {"_source": {"job_id": "b", "summary_text": "", "title": "Data Scientist"}}
-    rerank(reranker, [no_chunks, title_only], "x", Q)
-    pairs = reranker.predict.call_args[0][0]
-    assert pairs == [("x", "ml summary"), ("x", "Data Scientist")]
+    reranker.predict.return_value = [0.5]
+    rerank(reranker, [{"_source": {"job_id": "a", "title": "Data Scientist", "chunks": []}}], "x", Q)
+    assert reranker.predict.call_args[0][0] == [("x", "Data Scientist")]

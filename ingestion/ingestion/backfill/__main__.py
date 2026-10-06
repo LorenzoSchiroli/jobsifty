@@ -1,6 +1,6 @@
 """Re-derive every stored job with the current parser and embedder.
 
-Pages through GET /jobs/, rebuilds fields, summary and chunks locally (no LLM)
+Pages through GET /jobs/, rebuilds fields and chunks locally (no LLM)
 and POSTs them back; a post with a description makes the backend overwrite the
 previously derived fields.
 

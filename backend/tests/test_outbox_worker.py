@@ -41,7 +41,8 @@ async def test_reconcile_reindexes_changed_job_even_when_present(db_session):
     actions = list(mock_bulk.call_args.args[1])
     assert actions[0]["_id"] == str(job.id)
     assert actions[0]["_source"]["chunks"] == [{"text": "Engineer\npython", "embedding": [0.1] * 384}]
-    assert "embedding" not in actions[0]["_source"]
+    assert actions[0]["_source"]["company_name"] == "Acme"
+    assert "summary_text" not in actions[0]["_source"]
     row = (await db_session.execute(select(Outbox))).scalar_one()
     assert row.processed_at is not None
 

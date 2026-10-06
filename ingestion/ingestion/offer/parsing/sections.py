@@ -1,19 +1,14 @@
 """Split a job description into sections and drop the boilerplate ones.
 
-Deterministic replacement for the LLM summary: headings are recognised by
-shape (short line, trailing colon, markdown, ALL CAPS) and classified with the
+Headings are recognised by shape (short line, trailing colon, markdown, ALL CAPS) and classified with the
 multilingual lexicon. Company / benefits / apply / legal sections and
 equal-opportunity or privacy paragraphs are dropped; what remains is the text
-that describes the role itself.
+that describes the role itself, and it is what gets chunked and embedded.
 """
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from ingestion.offer.parsing.lexicon import BOILERPLATE_PHRASES, DROPPED_SECTIONS, SECTION_HEADINGS
-
-MAX_LIST_ITEMS = 20
-MAX_ROLE_INFO_ITEMS = 10
-MAX_ITEM_CHARS = 300
 
 _HEADING_RES = {cls: re.compile("|".join(frags)) for cls, frags in SECTION_HEADINGS.items()}
 _BOILERPLATE_RE = re.compile("|".join(BOILERPLATE_PHRASES), re.IGNORECASE)
@@ -31,9 +26,6 @@ def clean_markdown(text: str | None) -> str:
 @dataclass
 class Sections:
     kept_text: str = ""
-    requirements: list[str] = field(default_factory=list)
-    responsibilities: list[str] = field(default_factory=list)
-    other: list[str] = field(default_factory=list)
     headings_found: bool = False
 
 
@@ -79,14 +71,6 @@ def _lexicon_heading(line: str) -> str | None:
     return classify_heading(line)
 
 
-def _item(line: str) -> str | None:
-    text = _BULLET_RE.sub("", line).strip()
-    text = _strip_markers(text)
-    if len(text.split()) < 2:
-        return None
-    return text[:MAX_ITEM_CHARS]
-
-
 def split_sections(description: str | None) -> Sections:
     if not description or not description.strip():
         return Sections()
@@ -122,27 +106,11 @@ def split_sections(description: str | None) -> Sections:
 
         blocks[-1][1].append(line)
 
-    result = Sections(headings_found=headings_found)
-    kept: list[str] = []
-    for cls, lines in blocks:
-        if headings_found and cls in DROPPED_SECTIONS:
-            continue
-        for line in lines:
-            if _BOILERPLATE_RE.search(line):
-                continue
-            kept.append(line)
-            item = _item(line)
-            if item is None:
-                continue
-            if cls == "requirements":
-                result.requirements.append(item)
-            elif cls == "responsibilities":
-                result.responsibilities.append(item)
-            else:
-                result.other.append(item)
-
-    result.kept_text = "\n".join(kept)
-    result.requirements = result.requirements[:MAX_LIST_ITEMS]
-    result.responsibilities = result.responsibilities[:MAX_LIST_ITEMS]
-    result.other = result.other[:MAX_ROLE_INFO_ITEMS]
-    return result
+    kept = [
+        line
+        for cls, lines in blocks
+        if not (headings_found and cls in DROPPED_SECTIONS)
+        for line in lines
+        if not _BOILERPLATE_RE.search(line)
+    ]
+    return Sections(kept_text="\n".join(kept), headings_found=headings_found)

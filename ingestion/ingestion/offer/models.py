@@ -7,13 +7,6 @@ LocationType = Literal["on-site", "remote", "hybrid"]
 Seniority = Literal["junior", "mid", "senior", "lead", "principal", "staff", "director"]
 
 
-class OfferSummary(BaseModel):
-    role_info: list[str] = []
-    requirements: list[str] = []
-    responsibilities: list[str] = []
-    domain: list[str] = []
-
-
 class OfferExtraction(BaseModel):
     employment_type: EmploymentType | None = None
     location_type: LocationType | None = None
@@ -30,7 +23,6 @@ class OfferExtraction(BaseModel):
     salary_range: str | None = None
     languages_required: list[str] = []
     text_language: str | None = None
-    summary: OfferSummary = OfferSummary()
 
     @field_validator("office", mode="before")
     @classmethod
@@ -60,5 +52,4 @@ class EnrichedOffer(BaseModel):
     salary_range: str | None = None
     languages_required: list[str] = []
     text_language: str | None = None
-    summary: OfferSummary | None = None
     chunks: list[dict] = []

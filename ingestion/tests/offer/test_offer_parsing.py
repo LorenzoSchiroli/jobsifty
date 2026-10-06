@@ -44,13 +44,6 @@ def test_parse_extracts_fields_without_llm():
     assert set(result.languages_required) == {"english", "german"}
 
 
-def test_parse_summary_from_sections():
-    result = parse(_make_offer(DESCRIPTION))
-    assert result.summary.responsibilities == ["Build ML pipelines in Python", "Deploy models to production"]
-    assert result.summary.requirements == ["Fluent German and English", "5+ years of experience"]
-    assert result.summary.domain == []
-
-
 def test_parse_with_text_returns_kept_text():
     _, text = parse_with_text(_make_offer(DESCRIPTION))
     assert "Build ML pipelines" in text
@@ -63,4 +56,3 @@ def test_parse_without_description_still_uses_title():
     assert result.seniority == "junior"
     assert result.location_type == "remote"
     assert result.text_language is None
-    assert result.summary.requirements == []

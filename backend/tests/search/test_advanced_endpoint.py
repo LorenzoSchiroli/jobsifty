@@ -53,7 +53,7 @@ async def adv_client(engine):
     biencoder.encode.return_value = enc
     os_mock = AsyncMock()
     os_mock.search.return_value = {"hits": {"hits": [
-        {"_source": {"job_id": str(job_id), "summary_text": "ml engineer"}}
+        {"_source": {"job_id": str(job_id), "title": "ml engineer"}}
     ]}}
 
     saver = MemorySaver()
