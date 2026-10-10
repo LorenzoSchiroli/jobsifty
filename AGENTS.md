@@ -78,7 +78,7 @@ workflow; see `deploy/k8s/README.md`). Set `VITE_API_URL` in `.env.public`
 first. Laptop `docker buildx build --platform linux/amd64` remains a fallback.
 The backend image includes `pg_dump` and `rclone` for the worker's nightly
 Postgres backup loop. The ingestion image is the highest-risk component because
-it includes Playwright and python-jobspy/tls-client. Nodes are CX33 (x86);
+it includes Playwright and python-jobspy/curl_cffi. Nodes are CX33 (x86);
 do not pull arm64-only images onto them.
 
 ### AWS ECS specifics

@@ -152,15 +152,15 @@ def test_linkedin_unknown_country_skips_only_that_job():
     from jobspy.linkedin import LinkedIn
     from ingestion.offer.scraping.sources.jobspy_source import _SkippingLinkedIn
 
-    def fake_process(self, job_card, job_id, full_descr):
+    def fake_process(self, job_card, job_id):
         if job_id == "bad":
             raise ValueError("Invalid country string: 'north macedonia'. Valid countries are: ...")
         return job_id
 
     with patch.object(LinkedIn, "_process_job", fake_process):
         scraper = _SkippingLinkedIn()
-        assert scraper._process_job(None, "ok", False) == "ok"
-        assert scraper._process_job(None, "bad", False) is None
+        assert scraper._process_job(None, "ok") == "ok"
+        assert scraper._process_job(None, "bad") is None
 
 
 # --- company facts and missing names ---
@@ -200,3 +200,27 @@ def test_missing_company_name_is_empty_not_nan():
     offer = _df_to_offers(df)[0]
     assert offer.company == ""
     assert offer.location == ""
+
+
+def test_glassdoor_is_searched_per_country_not_europe():
+    from ingestion.offer.scraping.sources.jobspy_source import _GLASSDOOR_COUNTRIES
+
+    mock_scraper = MagicMock()
+    mock_scraper.scrape.return_value = MagicMock(jobs=[])
+    with patch("ingestion.offer.scraping.sources.jobspy_source._SkippingLinkedIn", return_value=mock_scraper), \
+         patch("ingestion.offer.scraping.sources.jobspy_source.scrape_jobs", return_value=pd.DataFrame()) as mock_scrape:
+        JobspySource().fetch("python", hours=72)
+
+    glassdoor = [c.kwargs for c in mock_scrape.call_args_list if c.kwargs["site_name"] == ["glassdoor"]]
+    assert [c["location"] for c in glassdoor] == _GLASSDOOR_COUNTRIES
+    assert all(c["fetch_description"] for c in glassdoor)
+    assert not any(c.kwargs["site_name"] == ["google"] for c in mock_scrape.call_args_list)
+
+
+def test_skipping_linkedin_matches_the_installed_jobspy():
+    """jobspy changed _process_job's arguments once (1.3.0), which silently emptied LinkedIn."""
+    import inspect
+    from jobspy.linkedin import LinkedIn
+
+    params = list(inspect.signature(LinkedIn._process_job).parameters)
+    assert params[:3] == ["self", "job_card", "job_id"]

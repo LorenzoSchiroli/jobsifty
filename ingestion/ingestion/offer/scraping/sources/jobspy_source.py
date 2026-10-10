@@ -12,15 +12,17 @@ from ingestion.offer.scraping.sources.base import Source
 logger = logging.getLogger(__name__)
 
 _INDEED_COUNTRIES = ["UK", "Germany", "France", "Netherlands", "Spain", "Italy", "Belgium", "Austria"]
+# Glassdoor needs a concrete place: "Europe" resolves to France only.
+_GLASSDOOR_COUNTRIES = ["UK", "Germany", "France", "Netherlands"]
 
 
 class _SkippingLinkedIn(LinkedIn):
     """jobspy aborts the whole search when one card has a country outside its enum
     (e.g. 'north macedonia'); drop that card instead."""
 
-    def _process_job(self, job_card, job_id, full_descr):
+    def _process_job(self, job_card, job_id, *args):
         try:
-            return super()._process_job(job_card, job_id, full_descr)
+            return super()._process_job(job_card, job_id, *args)
         except ValueError as e:
             logger.info("LinkedIn job %s skipped: %s", job_id, str(e).split(". Valid")[0])
             return None
@@ -104,7 +106,7 @@ def _scrape_linkedin(query: str, hours: int) -> list[JobOffer]:
             location="Europe",
             hours_old=hours,
             results_wanted=50,
-            linkedin_fetch_description=True,
+            fetch_description=True,
             description_format=DescriptionFormat.HTML,
         ))
         return [
@@ -117,33 +119,21 @@ def _scrape_linkedin(query: str, hours: int) -> list[JobOffer]:
         return []
 
 
-def _scrape_glassdoor(query: str, hours: int) -> list[JobOffer]:
+def _scrape_glassdoor(query: str, hours: int, country: str) -> list[JobOffer]:
     try:
         df = scrape_jobs(
             site_name=["glassdoor"],
             search_term=query,
-            location="Europe",
+            location=country,
+            country_indeed=country,
             hours_old=hours,
-            results_wanted=50,
+            results_wanted=25,
+            fetch_description=True,
+            verbose=0,
         )
         return _df_to_offers(df)
     except Exception as e:
-        logger.warning("jobspy Glassdoor fetch failed: %s", e)
-        return []
-
-
-def _scrape_google(query: str, hours: int) -> list[JobOffer]:
-    try:
-        df = scrape_jobs(
-            site_name=["google"],
-            search_term=query,
-            location="Europe",
-            hours_old=hours,
-            results_wanted=50,
-        )
-        return _df_to_offers(df)
-    except Exception as e:
-        logger.warning("jobspy Google Jobs fetch failed: %s", e)
+        logger.warning("jobspy Glassdoor/%s fetch failed: %s", country, e)
         return []
 
 
@@ -155,6 +145,7 @@ def _scrape_indeed(query: str, hours: int, country: str) -> list[JobOffer]:
             hours_old=hours,
             results_wanted=20,
             country_indeed=country,
+            verbose=0,
         )
         return _df_to_offers(df)
     except Exception as e:
@@ -166,8 +157,8 @@ class JobspySource(Source):
     def fetch(self, query: str, hours: int) -> list[JobOffer]:
         results: list[JobOffer] = []
         results.extend(_scrape_linkedin(query, hours))
-        results.extend(_scrape_glassdoor(query, hours))
-        results.extend(_scrape_google(query, hours))
+        for country in _GLASSDOOR_COUNTRIES:
+            results.extend(_scrape_glassdoor(query, hours, country))
         for country in _INDEED_COUNTRIES:
             results.extend(_scrape_indeed(query, hours, country))
         return results
