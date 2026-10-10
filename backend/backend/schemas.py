@@ -46,6 +46,8 @@ class PendingCompany(BaseModel):
     industry: str | None = None
     location: str | None = None
     live_jobs: int
+    # the stored data is old: ingestion should not trust it, and its findings replace it
+    refresh: bool = False
 
 
 class JobChunk(BaseModel):

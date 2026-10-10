@@ -111,3 +111,51 @@ async def test_pending_retries_an_empty_company_after_the_pause(client, db_sessi
         company.enriched_at = long_ago
     await db_session.commit()
     assert [c["name"] for c in (await client.get("/companies/pending")).json()] == ["empty"]
+
+
+async def _age(db_session, name: str, days: int):
+    from datetime import datetime, timedelta, timezone
+    from backend.models import Company
+    company = (await db_session.execute(select(Company).where(Company.name == name))).scalar_one()
+    company.enriched_at = datetime.now(timezone.utc) - timedelta(days=days)
+    await db_session.commit()
+
+
+async def test_pending_refreshes_year_old_data_after_new_companies(client, db_session):
+    for i in range(3):
+        await _post_job(client, "Old", i)
+    await _post_job(client, "New", 1)
+    await _post_job(client, "Recent", 1)
+    await client.post("/companies/", json={"name": "Old", "founded_year": 2010, "enrichment_attempted": True})
+    await client.post("/companies/", json={"name": "Recent", "founded_year": 2011, "enrichment_attempted": True})
+    await _age(db_session, "old", 400)
+    await _age(db_session, "recent", 300)
+
+    pending = (await client.get("/companies/pending")).json()
+    # new companies first even with fewer live jobs; data under a year old is left alone
+    assert [(c["name"], c["refresh"]) for c in pending] == [("new", False), ("old", True)]
+
+
+async def test_refresh_replaces_stale_values_and_keeps_what_was_not_found(client, db_session):
+    await client.post("/companies/", json={
+        "name": "Synthesia", "industry": "chemical industry", "founded_year": 1920, "country": "Czechia",
+        "enrichment_attempted": True,
+    })
+    await _age(db_session, "synthesia", 400)
+    resp = await client.post("/companies/", json={
+        "name": "Synthesia", "industry": "AI video", "founded_year": 2017, "enrichment_attempted": True,
+    })
+    body = resp.json()
+    assert (body["industry"], body["founded_year"], body["country"]) == ("AI video", 2017, "Czechia")
+    assert body["enrich_attempts"] == 1
+
+    # fresh again: back to fill-empty
+    resp = await client.post("/companies/", json={"name": "Synthesia", "industry": "x", "enrichment_attempted": True})
+    assert resp.json()["industry"] == "AI video"
+
+
+async def test_board_facts_never_replace_stale_values(client, db_session):
+    await client.post("/companies/", json={"name": "Acme", "industry": "Software", "enrichment_attempted": True})
+    await _age(db_session, "acme", 400)
+    resp = await client.post("/companies/", json={"name": "Acme", "industry": "Other"})  # no enrichment_attempted
+    assert resp.json()["industry"] == "Software"

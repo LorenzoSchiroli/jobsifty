@@ -101,14 +101,17 @@ def _enrich_pending(groq: Groq | None, board_facts: dict[str, dict], budget: int
             skipped = len(pending) - i
             logger.warning("Search or LLM unavailable for the rest of the run; %d companies left for later", skipped)
             break
-        stored = {k: v for k, v in company.items() if v}
+        # A refresh (data over a year old) starts from this run's board facts only: the
+        # stored values are what it is replacing.
+        stored = {} if company.get("refresh") else {k: v for k, v in company.items() if v}
         # Older enrichments stored websites from unfiltered search results (registries, job
         # boards); such a site would be scraped as the employer's own, so it is not used.
         if stored.get("website") and not pick_website(company["name"], [stored["website"]]):
             del stored["website"]
         known = {**stored, **board_facts.get(company["name"], {})}
         try:
-            logger.info("Enriching company %r (%d live jobs)...", company["name"], company["live_jobs"])
+            logger.info("%s company %r (%d live jobs)...", "Refreshing" if company.get("refresh") else "Enriching",
+                        company["name"], company["live_jobs"])
             profile, _ = enrich_company(company["name"], company.get("location") or "", groq, known)
             data = profile.model_dump(mode="json")
             post_company({**data, "enrichment_attempted": True})

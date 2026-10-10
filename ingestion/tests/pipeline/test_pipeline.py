@@ -189,3 +189,15 @@ def test_no_search_key_still_enriches(monkeypatch):
          patch(f"{_P}.enrich_company", return_value=(_profile(), [])) as mock_enrich:
         assert run("q", 2) == 0
     assert mock_enrich.call_count == 2
+
+
+def test_a_refresh_ignores_the_stored_values():
+    pending = [{"name": "synthesia", "website": "http://www.synthesia.eu", "industry": "chemical industry",
+                "location": "London", "live_jobs": 1, "refresh": True}]
+    with patch(f"{_P}.enrich_all", return_value=[_offer(1, company="synthesia", industry="Software")]), \
+         patch(f"{_P}.post_job", return_value=(201, {})), \
+         patch(f"{_P}.post_company", return_value=(200, {})), \
+         patch(f"{_P}.get_pending_companies", return_value=pending), \
+         patch(f"{_P}.enrich_company", return_value=(_profile(), [])) as mock_enrich:
+        run("q", 2)
+    assert mock_enrich.call_args.args[3] == {"industry": "Software"}  # this run's board facts only

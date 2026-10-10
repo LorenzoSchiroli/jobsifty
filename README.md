@@ -432,7 +432,7 @@ Most endpoints depend on `get_current_user`.
 
 - **`Company`** — unique by `name`; enriched with employee count, founded year,
   review score, financial health score (1–5, only with evidence), consulting/startup
-  flags, industry, country; `enriched_at` / `enrich_attempts` pace the enrichment retries.
+  flags, industry, country; `enriched_at` / `enrich_attempts` pace the enrichment retries, and data over a year old is re-enriched and replaced.
 - **`Job`** — unique by `url`; parsed fields (employment type, location type,
   seniority, required languages) plus `chunks` JSONB (text + embedding each).
 - **`Outbox`** — transient sync table; `processed_at` is NULL until the worker

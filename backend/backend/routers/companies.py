@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_session
@@ -14,6 +14,12 @@ router = APIRouter(prefix="/companies", tags=["companies"])
 # An attempt that found nothing is retried after this pause, at most this many times.
 ENRICH_RETRY_DAYS = 7
 ENRICH_MAX_ATTEMPTS = 3
+# Data older than this is enriched again, and the new values replace the stored ones.
+ENRICH_REFRESH_DAYS = 365
+
+
+def _is_stale(company: Company, now: datetime) -> bool:
+    return company.enriched_at is not None and company.enriched_at < now - timedelta(days=ENRICH_REFRESH_DAYS)
 
 
 def _normalize(name: str) -> str:
@@ -33,6 +39,7 @@ async def upsert_company(body: CompanyRequest, response: Response, session: Asyn
     normalized = _normalize(body.name)
     result = await session.execute(select(Company).where(Company.name == normalized))
     company = result.scalar_one_or_none()
+    now = datetime.now(timezone.utc)
 
     if company is None:
         data = body.model_dump(exclude={"enrichment_attempted"})
@@ -41,14 +48,19 @@ async def upsert_company(body: CompanyRequest, response: Response, session: Asyn
         session.add(company)
         response.status_code = 201
     else:
+        # Fill-empty, except an enrichment of stale data: its findings replace the stored
+        # values (what it did not find keeps the old value).
+        refresh = body.enrichment_attempted and _is_stale(company, now)
         data = body.model_dump(exclude={"name", "enrichment_attempted"})
         for field, value in data.items():
-            if not _is_empty(value) and _is_empty(getattr(company, field)):
+            if not _is_empty(value) and (refresh or _is_empty(getattr(company, field))):
                 setattr(company, field, value)
+        if refresh:
+            company.enrich_attempts = 0
         response.status_code = 200
 
     if body.enrichment_attempted:
-        company.enriched_at = datetime.now(timezone.utc)
+        company.enriched_at = now
         company.enrich_attempts = (company.enrich_attempts or 0) + 1
 
     await session.flush()
@@ -67,8 +79,9 @@ async def upsert_company(body: CompanyRequest, response: Response, session: Asyn
 async def pending_companies(limit: int = Query(10, ge=1, le=500), session: AsyncSession = Depends(get_session)):
     """Companies with live jobs that are due for enrichment, those with the most live jobs first.
 
-    Due means never attempted, or attempted fewer than ENRICH_MAX_ATTEMPTS times, at least
-    ENRICH_RETRY_DAYS ago, and still without any of the core facts.
+    Due means never attempted; or attempted fewer than ENRICH_MAX_ATTEMPTS times, at least
+    ENRICH_RETRY_DAYS ago, and still without any of the core facts; or (after those, as
+    `refresh`) last enriched more than ENRICH_REFRESH_DAYS ago.
     """
     now = datetime.now(timezone.utc)
     live = (
@@ -87,7 +100,7 @@ async def pending_companies(limit: int = Query(10, ge=1, le=500), session: Async
     still_empty = and_(
         Company.founded_year.is_(None), Company.employee_count.is_(None), Company.review_score.is_(None),
     )
-    due = or_(
+    new_or_retry = or_(
         Company.enrich_attempts == 0,
         and_(
             Company.enrich_attempts < ENRICH_MAX_ATTEMPTS,
@@ -95,17 +108,18 @@ async def pending_companies(limit: int = Query(10, ge=1, le=500), session: Async
             still_empty,
         ),
     )
+    stale = Company.enriched_at < now - timedelta(days=ENRICH_REFRESH_DAYS)
     rows = await session.execute(
         select(Company, location.label("location"), live.c.live_jobs)
         .join(live, live.c.company_id == Company.id)
-        .where(due, Company.name != "")
-        .order_by(live.c.live_jobs.desc(), Company.created_at.desc())
+        .where(or_(new_or_retry, stale), Company.name != "")
+        .order_by(case((new_or_retry, 0), else_=1), live.c.live_jobs.desc(), Company.created_at.desc())
         .limit(limit)
     )
     return [
         PendingCompany(
             name=c.name, website=c.website, linkedin_url=c.linkedin_url, industry=c.industry,
-            location=loc, live_jobs=n,
+            location=loc, live_jobs=n, refresh=_is_stale(c, now),
         )
         for c, loc, n in rows
     ]
