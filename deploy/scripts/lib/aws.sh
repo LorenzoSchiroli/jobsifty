@@ -253,6 +253,24 @@ aws_resume_writers() {
   _AWS_WRITERS_PAUSED=0
 }
 
+# One ingestion run now instead of at the next schedule tick, with a longer
+# lookback so the gap since the dump was taken gets filled. Not waited on.
+aws_start_initial_ingestion_task() {
+  local overrides
+  overrides="$(jq -cn --arg h "${INITIAL_INGESTION_HOURS}" '{containerOverrides: [{
+    name: "ingestion",
+    command: ["sh", "-c", ("uv run python -m ingestion.pipeline \"$OFFER_QUERY\" --hours " + $h)]
+  }]}')"
+  echo "==> starting first ingestion run (--hours ${INITIAL_INGESTION_HOURS})"
+  aws ecs run-task \
+    --cluster "$(aws_cluster)" \
+    --task-definition "$(aws_tofu_output ingestion_task_definition_arn)" \
+    --launch-type FARGATE \
+    --network-configuration "$(aws_network_configuration)" \
+    --overrides "${overrides}" \
+    --query 'tasks[0].taskArn' --output text
+}
+
 aws_stack_reachable() {
   (
     cd "${AWS_DIR}"
@@ -310,7 +328,15 @@ RECOVERY
     exit 1
   fi
 
+  # pg_restore --clean brings back the dump's own schema, which may predate
+  # the deployed code: migrate again before the writers come back.
+  echo "==> re-running migrations on the restored data"
+  aws_run_bootstrap_task
+
   aws_resume_writers
+  if [[ "${_AWS_INGESTION_STATE}" == "ENABLED" ]]; then
+    aws_start_initial_ingestion_task
+  fi
 
   echo "aws up complete. OpenSearch will refill via worker reconcile."
   if [[ "${MANAGE_DNS:-1}" -eq 1 ]]; then

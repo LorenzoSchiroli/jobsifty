@@ -70,6 +70,7 @@ local_up() {
   require_cmd kind
   require_cmd kubectl
   require_cmd helm
+  require_cmd jq
   require_pg_client
 
   _local_require_docker_daemon
@@ -128,10 +129,19 @@ RECOVERY
     exit 1
   fi
 
+  if ! rerun_bootstrap_job "${HELM_RELEASE}-bootstrap"; then
+    echo "error: migrations after the restore failed; api/worker stay at 0 and ingestion suspended." >&2
+    echo "inspect: kubectl logs job/<the job above>; then scale api/worker back up" >&2
+    exit 1
+  fi
+
   echo "==> resuming writers"
   kctl scale deploy/api --replicas="${api_replicas}"
   kctl scale deploy/worker --replicas="${worker_replicas}"
   kctl patch cronjob ingestion --type merge -p "{\"spec\":{\"suspend\":${ingestion_suspend}}}"
+  if [[ "${ingestion_suspend}" != "true" ]]; then
+    start_initial_ingestion_job
+  fi
 
   cat <<HINT
 

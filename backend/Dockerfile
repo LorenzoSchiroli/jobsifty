@@ -9,13 +9,19 @@ RUN apt-get update \
 
 RUN pip install uv --quiet
 
+# Models before dependencies: this layer only rebuilds when a model changes,
+# not on every uv.lock update. Files land in the default Hugging Face cache,
+# where sentence-transformers looks for them at runtime.
+RUN uvx --from huggingface_hub hf download intfloat/multilingual-e5-small \
+        --include "*.json" --include "*.safetensors" --include "*.model" --exclude "onnx/*" --exclude "openvino/*" \
+    && uvx --from huggingface_hub hf download cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 \
+        --include "*.json" --include "*.safetensors" --include "*.model" --exclude "onnx/*" --exclude "openvino/*" \
+    && uv cache clean
+
 COPY pyproject.toml uv.lock ./
 COPY backend/pyproject.toml ./backend/pyproject.toml
 
 RUN uv sync --package backend --no-dev
-
-RUN uv run python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/multilingual-e5-small')"
-RUN uv run python -c "from sentence_transformers.cross_encoder import CrossEncoder; CrossEncoder('cross-encoder/mmarco-mMiniLMv2-L12-H384-v1')"
 
 COPY backend/ ./backend/
 RUN chmod +x /app/backend/backend/scripts/postgres_backup.sh

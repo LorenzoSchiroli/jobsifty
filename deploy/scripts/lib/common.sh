@@ -16,6 +16,9 @@ POSTGRES_POD="${POSTGRES_POD:-postgres-0}"
 POSTGRES_DB="${POSTGRES_DB:-jobsifty}"
 POSTGRES_USER="${POSTGRES_USER:-postgres}"
 POD_DUMP_PATH="/tmp/jobsifty.dump"
+# The ingestion schedule only looks back 2h; the run started right after `up`
+# looks back further so the gap since the dump was taken gets filled.
+INITIAL_INGESTION_HOURS="${INITIAL_INGESTION_HOURS:-72}"
 
 require_cmd() {
   local cmd="$1"
@@ -235,6 +238,37 @@ kctl() {
   else
     kubectl "$@"
   fi
+}
+
+# pg_restore --clean brings back the dump's own schema, which may predate the
+# deployed code, so migrate again after a restore: a copy of the (finished)
+# bootstrap Job under a new name. Returns non-zero if it fails.
+rerun_bootstrap_job() {
+  local src="$1" name
+  name="${src}-after-restore-$(date +%s)"
+  echo "==> re-running migrations on the restored data (job/${name})"
+  kctl get job "${src}" -o json \
+    | jq --arg n "${name}" '{
+        apiVersion, kind,
+        metadata: {name: $n},
+        spec: (.spec
+          | del(.selector)
+          | .ttlSecondsAfterFinished = 3600
+          | .template.metadata.labels |= with_entries(select(.key | test("controller-uid|job-name") | not)))
+      }' \
+    | kctl apply -f - >/dev/null
+  kctl wait --for=condition=complete "job/${name}" --timeout=600s
+}
+
+# One ingestion run now instead of at the next schedule tick: a Job cloned from
+# the CronJob with a longer --hours (the last element of its command).
+start_initial_ingestion_job() {
+  local name
+  name="ingestion-up-$(date +%s)"
+  echo "==> starting first ingestion run (job/${name}, --hours ${INITIAL_INGESTION_HOURS})"
+  kctl create job "${name}" --from=cronjob/ingestion --dry-run=client -o json \
+    | jq --arg h "${INITIAL_INGESTION_HOURS}" '.spec.template.spec.containers[0].command[-1] = $h' \
+    | kctl apply -f - >/dev/null
 }
 
 # Both .env.public and .env, in that order: the chart's envFrom expects
