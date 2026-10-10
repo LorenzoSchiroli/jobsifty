@@ -13,7 +13,8 @@ _P = "ingestion.pipeline.__main__"
 def _env(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-    for key in ("TINYFISH_API_KEY", "EXA_API_KEY", "SEARCH_PROVIDERS", "COMPANY_ENRICH_PER_RUN"):
+    for key in ("TINYFISH_API_KEY", "EXA_API_KEY", "SEARCH_PROVIDERS", "COMPANY_ENRICH_PER_RUN",
+                "NVIDIA_NIM_API_KEY", "GEMINI_API_KEY", "LLM_PROVIDERS"):
         monkeypatch.delenv(key, raising=False)
     searcher.reset()
     yield
@@ -71,7 +72,7 @@ def test_run_upserts_companies_with_board_facts_then_enriches_pending():
         assert run("q", 2) == 0
 
     assert mock_post_company.call_args_list[0].args[0] == {"name": "Acme", "website": "https://acme.com"}
-    mock_pending.assert_called_once_with(6)
+    mock_pending.assert_called_once_with(15)
     name, location, client, known = mock_enrich.call_args.args
     assert (name, location, client) == ("acme", "Berlin", None)
     assert known["website"] == "https://acme.com"  # this run's board facts reach the enrichment
@@ -168,11 +169,11 @@ def test_companies_wait_for_the_next_run_once_search_is_down():
     assert mock_enrich.call_count == 1 and mock_post_company.call_count == 1
 
 
-def test_companies_wait_for_the_next_run_once_the_llm_is_down(monkeypatch):
-    monkeypatch.setenv("GROQ_API_KEY", "k")
-    llm_state = iter([False, True])
-    with patch(f"{_P}.Groq"), \
-         patch(f"{_P}.llm_down", side_effect=lambda: next(llm_state)), \
+def test_companies_wait_for_the_next_run_once_the_llm_is_down():
+    llm = MagicMock()
+    llm.configured.return_value = ["nvidia"]
+    llm.down.side_effect = [False, True]  # e.g. every provider's daily quota gone during the first company
+    with patch(f"{_P}.LLMPool.from_env", return_value=llm), \
          patch(f"{_P}.enrich_all", return_value=[]), \
          patch(f"{_P}.post_company", return_value=(200, {})), \
          patch(f"{_P}.get_pending_companies", return_value=_pending(3)), \

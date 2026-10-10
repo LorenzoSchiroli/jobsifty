@@ -2,20 +2,18 @@ import argparse
 import logging
 import os
 import sys
-from groq import Groq
 from tqdm import tqdm
 from ingestion.offer.offer import enrich_all
 from ingestion.company.company import enrich as enrich_company
 from ingestion.client import get_pending_companies, post_company, post_job
-from ingestion.company.parsing.extractor import breaker_open as llm_down
 from ingestion.company.scraping.searcher import pick_website, pool as search_pool
+from ingestion.llm import LLMPool
 
 logger = logging.getLogger(__name__)
 
-# Companies enriched per run: 2 web searches + one Groq call (~2k tokens) each. Search
-# runs on a pool of providers, so the limit is Groq's free 200k tokens/day: at the
-# 2-hourly schedule, 6 per run is ~72 companies and ~150k tokens a day.
-DEFAULT_COMPANIES_PER_RUN = 6
+# Companies enriched per run: 2 web searches + 1 LLM call each, both on provider pools,
+# so the limit is time: ~25 s a company, and the CronJob is killed after 30 minutes.
+DEFAULT_COMPANIES_PER_RUN = 15
 # More failed job posts than this fails the run, so the CronJob shows Failed.
 MAX_POST_ERROR_RATE = 0.2
 
@@ -77,7 +75,7 @@ def _upsert_companies(companies: dict[str, dict]) -> int:
     return new
 
 
-def _enrich_pending(groq: Groq | None, board_facts: dict[str, dict], budget: int) -> None:
+def _enrich_pending(llm: LLMPool | None, board_facts: dict[str, dict], budget: int) -> None:
     """Search and enrich the companies the backend says are most due. Best effort: a failure
     here is logged and never fails the run; whatever is not done waits for the next run."""
     if budget <= 0:
@@ -97,7 +95,7 @@ def _enrich_pending(groq: Groq | None, board_facts: dict[str, dict], budget: int
     for i, company in enumerate(pending):
         # An attempt without search or LLM finds little and still counts towards the
         # retry limit, so the rest wait for a run where both are back.
-        if search_pool().down() or (groq is not None and llm_down()):
+        if search_pool().down() or (llm is not None and llm.down()):
             skipped = len(pending) - i
             logger.warning("Search or LLM unavailable for the rest of the run; %d companies left for later", skipped)
             break
@@ -112,7 +110,7 @@ def _enrich_pending(groq: Groq | None, board_facts: dict[str, dict], budget: int
         try:
             logger.info("%s company %r (%d live jobs)...", "Refreshing" if company.get("refresh") else "Enriching",
                         company["name"], company["live_jobs"])
-            profile, _ = enrich_company(company["name"], company.get("location") or "", groq, known)
+            profile, _ = enrich_company(company["name"], company.get("location") or "", llm, known)
             data = profile.model_dump(mode="json")
             post_company({**data, "enrichment_attempted": True})
         except Exception as e:
@@ -126,17 +124,19 @@ def _enrich_pending(groq: Groq | None, board_facts: dict[str, dict], budget: int
         else:
             empty += 1
     logger.info(
-        "Company enrichment: %d pending, %d filled, %d nothing found, %d failed, %d skipped; searches: %s",
-        len(pending), filled, empty, failed, skipped, search_pool().stats(),
+        "Company enrichment: %d pending, %d filled, %d nothing found, %d failed, %d skipped; searches: %s; LLM: %s",
+        len(pending), filled, empty, failed, skipped, search_pool().stats(), llm.stats() if llm else "none",
     )
 
 
 def run(query: str, hours: int) -> int:
     """Run the pipeline; returns the process exit code."""
-    api_key = os.environ.get("GROQ_API_KEY")
-    groq = Groq(api_key=api_key) if api_key else None
-    if groq is None:
-        logger.info("GROQ_API_KEY not set — company enrichment runs without the LLM")
+    llm = LLMPool.from_env()
+    if llm.configured():
+        logger.info("LLM providers: %s", ", ".join(llm.configured()))
+    else:
+        logger.info("No LLM provider key set — company enrichment runs without the LLM")
+        llm = None
     budget = int(os.environ.get("COMPANY_ENRICH_PER_RUN", DEFAULT_COMPANIES_PER_RUN))
 
     logger.info("[1/4] Scraping & parsing offers: %r, last %dh", query, hours)
@@ -154,7 +154,7 @@ def run(query: str, hours: int) -> int:
 
     logger.info("[4/4] Enriching up to %d pending companies...", budget)
     board_facts = {_key(name): {f: e[f] for f in _BOARD_FIELDS if e.get(f)} for name, e in companies.items()}
-    _enrich_pending(groq, board_facts, budget)
+    _enrich_pending(llm, board_facts, budget)
 
     if offers and errors / len(offers) > MAX_POST_ERROR_RATE:
         logger.error("Job post error rate %.0f%% exceeds %.0f%%", 100 * errors / len(offers), 100 * MAX_POST_ERROR_RATE)

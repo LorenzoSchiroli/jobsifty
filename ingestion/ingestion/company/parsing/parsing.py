@@ -1,9 +1,9 @@
 import logging
-from groq import Groq
 
 from ingestion.company.models import CompanyExtraction
 from ingestion.company.parsing import rules
 from ingestion.company.parsing.extractor import extract_jsonld, extract_with_llm, format_sources
+from ingestion.llm import LLMPool
 from ingestion.utils.text import clean_html
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ def _wants_llm(merged: dict) -> bool:
     return bool(_missing(merged)) or merged.get("topic") is None
 
 
-def parse(name: str, location: str, text_dict: dict, client: Groq | None = None) -> CompanyExtraction:
+def parse(name: str, location: str, text_dict: dict, llm: LLMPool | None = None) -> CompanyExtraction:
     """Deterministic sources first (job board → JSON-LD → Wikidata → Glassdoor); one small LLM
     call on the search results fills what is left, or rules on the search answer without it."""
     merged: dict = {}
@@ -59,10 +59,10 @@ def parse(name: str, location: str, text_dict: dict, client: Groq | None = None)
     _apply_heuristics(merged, name, "", wikidata)
 
     extraction = None
-    if client is not None and _wants_llm(merged):
+    if llm is not None and _wants_llm(merged):
         page_text = clean_html(text_dict["website_html"], aggressive=False) if text_dict.get("website_html") else None
         sources = format_sources(answer, text_dict.get("search_snippets") or [], known.get("description"), page_text)
-        extraction = extract_with_llm(name, location, client, sources)
+        extraction = extract_with_llm(name, location, llm, sources)
     if extraction is not None:
         _fill(merged, extraction.model_dump())
     else:

@@ -1,11 +1,10 @@
 import logging
-import os
 import sys
 import time
 from dotenv import load_dotenv
-from groq import Groq
 
 from ingestion.company.company import enrich
+from ingestion.llm import LLMPool
 
 load_dotenv(".env.public")
 load_dotenv(".env", override=True)
@@ -23,12 +22,11 @@ def main():
         sys.exit(1)
     name = args[0]
     location = args[1] if len(args) > 1 else ""
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        print("GROQ_API_KEY is not set: deterministic enrichment only (no LLM).", file=sys.stderr)
-    client = Groq(api_key=api_key) if api_key else None
+    llm = LLMPool.from_env()
+    if not llm.configured():
+        print("No LLM provider key set: deterministic enrichment only (no LLM).", file=sys.stderr)
     t0 = time.perf_counter()
-    profile, timings = enrich(name, location, client)
+    profile, timings = enrich(name, location, llm if llm.configured() else None)
     elapsed = time.perf_counter() - t0
 
     for field in vars(profile):

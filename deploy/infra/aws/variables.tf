@@ -120,6 +120,18 @@ variable "tinyfish_api_key" {
   default   = ""
 }
 
+variable "nvidia_nim_api_key" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
+variable "gemini_api_key" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
 variable "exa_api_key" {
   type      = string
   sensitive = true

@@ -46,5 +46,7 @@ resource "aws_secretsmanager_secret_version" "app" {
     TAVILY_API_KEY           = var.tavily_api_key
     TINYFISH_API_KEY         = var.tinyfish_api_key
     EXA_API_KEY              = var.exa_api_key
+    NVIDIA_NIM_API_KEY       = var.nvidia_nim_api_key
+    GEMINI_API_KEY           = var.gemini_api_key
   })
 }

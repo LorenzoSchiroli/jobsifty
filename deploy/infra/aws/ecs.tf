@@ -24,6 +24,8 @@ locals {
     "TAVILY_API_KEY",
     "TINYFISH_API_KEY",
     "EXA_API_KEY",
+    "NVIDIA_NIM_API_KEY",
+    "GEMINI_API_KEY",
   ]
 
   app_container_secrets = [
