@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from ingestion.company.scraping.fetcher import fetch_html, find_relevant_links
 from ingestion.company.scraping.searcher import search_company
 from ingestion.company.scraping.wikidata import lookup as wikidata_lookup
+from ingestion.utils.urls import registered_domain
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,13 @@ def scrape(name: str, location: str, known: dict | None = None) -> tuple[dict, T
     """Collect raw material about a company.
 
     `known` holds what is already stored or came with the job (website, linkedin_url,
-    industry, description); a known website or LinkedIn page wins over a search guess.
+    industry, description). The website comes from, in order: what is known, the
+    search, Wikidata's official website (it finds huk.de for HUK-COBURG, where no name
+    check could). A known LinkedIn page wins over the search.
+
+    Wikidata matches by name only, so it can return a namesake ("Synthesia" is a Czech
+    chemicals maker there). When its website disagrees with the known or searched one,
+    none of its facts are used.
     """
     known = known or {}
     timings: Timings = []
@@ -31,7 +38,11 @@ def scrape(name: str, location: str, known: dict | None = None) -> tuple[dict, T
         wikidata = fut_wikidata.result()
     t = tick("scrape / search + wikidata", t)
 
-    website = known.get("website") or found.website
+    expected = known.get("website") or found.website
+    if expected and wikidata.get("website") and registered_domain(expected) != registered_domain(wikidata["website"]):
+        logger.info("Wikidata entry for %r is a namesake (%s, expected %s); ignored", name, wikidata["website"], expected)
+        wikidata = {}
+    website = expected or wikidata.get("website")
     linkedin_url = known.get("linkedin_url") or found.linkedin_url
 
     with ThreadPoolExecutor(max_workers=2) as ex:

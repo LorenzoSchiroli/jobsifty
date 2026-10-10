@@ -76,6 +76,15 @@ def test_lookup_returns_facts_for_matching_org():
     }
 
 
+def test_lookup_returns_the_official_website_as_site_root():
+    entity = {**_SIEMENS, "claims": {**_SIEMENS["claims"], "P856": [
+        {"mainsnak": {"datavalue": {"value": "https://new.siemens.com/global/en.html"}}, "rank": "normal"},
+    ]}}
+    search = [{"id": "Q81230", "label": "Siemens", "match": {"text": "Siemens"}}]
+    with patch.object(wikidata.requests, "get", side_effect=_fake_api(search, {"Q81230": entity})):
+        assert lookup("Siemens AG")["website"] == "https://www.siemens.com"
+
+
 def test_lookup_rejects_label_mismatch():
     search = [{"id": "Q1", "label": "Siemens Healthineers", "match": {"text": "Siemens Healthineers"}}]
     with patch.object(wikidata.requests, "get", side_effect=_fake_api(search, {"Q1": _SIEMENS})):

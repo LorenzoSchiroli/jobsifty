@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from ingestion.company.scraping.providers import SearchPool
+from ingestion.utils.urls import registered_domain, site_root
 
 logger = logging.getLogger(__name__)
 
@@ -97,10 +98,12 @@ def _is_blocked(url: str) -> bool:
 
 
 def pick_website(name: str, urls: list[str]) -> str | None:
-    """The first result whose domain contains the company name, as the site root.
+    """The first result whose registered domain contains the company name, as the site root.
 
-    Search results for small employers are mostly directories and aggregators;
-    leaving the website empty beats storing one of those.
+    Only the registered domain counts (see `utils/urls.py`): careers.criteo.com is
+    Criteo's site, zendesk.wd1.myworkdayjobs.com is not Zendesk's. Search results for
+    small employers are mostly directories and aggregators; leaving the website empty
+    beats storing one of those.
     """
     full, first = _name_keys(name)
     if not full:
@@ -109,9 +112,8 @@ def pick_website(name: str, urls: list[str]) -> str | None:
     # the whole name first: "siemens healthineers" must prefer siemens-healthineers.com over siemens.com
     for key in [full] + ([first] if first else []):
         for url in candidates:
-            if key in re.sub(r"[^a-z0-9]", "", _domain(url)):
-                parsed = urlparse(url)
-                return f"{parsed.scheme}://{parsed.netloc}"
+            if key in re.sub(r"[^a-z0-9]", "", registered_domain(url)):
+                return site_root(url)
     return None
 
 

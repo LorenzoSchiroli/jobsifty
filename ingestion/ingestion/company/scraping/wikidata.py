@@ -4,6 +4,8 @@ import unicodedata
 
 import requests
 
+from ingestion.utils.urls import site_root
+
 logger = logging.getLogger(__name__)
 
 _API_URL = "https://www.wikidata.org/w/api.php"
@@ -114,6 +116,14 @@ def _employee_count(entity: dict) -> str | None:
     return best[1] if best else None
 
 
+def _website(entity: dict) -> str | None:
+    """The official website (P856), as the site root."""
+    for claim in _statements(entity, "P856"):
+        if isinstance(value := _value(claim), str) and (root := site_root(value)):
+            return root
+    return None
+
+
 def _matches(candidate: dict, target: str) -> bool:
     texts = [candidate.get("label", ""), candidate.get("match", {}).get("text", "")]
     texts += candidate.get("aliases", [])
@@ -156,6 +166,7 @@ def lookup(name: str) -> dict:
             "country": label(country_id),
             "industry": label(industry_id),
             "description": entity.get("descriptions", {}).get("en", {}).get("value"),
+            "website": _website(entity),
         }
         return {k: v for k, v in result.items() if v is not None}
     except Exception as e:

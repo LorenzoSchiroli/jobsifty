@@ -47,6 +47,11 @@ def test_location_hint(location, expected):
     ("Reddit, Inc.", ["https://www.redditinc.com/"], "https://www.redditinc.com"),
     ("Hadrian", ["https://research.contrary.com/company/hadrian"], None),
     ("X4 Technology", ["https://www.x4-technology.com/us"], "https://www.x4-technology.com"),
+    # only the registered domain counts: careers pages become the homepage, hiring platforms drop out
+    ("Criteo", ["https://careers.criteo.com/en/jobs"], "https://www.criteo.com"),
+    ("Zendesk", ["https://zendesk.wd1.myworkdayjobs.com/zendesk", "https://www.zendesk.com/about"],
+     "https://www.zendesk.com"),
+    ("Acme Robotics", ["https://acmerobotics.teamtailor.com", "https://jobs.lever.co/acmerobotics"], None),
 ])
 def test_pick_website(name, urls, expected):
     assert pick_website(name, urls) == expected

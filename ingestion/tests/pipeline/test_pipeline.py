@@ -44,6 +44,16 @@ def test_collect_companies_merges_location_and_board_facts():
     }
 
 
+def test_board_websites_are_checked_like_searched_ones():
+    offers = [
+        _offer(1, company="Zendesk", website="https://zendesk.wd1.myworkdayjobs.com/zendesk"),
+        _offer(2, company="Criteo", website="https://careers.criteo.com/en"),
+    ]
+    companies = _collect_companies(offers)
+    assert "website" not in companies["Zendesk"]
+    assert companies["Criteo"]["website"] == "https://www.criteo.com"
+
+
 def test_new_fields_ignores_what_was_known():
     known = {"website": "https://acme.com", "industry": "Software"}
     profile = {"name": "acme", "website": "https://acme.com", "industry": "Software", "founded_year": 2010, "topic": None}

@@ -32,15 +32,22 @@ def new_fields(profile: dict, known: dict) -> list[str]:
 
 
 def _collect_companies(offers) -> dict[str, dict]:
-    """One entry per company: the first non-empty location and job-board facts across its offers."""
+    """One entry per company: the first non-empty location and job-board facts across its offers.
+
+    A board's website goes through the same check as a searched one: boards also link
+    careers pages (reduced to the homepage) and hiring platforms (dropped).
+    """
     companies: dict[str, dict] = {}
     for offer in offers:
         entry = companies.setdefault(offer.company, {"location": ""})
         if not entry["location"] and offer.location:
             entry["location"] = offer.location
+        info = dict(offer.company_info)
+        if info.get("website"):
+            info["website"] = pick_website(offer.company, [info["website"]])
         for field in _BOARD_FIELDS:
-            if not entry.get(field) and offer.company_info.get(field):
-                entry[field] = offer.company_info[field]
+            if not entry.get(field) and info.get(field):
+                entry[field] = info[field]
     return companies
 
 

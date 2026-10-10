@@ -18,6 +18,7 @@ dependencies = [
     "trafilatura>=2.0.0",
     "tqdm>=4.67.3",
     "lingua-language-detector>=2.2.0",
+    "tldextract>=5.4.0",
 ]
 
 [dependency-groups]
