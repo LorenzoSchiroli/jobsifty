@@ -2,11 +2,11 @@ import json
 import logging
 import os
 import re
+import time
 from bs4 import BeautifulSoup
 from groq import APIStatusError, Groq
 
 from ingestion.company.models import CompanyExtraction
-from ingestion.utils.text import MAX_COMPANY_DESCRIPTION_CHARS
 
 logger = logging.getLogger(__name__)
 
@@ -15,59 +15,32 @@ _MODEL = os.environ.get("GROQ_MODEL_BASE", "")
 _ORG_TYPES = ("Organization", "LocalBusiness", "Corporation")
 
 _LLM_PROMPT = (
-    "Extract company information from the sources below. "
-    "Return ONLY valid JSON with exactly these fields (use null if unknown):\n"
-    '{{"topic": str, "country": str, "founded_year": int, "employee_count": str, '
-    '"industry": str, "is_consulting": bool, "is_startup": bool, '
-    '"review_score": float, "review_count": int, '
-    '"financial_health_score": int, "financial_health_rationale": str, '
-    '"registration_numbers": null}}\n\n'
-    "IMPORTANT: topic is a single sentence describing what the company does and its main product or service "
-    "(e.g. 'Google is a search engine and technology company', "
-    "'Barclays is a British universal bank providing retail and investment banking services'). "
-    "Be specific and factual — never generic like 'a company that provides services'.\n"
-    "IMPORTANT: review_score and review_count must come from Glassdoor EMPLOYEE ratings only. "
-    "Ignore any app store, user, customer, or parent-company ratings. "
-    "Prefer the overall company rating (e.g. '4.1 out of 5 stars based on 35 reviews'). "
-    "If no overall rating is available, use any Glassdoor employee sub-category rating "
-    "(e.g. compensation, work-life balance, senior management) as a best-effort value. "
-    "review_score and review_count are independent — extract whichever is available, even if the other is null. "
-    "If glassdoor_reviews are provided in the sources, use them as the authoritative source for review fields.\n"
-    "IMPORTANT: employee_count refers to the number of actual employees (full-time or part-time) "
-    "working for the company. Do not use counts of platform users, freelancers, contractors, "
-    "community members, customers, or any other non-employee group, even if those numbers appear "
-    "prominently on the website. If no genuine employee count is available, return null.\n"
-    "IMPORTANT: All text fields (description, industry, financial_health_rationale) must be written "
-    "in English, even if the source content is in another language.\n\n"
-    "IMPORTANT: For is_startup, use conservative inference from available evidence "
-    "(company self-description, funding stage, age/size signals). "
-    "If evidence is weak or conflicting, return null.\n\n"
-    "IMPORTANT: For financial_health_score, rate the company's financial health 1–5:\n"
-    "1 = critical risk (bankruptcy, insolvency, severe losses)\n"
-    "2 = financially stressed (significant debt, declining revenue)\n"
-    "3 = neutral (stable but no strong signals either way)\n"
-    "4 = financially healthy (profitable, growing, solid balance sheet)\n"
-    "5 = very healthy (strong profitability, cash-rich, market leader)\n"
-    "financial_health_rationale must be 1 sentence in English citing the key signal "
-    "(revenue trend, debt level, funding stage, profitability). "
-    "If signals are too weak to assess confidently, use score 3. "
-    "If financial_snippets are provided in the sources, use them as the authoritative source for financial fields.\n\n"
-    "IMPORTANT: For registration_numbers, extract any official company registration or tax identifiers "
-    "found anywhere in the sources (footer, legal/imprint page, about page, contact page). "
-    "Only include a key if you found an actual value — omit it entirely if not found (do NOT use 'Not Found', 'N/A', or null as a value). "
-    "Recognised types: VAT (EU, e.g. IT12345678901 / DE123456789), "
-    "EIN (US, e.g. 12-3456789), "
-    "CRN (UK/Ireland, e.g. 12345678), "
-    "SIREN or SIRET (France), "
-    "HRB or HRA (Germany), "
-    "KVK (Netherlands), "
-    "CIF or NIF (Spain/Portugal), "
-    "DUNS (global). "
-    "If none are found, return null.\n\n"
-    "Company name: {name}\n"
-    "Location hint: {location}\n\n"
-    "Sources:\n{sources_json}"
+    "Below are web search results about an employer that posted a job. "
+    "Return ONLY a JSON object with these fields, using null for anything the results do not state:\n"
+    '{{"topic": str, "country": str, "founded_year": int, "employee_count": str, "industry": str, '
+    '"is_consulting": bool, "is_startup": bool, "financial_health_score": int, "financial_health_rationale": str}}\n\n'
+    "- topic: one specific sentence on what the company does and sells, in English "
+    "(e.g. 'Barclays is a British universal bank providing retail and investment banking services').\n"
+    "- country: country of the headquarters, in English.\n"
+    "- employee_count: the number of employees as a number or range like '51-200'; "
+    "never users, customers or freelancers.\n"
+    "- is_consulting: true when it mainly sells consulting, outsourcing, staffing or recruiting.\n"
+    "- is_startup: true for a young, venture-funded, growing company; null when unclear.\n"
+    "- financial_health_score: 1 (insolvency, severe losses) to 5 (very profitable market leader), "
+    "only from evidence such as funding, revenue growth, profits, layoffs or losses; "
+    "null when the results contain no such evidence. "
+    "financial_health_rationale: one English sentence citing that evidence, or null.\n"
+    "If the results describe a different organisation with the same name (check the job location), "
+    "return null for every field.\n\n"
+    "Employer: {name}\n"
+    "Job location: {location}\n\n"
+    "Search results:\n{sources}"
 )
+# Groq's free tier allows 8,000 tokens per minute; a call is ~1.5k tokens.
+_MIN_SECONDS_BETWEEN_CALLS = 12
+_SNIPPET_CHARS = 400
+_MAX_SNIPPETS = 5
+_PAGE_CHARS = 2000
 
 def _strip_markdown_json(text: str) -> str:
     stripped = re.sub(r"^```(?:json)?\s*\n?", "", text.strip(), flags=re.IGNORECASE)
@@ -119,6 +92,7 @@ def extract_jsonld(html: str) -> dict:
 _RATE_LIMIT_TRIP_AFTER = 3
 _breaker_open = False
 _consecutive_rate_limits = 0
+_last_call = 0.0
 
 
 def breaker_open() -> bool:
@@ -126,9 +100,10 @@ def breaker_open() -> bool:
 
 
 def reset_breaker() -> None:
-    global _breaker_open, _consecutive_rate_limits
+    global _breaker_open, _consecutive_rate_limits, _last_call
     _breaker_open = False
     _consecutive_rate_limits = 0
+    _last_call = 0.0
 
 
 def _trip(reason: str) -> None:
@@ -152,20 +127,44 @@ def _record_failure(e: Exception) -> None:
             _trip(f"{_consecutive_rate_limits} consecutive rate limits")
 
 
-def extract_with_llm(
-    name: str,
-    location: str,
-    client: Groq | None,
-    sources: dict,
-) -> CompanyExtraction | None:
-    """LLM extraction; None when there is no client, the breaker is open, or the call fails."""
+def _wait_for_slot() -> None:
+    global _last_call
+    if (wait := _last_call + _MIN_SECONDS_BETWEEN_CALLS - time.monotonic()) > 0:
+        time.sleep(wait)
+    _last_call = time.monotonic()
+
+
+def format_sources(
+    answer: str | None, snippets: list[str], board_description: str | None = None, page_text: str | None = None,
+) -> str:
+    """The search answer, the top snippets and the job board's blurb, kept to ~1.5k tokens.
+
+    The company's own page is added only without a search answer (search down or out of
+    credits), so the LLM still has something about the employer to read.
+    """
+    lines = []
+    if answer:
+        lines.append(f"Summary: {answer}")
+    if board_description:
+        lines.append(f"Job board description: {board_description[:_SNIPPET_CHARS]}")
+    lines += [f"- {s[:_SNIPPET_CHARS]}" for s in snippets[:_MAX_SNIPPETS]]
+    if page_text and not answer:
+        lines.append(f"Company website: {page_text[:_PAGE_CHARS]}")
+    return "\n".join(lines)
+
+
+def _valid_score(value):
+    return value if isinstance(value, int) and 1 <= value <= 5 else None
+
+
+def extract_with_llm(name: str, location: str, client: Groq | None, sources: str) -> CompanyExtraction | None:
+    """LLM extraction; None when there is no client or input, the breaker is open, or the call fails."""
     global _consecutive_rate_limits
-    if client is None or _breaker_open:
+    if client is None or _breaker_open or not sources:
         return None
 
-    sources_json = json.dumps(sources, ensure_ascii=False)[:MAX_COMPANY_DESCRIPTION_CHARS]
-    prompt = _LLM_PROMPT.format(name=name, location=location, sources_json=sources_json)
-
+    prompt = _LLM_PROMPT.format(name=name, location=location or "unknown", sources=sources)
+    _wait_for_slot()
     try:
         response = client.chat.completions.create(
             model=_MODEL,
@@ -179,8 +178,11 @@ def extract_with_llm(
     _consecutive_rate_limits = 0
 
     try:
-        content = _strip_markdown_json(response.choices[0].message.content)
-        return CompanyExtraction.model_validate_json(content)
+        data = json.loads(_strip_markdown_json(response.choices[0].message.content))
+        data["financial_health_score"] = _valid_score(data.get("financial_health_score"))
+        if data["financial_health_score"] is None:
+            data["financial_health_rationale"] = None
+        return CompanyExtraction.model_validate(data)
     except Exception as e:
         logger.warning("LLM returned unusable output: %s", e)
         return None

@@ -12,7 +12,7 @@ def _base() -> str:
 
 def post_job(offer: EnrichedOffer) -> tuple[int, dict]:
     """Upsert a job; the payload carries `chunks`."""
-    payload = offer.model_dump(mode="json")
+    payload = offer.model_dump(mode="json", exclude={"company_info"})
     payload["company_name"] = payload.pop("company")
     resp = requests.post(f"{_base()}/jobs/", json=payload, timeout=30)
     if not resp.ok:
@@ -37,3 +37,11 @@ def post_company(data: dict) -> tuple[int, dict]:
     if not resp.ok:
         raise requests.HTTPError(f"{resp.status_code} — {resp.text}", response=resp)
     return resp.status_code, resp.json()
+
+
+def get_pending_companies(limit: int) -> list[dict]:
+    """Companies due for enrichment, most live jobs first (name, website, linkedin_url, industry, location)."""
+    resp = requests.get(f"{_base()}/companies/pending", params={"limit": limit}, timeout=30)
+    if not resp.ok:
+        raise requests.HTTPError(f"{resp.status_code} — {resp.text}", response=resp)
+    return resp.json()

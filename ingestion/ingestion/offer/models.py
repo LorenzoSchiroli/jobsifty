@@ -53,3 +53,4 @@ class EnrichedOffer(BaseModel):
     languages_required: list[str] = []
     text_language: str | None = None
     chunks: list[dict] = []
+    company_info: dict[str, str] = {}

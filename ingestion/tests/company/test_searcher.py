@@ -1,117 +1,106 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from ingestion.company.scraping.searcher import _financial_query, search_company_urls, search_financial
+import pytest
 
-
-def test_search_returns_website_and_glassdoor_snippets():
-    website_hits = [{"href": "https://acme.com", "title": "Acme Corp", "body": ""}]
-    glassdoor_hits = [
-        {"href": "https://www.glassdoor.com/Overview/acme", "title": "Acme", "body": "Great culture. 4.2 stars based on 35 reviews."},
-    ]
-
-    def mock_search(query, max_results):
-        if "glassdoor" in query:
-            return glassdoor_hits
-        return website_hits
-
-    with patch("ingestion.company.scraping.searcher._search", side_effect=mock_search):
-        urls, snippets, financial_snippets = search_company_urls("Acme", "Berlin")
-
-    assert urls["website"] == "https://acme.com"
-    assert "glassdoor" not in urls
-    assert any("4.2" in s for s in snippets)
+from ingestion.company.scraping import searcher
+from ingestion.company.scraping.searcher import (
+    breaker_open, location_hint, normalize_linkedin_url, pick_website, search_company, searches_used,
+)
 
 
-def test_search_omits_missing_sources():
-    with patch("ingestion.company.scraping.searcher._search", return_value=[]):
-        urls, snippets, financial_snippets = search_company_urls("Unknown Corp", "Nowhere")
-
-    assert urls == {}
-    assert snippets == []
-    assert financial_snippets == []
-
-
-def test_search_handles_search_exception_gracefully():
-    glassdoor_hits = [
-        {"href": "https://www.glassdoor.com/Overview/acme", "title": "Acme", "body": "Nice culture. 4.1 stars."},
-    ]
-
-    def mock_search(query, max_results):
-        if "glassdoor" in query:
-            return glassdoor_hits
-        raise Exception("rate limited")
-
-    with patch("ingestion.company.scraping.searcher._search", side_effect=mock_search):
-        urls, snippets, financial_snippets = search_company_urls("Acme", "Berlin")
-
-    assert "website" not in urls
-    assert any("4.1" in s for s in snippets)
+@pytest.fixture(autouse=True)
+def _reset(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    searcher.reset()
+    yield
+    searcher.reset()
 
 
-def test_search_returns_partial_when_glassdoor_empty():
-    website_hits = [{"href": "https://acme.com", "title": "Acme", "body": ""}]
-
-    def mock_search(query, max_results):
-        if "glassdoor" in query:
-            return []
-        if "financial health" in query:
-            return []
-        return website_hits
-
-    with patch("ingestion.company.scraping.searcher._search", side_effect=mock_search):
-        urls, snippets, financial_snippets = search_company_urls("Acme", "Berlin")
-
-    assert urls == {"website": "https://acme.com"}
-    assert snippets == []
+def _response(status: int = 200, body: dict | None = None, text: str = "") -> MagicMock:
+    resp = MagicMock(status_code=status, text=text)
+    resp.json.return_value = body or {}
+    return resp
 
 
-def test_financial_query_uses_registration_number_when_provided():
-    query = _financial_query("Acme", " Berlin", {"VAT": "DE123456789"})
-    assert query == "DE123456789 financial"
+@pytest.mark.parametrize("location, expected", [
+    ("Paris, Île-de-France, France", "Paris France"),
+    ("Berlin", "Berlin"),
+    ("Werk van thuis, BE", "BE"),
+    ("Remote", ""),
+    (None, ""),
+])
+def test_location_hint(location, expected):
+    assert location_hint(location) == expected
 
 
-def test_financial_query_falls_back_to_baseline_without_registration_numbers():
-    query = _financial_query("Acme", " Berlin", None)
-    assert query.startswith("Acme Berlin")
-    assert "financial health" in query
+@pytest.mark.parametrize("name, urls, expected", [
+    # data aggregators and directories are never the employer's site
+    ("Neara", ["https://leadiq.com/c/neara/5dad", "https://rocketreach.co/neara"], None),
+    ("Data Wizards", ["https://leadiq.com/c/x", "https://datawizards.io/about"], "https://datawizards.io"),
+    # the whole name beats a shared first word
+    ("Siemens Healthineers", ["https://www.siemens.com/x", "https://www.siemens-healthineers.com/careers"],
+     "https://www.siemens-healthineers.com"),
+    ("Accenture Greece", ["https://tracxn.com/d/x", "https://www.accenture.com/gr-en"], "https://www.accenture.com"),
+    ("Reddit, Inc.", ["https://www.redditinc.com/"], "https://www.redditinc.com"),
+    ("Hadrian", ["https://research.contrary.com/company/hadrian"], None),
+    ("X4 Technology", ["https://www.x4-technology.com/us"], "https://www.x4-technology.com"),
+])
+def test_pick_website(name, urls, expected):
+    assert pick_website(name, urls) == expected
 
 
-def test_search_financial_uses_registration_number_in_query():
-    hits = [{"href": "https://bundesanzeiger.de/acme", "body": "Revenue €50M."}]
-    with patch("ingestion.company.scraping.searcher._search", return_value=hits) as mock_search:
-        url, snippets = search_financial("Acme", "Berlin", {"VAT": "DE123456789"})
-
-    query_used = mock_search.call_args[0][0]
-    assert "DE123456789" in query_used
-    assert url == "https://bundesanzeiger.de/acme"
-    assert "Revenue €50M." in snippets
+def test_normalize_linkedin_url():
+    assert normalize_linkedin_url("https://ee.linkedin.com/company/markit-eu?trk=x") == "https://www.linkedin.com/company/markit-eu"
+    assert normalize_linkedin_url("https://www.linkedin.com/in/someone") is None
 
 
-def test_search_financial_falls_back_to_baseline_without_registration_numbers():
-    with patch("ingestion.company.scraping.searcher._search", return_value=[]) as mock_search:
-        search_financial("Acme", "Berlin")
+def test_search_company_combines_both_searches():
+    company = {
+        "answer": "Flyability, a Swiss company founded in 2014...",
+        "results": [
+            {"url": "https://www.linkedin.com/company/flyability", "content": "Flyability | LinkedIn"},
+            {"url": "https://www.flyability.com/about", "content": "Collision-tolerant drones."},
+        ],
+    }
+    reviews = {"results": [{"url": "https://www.glassdoor.com/Overview/flyability", "content": "Rated 3.8 out of 5"}]}
 
-    query_used = mock_search.call_args[0][0]
-    assert "financial health" in query_used
+    def post(url, headers, json, timeout):
+        assert headers["Authorization"] == "Bearer test-key"
+        return _response(body=reviews if "glassdoor" in json["query"] else company)
+
+    with patch("ingestion.company.scraping.searcher.requests.post", side_effect=post) as mock_post:
+        result = search_company("Flyability", "Paudex, Vaud, Switzerland")
+
+    queries = sorted(c.kwargs["json"]["query"] for c in mock_post.call_args_list)
+    assert queries == ["Flyability Paudex Switzerland company", "Flyability glassdoor reviews"]
+    assert result.website == "https://www.flyability.com"
+    assert result.linkedin_url == "https://www.linkedin.com/company/flyability"
+    assert result.answer.startswith("Flyability")
+    assert result.review_snippets == ["Rated 3.8 out of 5"]
+    assert searches_used() == 2
 
 
-def test_search_returns_financial_snippets():
-    website_hits = [{"href": "https://acme.com", "title": "Acme", "body": ""}]
-    financial_hits = [
-        {"href": "https://stockanalysis.com/stocks/acme", "title": "Acme Financials", "body": "Revenue grew 12% YoY. Strong cash position."},
-    ]
+def test_quota_error_stops_searching_for_the_run():
+    with patch("ingestion.company.scraping.searcher.requests.post",
+               return_value=_response(432, text='{"detail": "usage limit exceeded"}')) as mock_post:
+        first = search_company("Acme", "Berlin")
+        calls_for_first = mock_post.call_count  # 1 or 2: the two searches run in parallel
+        second = search_company("Other", "Berlin")
 
-    def mock_search(query, max_results):
-        if "financial health" in query:
-            return financial_hits
-        if "glassdoor" in query:
-            return []
-        return website_hits
+    assert breaker_open()
+    assert mock_post.call_count == calls_for_first  # nothing for the second company
+    assert first.answer is None and second.website is None
 
-    with patch("ingestion.company.scraping.searcher._search", side_effect=mock_search):
-        urls, glassdoor_snippets, financial_snippets = search_company_urls("Acme", "Berlin")
 
-    assert urls["website"] == "https://acme.com"
-    assert urls["financial"] == "https://stockanalysis.com/stocks/acme"
-    assert any("12%" in s for s in financial_snippets)
-    assert glassdoor_snippets == []
+def test_transient_errors_do_not_stop_searching():
+    with patch("ingestion.company.scraping.searcher.requests.post", return_value=_response(500, text="oops")):
+        search_company("Acme", "Berlin")
+    assert not breaker_open()
+
+
+def test_no_api_key_means_no_search(monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY")
+    with patch("ingestion.company.scraping.searcher.requests.post") as mock_post:
+        result = search_company("Acme", "Berlin")
+    mock_post.assert_not_called()
+    assert result.answer is None and searches_used() == 0

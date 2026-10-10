@@ -121,10 +121,9 @@ uv run pytest                              # run all ingestion tests
 ```
 GROQ_API_KEY=...
 SECRET_KEY=...                          # JWT signing
-SERPERDEV_API_KEY=...                   # company enrichment web search
+TAVILY_API_KEY=...                      # company enrichment web search (free tier: 1,000/month)
 ADZUNA_APP_ID=...                       # optional job source
 ADZUNA_APP_KEY=...
-DDGS_PROXY=...                          # optional proxy for DuckDuckGo scraping
 BACKUP_SBOX_HOST=...                    # optional; with USER + rclone pass enables backups
 BACKUP_SBOX_USER=...
 # BACKUP_SBOX_RCLONE_PASS=...           # output of rclone obscure
@@ -136,6 +135,7 @@ BACKUP_SBOX_USER=...
 GROQ_MODEL_LARGE=...                    # advanced search
 GROQ_MODEL_BASE=...                     # company enrichment (offers no longer use an LLM)
 OFFER_QUERY=...                         # ingestion Docker / CronJob query
+COMPANY_ENRICH_PER_RUN=1                # companies web-searched per ingestion run (2 Tavily credits each)
 ACCESS_TOKEN_EXPIRE_DAYS=7
 CORS_ORIGINS=...                        # extra API browser origins (optional)
 BACKUP_SBOX_PATH=backups/jobsifty
@@ -181,13 +181,14 @@ Jobs and companies are written atomically to Postgres with an `outbox` row. Ever
 2. Fetch full description if missing (requests + trafilatura; Playwright is used only by company-page scraping)
 3. Parse each offer **without an LLM** (`offer/parsing/`): `sections.py` splits the description on headings and drops company/benefits/apply/legal blocks and EEO boilerplate; `rules.py` derives seniority, employment/location type, office, salary, text language (lingua) and required languages from multilingual tables in `lexicon.py`. There is no job summary any more: the kept text is only chunked and embedded.
 4. Embed: kept text → ≤4 chunks of ~400 tokens (64 overlap), each `title\nwindow`, encoded with `passage: ` by `intfloat/multilingual-e5-small` (`embedder.embed_chunks`)
-5. POST jobs (with `chunks`) and companies to the backend; companies whose profile is mostly empty are enriched deterministically first (JSON-LD → Wikidata → Glassdoor snippet regex → heuristics) and the Groq LLM only fills what is still missing (topic, financial health, …). LLM failures return nothing instead of an empty record, and a circuit breaker stops LLM calls for the rest of the run after a daily-quota/auth error. The run exits 1 when >20% of job posts fail.
+5. POST jobs (with `chunks`), then upsert each company with the facts the job board shipped (LinkedIn: company page + industry; Indeed: website + description; never Indeed's unreliable head count). Offers without a company name are dropped at scrape time.
+6. Enrich at most `COMPANY_ENRICH_PER_RUN` companies (default 1) from `GET /companies/pending`: companies with live jobs, never attempted or still empty after an attempt ≥7 days ago (≤3 attempts), most live jobs first. Each costs two Tavily searches (`company/scraping/searcher.py`): `"<name> <city> <country> company"` with Tavily's short answer (the city disambiguates namesakes) and `"<name> glassdoor reviews"` restricted to Glassdoor. Then: job-board facts → website JSON-LD → Wikidata → Glassdoor regex → one small Groq call (~1.5k tokens, spaced ≥12 s apart for the 8k tokens/minute free tier) on the answer + snippets, or rules on the answer when the LLM is unavailable → heuristics. The website is only taken from a result whose domain contains the company name (aggregators are blocklisted). The post carries `enrichment_attempted`, which stamps `enriched_at` / `enrich_attempts` even when nothing was found. A Tavily quota/key error or a Groq daily-quota/auth error stops that service for the rest of the run; company enrichment never affects the exit code. The run exits 1 when >20% of job posts fail.
 
-After changing the rules or the embedder, `uv run python -m ingestion.backfill` re-derives every stored job (pages `GET /jobs/?after=&limit=`). `POST /jobs/` overwrites the derived fields whenever the post carries a description (they are a pure function of it); without one it only fills empty fields. Companies always use fill-empty, since their data comes from network lookups and the LLM.
+After changing the rules or the embedder, `uv run python -m ingestion.backfill` re-derives every stored job (pages `GET /jobs/?after=&limit=`). `POST /jobs/` overwrites the derived fields whenever the post carries a description (they are a pure function of it); without one it only fills empty fields. Companies always use fill-empty, since their data comes from network lookups and the LLM: a stored value is never replaced.
 
 ### Data Models
 
-- **`Company`** — unique by `name`; enriched with employee_count, founded_year, review_score, financial_health_score (int 0-10), is_consulting, is_startup, industry, country
+- **`Company`** — unique by `name`; enriched with employee_count, founded_year, review_score, financial_health_score (int 1-5, only with evidence), is_consulting, is_startup, industry, country, linkedin_url, topic; `enriched_at` / `enrich_attempts` drive the enrichment retry
 - **`Job`** — unique by `url`; stores parsed fields (employment_type, location_type, seniority, languages_required) and `chunks` JSONB (text + 384-d embedding each)
 - **`Outbox`** — transient sync table; `processed_at` is NULL until worker drains it
 - **`User`**, **`ApplicantProfile`** (`models.py`) — auth accounts and per-user CV text
@@ -214,5 +215,6 @@ Alembic is in `backend/alembic/`. Add schema changes there; the compose backend 
 | LLM | Groq SDK; agents use `langchain-openai` `ChatOpenAI` pointed at Groq's OpenAI-compatible API |
 | Agents / checkpointing | LangGraph + `langgraph-checkpoint-postgres` (advanced search) |
 | Auth | python-jose (JWT) + passlib[bcrypt] |
-| Scraping | python-jobspy, Playwright, trafilatura, ddgs |
+| Scraping | python-jobspy, Playwright, trafilatura |
+| Company web search | Tavily REST API |
 | Package manager | uv workspace |

@@ -15,7 +15,7 @@ def main():
     args = [a for a in sys.argv[1:] if a != "--debug"]
 
     logging.basicConfig(level=logging.DEBUG if debug else logging.WARNING)
-    for _noisy in ("httpx", "httpcore", "ddgs"):
+    for _noisy in ("httpx", "httpcore"):
         logging.getLogger(_noisy).setLevel(logging.ERROR)
 
     if not args:

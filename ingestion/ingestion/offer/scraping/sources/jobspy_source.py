@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, time as dt_time
 import pandas as pd
 from jobspy import scrape_jobs
@@ -25,6 +26,28 @@ class _SkippingLinkedIn(LinkedIn):
             return None
 
 
+def _text(value) -> str:
+    """A clean string from a jobspy value; NaN, None and "nan" become "" (pandas NaN is truthy)."""
+    if not isinstance(value, (str, int, float)) or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() in ("nan", "none", "null") else text
+
+
+def _company_info(site: str, values: dict) -> dict[str, str]:
+    """Employer facts the board ships with the job. Indeed's head count and revenue are
+    left out: they are often wrong (Wolt listed as "11 to 50" employees)."""
+    info = {"industry": _text(values.get("company_industry"))}
+    if site == "linkedin":
+        # country subdomains (ee.linkedin.com/company/x) → one canonical form
+        if m := re.search(r"linkedin\.com/company/([^/?#]+)", _text(values.get("company_url"))):
+            info["linkedin_url"] = f"https://www.linkedin.com/company/{m.group(1)}"
+    else:
+        info["website"] = _text(values.get("company_url_direct"))
+        info["description"] = _text(values.get("company_description"))
+    return {k: v for k, v in info.items() if v}
+
+
 def _df_to_offers(df: pd.DataFrame) -> list[JobOffer]:
     results = []
     for _, row in df.iterrows():
@@ -45,12 +68,13 @@ def _df_to_offers(df: pd.DataFrame) -> list[JobOffer]:
         raw_desc = "" if pd.isna(raw_desc_val) else str(raw_desc_val or "")
         results.append(JobOffer(
             title=title,
-            company=str(row.get("company") or ""),
-            location=str(row.get("location") or ""),
-            url=str(row.get("job_url") or ""),
+            company=_text(row.get("company")),
+            location=_text(row.get("location")),
+            url=_text(row.get("job_url")),
             source=f"jobspy:{site}",
             posted_at=posted_at,
             description=_strip_html(raw_desc) or None,
+            company_info=_company_info(site, row),
         ))
     return results
 
@@ -59,12 +83,15 @@ def _linkedin_job_to_offer(job) -> JobOffer:
     location = job.location.display_location() if job.location else ""
     return JobOffer(
         title=job.title,
-        company=job.company_name or "",
+        company=_text(job.company_name),
         location=location,
         url=job.job_url,
         source="jobspy:linkedin",
         posted_at=datetime.combine(job.date_posted, dt_time.min) if job.date_posted else None,
         description=_strip_html(job.description) if job.description else None,
+        company_info=_company_info(
+            "linkedin", {"company_url": job.company_url, "company_industry": job.company_industry},
+        ),
     )
 
 

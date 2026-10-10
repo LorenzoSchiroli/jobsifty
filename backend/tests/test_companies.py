@@ -56,3 +56,58 @@ async def test_company_upsert_creates_outbox_event(client, db_session):
     )
     events = result.scalars().all()
     assert len(events) == 1
+
+
+async def test_upsert_company_stores_linkedin_url_and_topic(client):
+    resp = await client.post("/companies/", json={
+        "name": "Stripe", "linkedin_url": "https://www.linkedin.com/company/stripe", "topic": "Payments",
+    })
+    assert resp.json()["linkedin_url"] == "https://www.linkedin.com/company/stripe"
+    assert resp.json()["topic"] == "Payments"
+
+
+async def test_enrichment_attempt_is_counted_even_without_data(client):
+    first = (await client.post("/companies/", json={"name": "Stripe"})).json()
+    assert first["enrich_attempts"] == 0 and first["enriched_at"] is None
+    resp = await client.post("/companies/", json={"name": "Stripe", "enrichment_attempted": True})
+    assert resp.json()["enrich_attempts"] == 1
+    assert resp.json()["enriched_at"] is not None
+
+
+async def _post_job(client, company: str, i: int, location: str = "Berlin, Germany"):
+    resp = await client.post("/jobs/", json={
+        "url": f"https://jobs.example/{company}/{i}", "title": "Engineer", "company_name": company, "location": location,
+    })
+    assert resp.status_code == 201
+
+
+async def test_pending_orders_by_live_jobs_and_returns_location(client):
+    await _post_job(client, "Small", 1)
+    for i in range(3):
+        await _post_job(client, "Big", i, location="Paris, France")
+    resp = await client.get("/companies/pending", params={"limit": 10})
+    assert resp.status_code == 200
+    assert [(c["name"], c["live_jobs"], c["location"]) for c in resp.json()] == [
+        ("big", 3, "Paris, France"), ("small", 1, "Berlin, Germany"),
+    ]
+
+
+async def test_pending_skips_recently_attempted_and_companies_without_live_jobs(client):
+    await _post_job(client, "Tried", 1)
+    await client.post("/companies/", json={"name": "Tried", "enrichment_attempted": True})
+    await client.post("/companies/", json={"name": "NoJobs"})
+    assert (await client.get("/companies/pending")).json() == []
+
+
+async def test_pending_retries_an_empty_company_after_the_pause(client, db_session):
+    from datetime import datetime, timedelta, timezone
+    from backend.models import Company
+    await _post_job(client, "Empty", 1)
+    await _post_job(client, "Filled", 1)
+    await client.post("/companies/", json={"name": "Empty", "enrichment_attempted": True})
+    await client.post("/companies/", json={"name": "Filled", "founded_year": 2010, "enrichment_attempted": True})
+    long_ago = datetime.now(timezone.utc) - timedelta(days=8)
+    for company in (await db_session.execute(select(Company))).scalars():
+        company.enriched_at = long_ago
+    await db_session.commit()
+    assert [c["name"] for c in (await client.get("/companies/pending")).json()] == ["empty"]

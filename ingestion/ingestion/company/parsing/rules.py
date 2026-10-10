@@ -124,3 +124,38 @@ def country_from_location(location: str | None) -> str | None:
     if len(last) == 2 and len(parts) < 3:
         return None
     return _COUNTRIES.get(last)
+
+
+_FOUNDED_PATTERN = re.compile(
+    r"\b(?:founded|established|incorporated)\b[^.]{0,40}?\b(1[89]\d\d|20\d\d)\b", re.IGNORECASE,
+)
+_EMPLOYEES_PATTERN = re.compile(
+    r"\b(\d{1,3}(?:[,.]\d{3})+|\d+)\+?\s*(?:employees|staff members|members of staff)\b", re.IGNORECASE,
+)
+_HQ_PATTERN = re.compile(r"\b(?:headquartered|based)\s+in\s+([^.;()]{2,60})")
+
+
+def parse_answer(answer: str | None, today: date | None = None) -> dict:
+    """founded_year / employee_count / country from a search engine's short answer about the company.
+
+    Used when the LLM is unavailable. Only the answer is read, never the raw snippets:
+    snippets mention other years and numbers (a 2025 award, an unrelated founding date).
+    """
+    if not answer:
+        return {}
+    result: dict = {}
+    year = (today or date.today()).year
+    if (m := _FOUNDED_PATTERN.search(answer)) and int(m.group(1)) <= year:
+        result["founded_year"] = int(m.group(1))
+    for m in _EMPLOYEES_PATTERN.finditer(answer):
+        digits = m.group(1)
+        # "in 2014 employees grew..." — a bare year is not a head count
+        if re.fullmatch(r"(?:18|19|20)\d\d", digits):
+            continue
+        result["employee_count"] = digits
+        break
+    if m := _HQ_PATTERN.search(answer):
+        place = re.split(r"\s+(?:with|and|that|which|is|it|since|founded|specializ\w*)\b", m.group(1))[0]
+        if country := country_from_location(place) or _COUNTRIES.get(place.strip(" ,").lower()):
+            result["country"] = country
+    return result

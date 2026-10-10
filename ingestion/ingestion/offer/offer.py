@@ -24,6 +24,7 @@ def derive(offer: JobOffer) -> EnrichedOffer:
         posted_at=offer.posted_at,
         description=offer.description,
         chunks=embed_chunks(offer.title, body),
+        company_info=offer.company_info,
         **extraction.model_dump(),
     )
 

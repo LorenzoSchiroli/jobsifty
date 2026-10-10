@@ -4,7 +4,7 @@ import pytest
 
 from ingestion.company.models import CompanyExtraction
 from ingestion.company.parsing.extractor import reset_breaker
-from ingestion.company.parsing.parsing import parse, parse_financial
+from ingestion.company.parsing.parsing import parse
 
 _TEXT = {
     "website_url": "https://acme.com",
@@ -74,14 +74,53 @@ def test_parse_handles_empty_input():
     assert result == CompanyExtraction()
 
 
-def test_parse_financial_skips_without_client():
-    info = CompanyExtraction(financial_health_score=3)
-    with patch("ingestion.company.parsing.parsing.extract_with_llm") as llm:
-        assert parse_financial("Acme", "", info, {}, None) is info
-    llm.assert_not_called()
+def test_parse_uses_job_board_facts_and_search_answer_without_llm():
+    text = {
+        "known": {"industry": "Drones", "description": "Flyability builds drones."},
+        "search_answer": "Flyability, a Swiss company founded in 2014, has 120 employees.",
+    }
+    result = parse("Flyability", "Paudex, Vaud, Switzerland", text, client=None)
+
+    assert result.industry == "Drones"
+    assert result.founded_year == 2014
+    assert result.employee_count == "120"
+    assert result.description == "Flyability, a Swiss company founded in 2014, has 120 employees."
 
 
-def test_parse_financial_keeps_info_on_llm_failure():
-    info = CompanyExtraction(financial_health_score=3)
+def test_parse_sends_search_results_to_llm_and_skips_answer_rules():
+    text = {
+        "search_answer": "Acme was founded in 1990.",
+        "search_snippets": ["Acme makes anvils."],
+        "known": {"description": "Anvils since forever"},
+    }
+    llm_result = CompanyExtraction(founded_year=1991, topic="Acme makes anvils.")
+    with patch("ingestion.company.parsing.parsing.extract_with_llm", return_value=llm_result) as llm:
+        result = parse("Acme", "Berlin", text, client=object())
+
+    sources = llm.call_args.args[3]
+    assert "Summary: Acme was founded in 1990." in sources
+    assert "- Acme makes anvils." in sources
+    assert "Anvils since forever" in sources
+    assert result.founded_year == 1991
+
+
+def test_parse_falls_back_to_answer_rules_when_llm_fails():
+    text = {"search_answer": "Acme was founded in 1990 and has 45 employees."}
     with patch("ingestion.company.parsing.parsing.extract_with_llm", return_value=None):
-        assert parse_financial("Acme", "", info, {"financial_snippets": ["x"]}, object()) is info
+        result = parse("Acme", "Berlin", text, client=object())
+
+    assert result.founded_year == 1990
+    assert result.employee_count == "45"
+
+
+def test_llm_headquarters_beats_the_job_location():
+    llm_result = CompanyExtraction(country="United States")
+    with patch("ingestion.company.parsing.parsing.extract_with_llm", return_value=llm_result):
+        result = parse("Alignerr", "Edinburgh, Scotland, UK", {"search_answer": "Alignerr ..."}, client=object())
+    assert result.country == "United States"
+
+
+def test_job_location_is_the_last_resort_for_country():
+    with patch("ingestion.company.parsing.parsing.extract_with_llm", return_value=None):
+        result = parse("Acme", "Berlin, Berlin, Germany", {}, client=object())
+    assert result.country == "Germany"

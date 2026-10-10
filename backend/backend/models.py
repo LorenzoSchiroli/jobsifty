@@ -40,6 +40,8 @@ class Company(Base):
     financial_health_score: Mapped[int | None] = mapped_column(Integer)
     financial_health_rationale: Mapped[str | None] = mapped_column(Text)
     registration_numbers: Mapped[dict | None] = mapped_column(JSONB)
+    enriched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    enrich_attempts: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 

@@ -25,7 +25,12 @@ def scrape(query: str, hours: int, sources: list[Source] | None = None) -> list[
         offers = src.fetch(query, hours)
         logger.info("  %-20s %d offers", src.__class__.__name__, len(offers))
         all_offers.extend(offers)
-    deduped = deduplicate(all_offers)
+    # A job without an employer name cannot be tied to a company (jobspy used to
+    # turn a missing name into a company literally called "nan").
+    named = [o for o in all_offers if o.company.strip()]
+    if dropped := len(all_offers) - len(named):
+        logger.info("Dropped %d offers without a company name", dropped)
+    deduped = deduplicate(named)
     deduped.sort(key=lambda o: o.posted_at or datetime.min, reverse=True)
     logger.info("Scraped %d offers total (after dedup)", len(deduped))
     return deduped

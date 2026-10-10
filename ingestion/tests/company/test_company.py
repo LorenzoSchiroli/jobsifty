@@ -34,75 +34,10 @@ def test_enrich_handles_no_data_gracefully():
     assert result.country is None
 
 
-def test_enrich_triggers_targeted_financial_search_when_registration_numbers_found():
-    first_info = CompanyExtraction(
-        registration_numbers={"VAT": "DE123456789"},
-        financial_health_score=3,
-        financial_health_rationale="Insufficient data.",
-    )
-    second_info = CompanyExtraction(
-        registration_numbers={"VAT": "DE123456789"},
-        financial_health_score=4,
-        financial_health_rationale="Strong balance sheet per annual report.",
-    )
+def test_enrich_passes_known_facts_to_scrape():
+    known = {"website": "https://acme.com", "industry": "Software"}
+    with patch("ingestion.company.company.scrape", return_value=({}, [])) as mock_scrape:
+        with patch("ingestion.company.company.parse", return_value=CompanyExtraction()):
+            enrich("Acme", "Berlin", None, known)
 
-    with patch("ingestion.company.company.scrape", return_value=({}, [])):
-        with patch("ingestion.company.company.parse", return_value=first_info):
-            with patch("ingestion.company.company.scrape_financial", return_value=({}, [])) as mock_sf:
-                with patch("ingestion.company.company.parse_financial", return_value=second_info):
-                    result, _ = enrich("Acme", "Berlin", _make_client())
-
-    mock_sf.assert_called_once_with("Acme", "Berlin", {"VAT": "DE123456789"})
-    assert result.financial_health_score == 4
-    assert result.financial_health_rationale == "Strong balance sheet per annual report."
-
-
-def test_enrich_skips_targeted_financial_search_when_score_is_confident():
-    info = CompanyExtraction(
-        registration_numbers={"VAT": "DE123456789"},
-        financial_health_score=4,
-        financial_health_rationale="Profitable.",
-    )
-
-    with patch("ingestion.company.company.scrape", return_value=({}, [])):
-        with patch("ingestion.company.company.parse", return_value=info):
-            with patch("ingestion.company.company.scrape_financial") as mock_sf:
-                enrich("Acme", "Berlin", _make_client())
-
-    mock_sf.assert_not_called()
-
-
-def test_enrich_skips_targeted_financial_search_when_no_registration_numbers():
-    info = CompanyExtraction(financial_health_score=3)
-
-    with patch("ingestion.company.company.scrape", return_value=({}, [])):
-        with patch("ingestion.company.company.parse", return_value=info):
-            with patch("ingestion.company.company.scrape_financial") as mock_sf:
-                enrich("Acme", "Berlin", _make_client())
-
-    mock_sf.assert_not_called()
-
-
-def test_enrich_without_client_skips_financial_llm_step():
-    info = CompanyExtraction(registration_numbers={"VAT": "DE123456789"}, financial_health_score=None)
-
-    with patch("ingestion.company.company.scrape", return_value=({}, [])):
-        with patch("ingestion.company.company.parse", return_value=info) as mock_parse:
-            with patch("ingestion.company.company.scrape_financial") as mock_sf:
-                result, _ = enrich("Acme", "Berlin", None)
-
-    mock_parse.assert_called_once_with("Acme", "Berlin", {}, None)
-    mock_sf.assert_not_called()
-    assert result.name == "Acme"
-
-
-def test_enrich_skips_financial_llm_step_when_breaker_open():
-    info = CompanyExtraction(registration_numbers={"VAT": "DE123456789"}, financial_health_score=None)
-
-    with patch("ingestion.company.company.scrape", return_value=({}, [])):
-        with patch("ingestion.company.company.parse", return_value=info):
-            with patch("ingestion.company.company.breaker_open", return_value=True):
-                with patch("ingestion.company.company.scrape_financial") as mock_sf:
-                    enrich("Acme", "Berlin", _make_client())
-
-    mock_sf.assert_not_called()
+    mock_scrape.assert_called_once_with("Acme", "Berlin", known)

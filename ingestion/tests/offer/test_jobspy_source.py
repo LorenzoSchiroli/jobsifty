@@ -161,3 +161,42 @@ def test_linkedin_unknown_country_skips_only_that_job():
         scraper = _SkippingLinkedIn()
         assert scraper._process_job(None, "ok", False) == "ok"
         assert scraper._process_job(None, "bad", False) is None
+
+
+# --- company facts and missing names ---
+
+from ingestion.offer.scraping.sources.jobspy_source import _df_to_offers, _linkedin_job_to_offer
+
+
+def test_linkedin_offer_carries_canonical_company_page_and_industry():
+    job = _make_job_post("Data Engineer")
+    job.company_url = "https://ee.linkedin.com/company/markit-eu?trk=public_jobs"
+    job.company_industry = "IT Services and IT Consulting"
+    offer = _linkedin_job_to_offer(job)
+    assert offer.company_info == {
+        "linkedin_url": "https://www.linkedin.com/company/markit-eu",
+        "industry": "IT Services and IT Consulting",
+    }
+
+
+def test_indeed_offer_carries_website_and_description_but_not_head_count():
+    df = pd.DataFrame([{
+        "title": "Data Engineer", "company": "Wolt", "location": "Berlin", "job_url": "https://indeed.com/1",
+        "date_posted": None, "site": "indeed", "description": None,
+        "company_url": "https://de.indeed.com/cmp/Wolt", "company_url_direct": "https://www.wolt.com",
+        "company_industry": "Transport And Freight", "company_description": "Wolt delivers food.",
+        "company_num_employees": "11 to 50", "company_revenue": "less than $1M (USD)",
+    }])
+    assert _df_to_offers(df)[0].company_info == {
+        "website": "https://www.wolt.com", "industry": "Transport And Freight", "description": "Wolt delivers food.",
+    }
+
+
+def test_missing_company_name_is_empty_not_nan():
+    df = pd.DataFrame([{
+        "title": "Data Engineer", "company": float("nan"), "location": float("nan"), "job_url": "https://indeed.com/2",
+        "date_posted": None, "site": "indeed", "description": None,
+    }])
+    offer = _df_to_offers(df)[0]
+    assert offer.company == ""
+    assert offer.location == ""

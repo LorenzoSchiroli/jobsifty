@@ -108,13 +108,7 @@ variable "adzuna_app_key" {
   default   = ""
 }
 
-variable "serperdev_api_key" {
-  type      = string
-  sensitive = true
-  default   = ""
-}
-
-variable "ddgs_proxy" {
+variable "tavily_api_key" {
   type      = string
   sensitive = true
   default   = ""

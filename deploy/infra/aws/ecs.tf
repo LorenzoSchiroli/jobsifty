@@ -21,8 +21,7 @@ locals {
     "ACCESS_TOKEN_EXPIRE_DAYS",
     "ADZUNA_APP_ID",
     "ADZUNA_APP_KEY",
-    "SERPERDEV_API_KEY",
-    "DDGS_PROXY",
+    "TAVILY_API_KEY",
   ]
 
   app_container_secrets = [

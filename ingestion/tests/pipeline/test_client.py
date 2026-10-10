@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 from ingestion.offer.models import EnrichedOffer
-from ingestion.client import list_jobs, post_job, post_company
+from ingestion.client import get_pending_companies, list_jobs, post_job, post_company
 
 
 @pytest.fixture(autouse=True)
@@ -114,3 +114,17 @@ def test_list_jobs_first_page_has_no_after():
         items, next_after = list_jobs()
     assert "after" not in mock_get.call_args.kwargs["params"]
     assert items == [] and next_after is None
+
+
+def test_post_job_does_not_send_company_info():
+    with patch("ingestion.client.requests.post", return_value=_resp(201, {})) as mock_post:
+        post_job(_offer(company_info={"website": "https://acme.com"}))
+    assert "company_info" not in mock_post.call_args.kwargs["json"]
+
+
+def test_get_pending_companies_passes_limit():
+    rows = [{"name": "acme", "location": "Berlin", "live_jobs": 3}]
+    with patch("ingestion.client.requests.get", return_value=_resp(200, rows)) as mock_get:
+        assert get_pending_companies(2) == rows
+    assert mock_get.call_args.args[0] == "http://localhost:8000/companies/pending"
+    assert mock_get.call_args.kwargs["params"] == {"limit": 2}

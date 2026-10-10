@@ -1,121 +1,135 @@
-from ingestion.pipeline.__main__ import is_enrichment_needed
-
-
-def test_all_none_needs_enrichment():
-    company = {
-        "id": "1", "name": "Acme", "website": None,
-        "country": None, "founded_year": None, "employee_count": None,
-    }
-    assert is_enrichment_needed(company) is True
-
-
-def test_exactly_half_none_needs_enrichment():
-    # 3 None out of 6 = 50% — threshold is >=, so True
-    company = {
-        "id": "1", "name": "Acme", "website": "acme.com",
-        "country": None, "founded_year": None, "employee_count": None,
-    }
-    assert is_enrichment_needed(company) is True
-
-
-def test_majority_populated_no_enrichment():
-    company = {
-        "id": "1", "name": "Acme", "website": "acme.com",
-        "country": "US", "founded_year": 2010, "employee_count": "100-500",
-    }
-    assert is_enrichment_needed(company) is False
-
-
-def test_one_null_no_enrichment():
-    # 1 out of 6 = 17% → False
-    company = {
-        "id": "1", "name": "Acme", "website": "acme.com",
-        "country": "US", "founded_year": None, "employee_count": "100-500",
-    }
-    assert is_enrichment_needed(company) is False
-
-
-def test_bool_false_is_not_null():
-    company = {
-        "id": "1", "name": "Acme", "is_consulting": False,
-        "is_startup": False, "website": "acme.com", "country": "US",
-    }
-    assert is_enrichment_needed(company) is False
-
-
-def test_identity_fields_not_counted():
-    # id and name are always populated — should not dilute the null count
-    company = {
-        "id": "abc-123",
-        "name": "Acme",
-        "created_at": "2024-01-01",
-        "updated_at": "2024-01-01",
-        "website": None,
-        "country": None,
-        "founded_year": None,
-        "employee_count": None,
-    }
-    # 4 None enrichable fields out of 4 enrichable = 100% → True
-    assert is_enrichment_needed(company) is True
-
-
-# --- run() ---
-
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from ingestion.offer.models import EnrichedOffer
-from ingestion.pipeline.__main__ import has_enriched_fields, run
+from ingestion.pipeline.__main__ import _collect_companies, new_fields, run
+
+_P = "ingestion.pipeline.__main__"
 
 
-def _offer(i: int) -> EnrichedOffer:
-    return EnrichedOffer(title=f"Job {i}", company="Acme", location="Berlin", url=f"https://x/{i}", source="t", posted_at=None)
+@pytest.fixture(autouse=True)
+def _env(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    monkeypatch.delenv("COMPANY_ENRICH_PER_RUN", raising=False)
+
+
+def _offer(i: int, company: str = "Acme", location: str = "Berlin", **info) -> EnrichedOffer:
+    return EnrichedOffer(title=f"Job {i}", company=company, location=location, url=f"https://x/{i}",
+                         source="t", posted_at=None, company_info=info)
 
 
 def _profile(**fields):
     profile = MagicMock()
-    profile.model_dump.return_value = {"name": "Acme", **fields}
+    profile.model_dump.return_value = {"name": "acme", **fields}
     return profile
 
 
-def test_has_enriched_fields():
-    assert has_enriched_fields({"name": "Acme", "id": "1", "country": "de"})
-    assert not has_enriched_fields({"name": "Acme", "id": "1", "country": None})
+def test_collect_companies_merges_location_and_board_facts():
+    offers = [
+        _offer(1, location=""),
+        _offer(2, location="Berlin", industry="Software"),
+        _offer(3, location="Munich", website="https://acme.com", industry="Other"),
+        _offer(4, company="Beta", linkedin_url="https://www.linkedin.com/company/beta"),
+    ]
+    assert _collect_companies(offers) == {
+        "Acme": {"location": "Berlin", "industry": "Software", "website": "https://acme.com"},
+        "Beta": {"location": "Berlin", "linkedin_url": "https://www.linkedin.com/company/beta"},
+    }
 
 
-def test_run_without_groq_key_passes_no_client(monkeypatch):
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    with patch("ingestion.pipeline.__main__.enrich_all", return_value=[_offer(1)]) as mock_enrich, \
-         patch("ingestion.pipeline.__main__.post_job", return_value=(201, {})), \
-         patch("ingestion.pipeline.__main__.post_company", return_value=(201, {"id": "1", "name": "Acme", "country": None})), \
-         patch("ingestion.pipeline.__main__.enrich_company", return_value=(_profile(country="de"), [])) as mock_company:
+def test_new_fields_ignores_what_was_known():
+    known = {"website": "https://acme.com", "industry": "Software"}
+    profile = {"name": "acme", "website": "https://acme.com", "industry": "Software", "founded_year": 2010, "topic": None}
+    assert new_fields(profile, known) == ["founded_year"]
+
+
+def test_run_upserts_companies_with_board_facts_then_enriches_pending():
+    pending = [{"name": "acme", "website": None, "linkedin_url": None, "industry": None,
+                "location": "Berlin", "live_jobs": 2}]
+    with patch(f"{_P}.enrich_all", return_value=[_offer(1, website="https://acme.com")]), \
+         patch(f"{_P}.post_job", return_value=(201, {})), \
+         patch(f"{_P}.post_company", return_value=(201, {})) as mock_post_company, \
+         patch(f"{_P}.get_pending_companies", return_value=pending) as mock_pending, \
+         patch(f"{_P}.enrich_company", return_value=(_profile(founded_year=2010), [])) as mock_enrich:
         assert run("q", 2) == 0
-    mock_enrich.assert_called_once_with("q", 2)
-    assert mock_company.call_args.args[2] is None
+
+    assert mock_post_company.call_args_list[0].args[0] == {"name": "Acme", "website": "https://acme.com"}
+    mock_pending.assert_called_once_with(1)
+    name, location, client, known = mock_enrich.call_args.args
+    assert (name, location, client) == ("acme", "Berlin", None)
+    assert known["website"] == "https://acme.com"  # this run's board facts reach the enrichment
+    assert mock_post_company.call_args_list[1].args[0] == {"name": "acme", "founded_year": 2010, "enrichment_attempted": True}
 
 
-def test_run_does_not_post_empty_company_profile(monkeypatch):
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    with patch("ingestion.pipeline.__main__.enrich_all", return_value=[_offer(1)]), \
-         patch("ingestion.pipeline.__main__.post_job", return_value=(201, {})), \
-         patch("ingestion.pipeline.__main__.post_company", return_value=(201, {"id": "1", "name": "Acme", "country": None})) as mock_post_company, \
-         patch("ingestion.pipeline.__main__.enrich_company", return_value=(_profile(country=None), [])):
+def test_attempt_is_recorded_even_when_nothing_is_found():
+    pending = [{"name": "acme", "location": "", "live_jobs": 1}]
+    with patch(f"{_P}.enrich_all", return_value=[_offer(1)]), \
+         patch(f"{_P}.post_job", return_value=(201, {})), \
+         patch(f"{_P}.post_company", return_value=(201, {})) as mock_post_company, \
+         patch(f"{_P}.get_pending_companies", return_value=pending), \
+         patch(f"{_P}.enrich_company", return_value=(_profile(), [])):
         run("q", 2)
-    assert mock_post_company.call_count == 1  # only the initial upsert
+    assert mock_post_company.call_args_list[-1].args[0] == {"name": "acme", "enrichment_attempted": True}
 
 
-def test_run_exit_code_on_post_errors(monkeypatch):
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+def test_budget_comes_from_the_environment_and_zero_disables(monkeypatch):
+    monkeypatch.setenv("COMPANY_ENRICH_PER_RUN", "0")
+    with patch(f"{_P}.enrich_all", return_value=[_offer(1)]), \
+         patch(f"{_P}.post_job", return_value=(201, {})), \
+         patch(f"{_P}.post_company", return_value=(201, {})), \
+         patch(f"{_P}.get_pending_companies") as mock_pending:
+        assert run("q", 2) == 0
+    mock_pending.assert_not_called()
+
+
+def test_company_failures_never_fail_the_run():
+    with patch(f"{_P}.enrich_all", return_value=[_offer(1)]), \
+         patch(f"{_P}.post_job", return_value=(201, {})), \
+         patch(f"{_P}.post_company", side_effect=RuntimeError("backend down")), \
+         patch(f"{_P}.get_pending_companies", side_effect=RuntimeError("backend down")):
+        assert run("q", 2) == 0
+
+
+def test_enrichment_error_for_one_company_does_not_stop_the_next():
+    pending = [{"name": "a", "location": "", "live_jobs": 2}, {"name": "b", "location": "", "live_jobs": 1}]
+    with patch(f"{_P}.enrich_all", return_value=[]), \
+         patch(f"{_P}.post_company", return_value=(200, {})) as mock_post_company, \
+         patch(f"{_P}.get_pending_companies", return_value=pending), \
+         patch(f"{_P}.enrich_company", side_effect=[RuntimeError("boom"), (_profile(country="DE"), [])]):
+        assert run("q", 2) == 0
+    assert mock_post_company.call_count == 1
+
+
+def test_run_exit_code_on_post_errors():
     offers = [_offer(i) for i in range(5)]
-    with patch("ingestion.pipeline.__main__.enrich_all", return_value=offers), \
-         patch("ingestion.pipeline.__main__.post_job", side_effect=[(201, {}), (201, {}), (201, {}), RuntimeError("x"), RuntimeError("y")]), \
-         patch("ingestion.pipeline.__main__.post_company", return_value=(200, {"id": "1", "name": "Acme", "country": "de"})):
+    with patch(f"{_P}.enrich_all", return_value=offers), \
+         patch(f"{_P}.post_job", side_effect=[(201, {}), (201, {}), (201, {}), RuntimeError("x"), RuntimeError("y")]), \
+         patch(f"{_P}.post_company", return_value=(200, {})), \
+         patch(f"{_P}.get_pending_companies", return_value=[]):
         assert run("q", 2) == 1
 
 
-def test_run_exit_zero_under_error_threshold(monkeypatch):
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+def test_run_exit_zero_under_error_threshold():
     offers = [_offer(i) for i in range(5)]
-    with patch("ingestion.pipeline.__main__.enrich_all", return_value=offers), \
-         patch("ingestion.pipeline.__main__.post_job", side_effect=[(201, {})] * 4 + [RuntimeError("x")]), \
-         patch("ingestion.pipeline.__main__.post_company", return_value=(200, {"id": "1", "name": "Acme", "country": "de"})):
+    with patch(f"{_P}.enrich_all", return_value=offers), \
+         patch(f"{_P}.post_job", side_effect=[(201, {})] * 4 + [RuntimeError("x")]), \
+         patch(f"{_P}.post_company", return_value=(200, {})), \
+         patch(f"{_P}.get_pending_companies", return_value=[]):
         assert run("q", 2) == 0
+
+
+def test_a_stored_website_that_is_not_the_company_is_not_used():
+    pending = [
+        {"name": "dex", "website": "https://find-and-update.company-information.service.gov.uk/company/OC1",
+         "location": "", "live_jobs": 2},
+        {"name": "cgi", "website": "https://www.cgi.com/uk/en-gb", "location": "", "live_jobs": 1},
+    ]
+    with patch(f"{_P}.enrich_all", return_value=[]), \
+         patch(f"{_P}.post_company", return_value=(200, {})), \
+         patch(f"{_P}.get_pending_companies", return_value=pending), \
+         patch(f"{_P}.enrich_company", return_value=(_profile(), [])) as mock_enrich:
+        run("q", 2)
+    assert "website" not in mock_enrich.call_args_list[0].args[3]
+    assert mock_enrich.call_args_list[1].args[3]["website"] == "https://www.cgi.com/uk/en-gb"

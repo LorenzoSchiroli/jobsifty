@@ -3,9 +3,11 @@ from datetime import datetime
 from pydantic import BaseModel, field_validator
 
 
-class CompanyRequest(BaseModel):
+class CompanyFields(BaseModel):
     name: str
     website: str | None = None
+    linkedin_url: str | None = None
+    topic: str | None = None
     country: str | None = None
     founded_year: int | None = None
     employee_count: str | None = None
@@ -20,12 +22,30 @@ class CompanyRequest(BaseModel):
     registration_numbers: dict[str, str] | None = None
 
 
-class CompanyResponse(CompanyRequest):
+class CompanyRequest(CompanyFields):
+    # Set by ingestion after an enrichment attempt, found data or not: stamps
+    # enriched_at and counts the attempt, so empty companies are retried later.
+    enrichment_attempted: bool = False
+
+
+class CompanyResponse(CompanyFields):
     id: uuid.UUID
+    enriched_at: datetime | None = None
+    enrich_attempts: int = 0
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class PendingCompany(BaseModel):
+    """A company due for enrichment, with what ingestion needs to search for it."""
+    name: str
+    website: str | None = None
+    linkedin_url: str | None = None
+    industry: str | None = None
+    location: str | None = None
+    live_jobs: int
 
 
 class JobChunk(BaseModel):

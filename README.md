@@ -55,9 +55,10 @@ Three processes, split so they scale and fail independently:
 **Ingestion** runs out-of-process as a scheduled batch (k8s CronJob / EventBridge
 RunTask): scrape → fill missing descriptions with trafilatura → parse each
 offer with rules (strip boilerplate sections, regex fields, language detection — no LLM)
-→ embed ≤4 ~400-token chunks → `POST` to the backend, then upsert companies and
-enrich the ones whose profile is more than half empty (Wikidata/JSON-LD/regex first,
-LLM only for what is still missing).
+→ embed ≤4 ~400-token chunks → `POST` to the backend, then upsert companies with
+what the job boards say about them, and enrich a few of the emptiest companies per
+run within a fixed search budget (two Tavily searches each; JSON-LD/Wikidata/regex
+first, one small LLM call for what is still missing).
 
 ### Why it is built this way
 
@@ -330,12 +331,12 @@ cp .env.example .env      # then fill in the keys below
 |----------|-------|---------|
 | `GROQ_API_KEY` | `.env` | LLM parsing, agents |
 | `SECRET_KEY` | `.env` | JWT signing |
-| `SERPERDEV_API_KEY` | `.env` | Company enrichment web search |
+| `TAVILY_API_KEY` | `.env` | Company enrichment web search (free tier: 1,000 searches/month) |
 | `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | `.env` | Optional job source |
-| `DDGS_PROXY` | `.env` | Optional proxy for DuckDuckGo scraping |
 | `BACKUP_SBOX_HOST` / `_USER` / `_RCLONE_PASS` | `.env` | Optional nightly Postgres backup |
 | `GROQ_MODEL_LARGE` / `GROQ_MODEL_BASE` | `.env.public` | Model IDs for agents / company enrichment |
 | `OFFER_QUERY` | `.env.public` | Query used by the ingestion container / CronJob |
+| `COMPANY_ENRICH_PER_RUN` | `.env.public` | Companies web-searched per ingestion run (2 Tavily credits each; 0 disables) |
 | `CORS_ORIGINS` | `.env.public` | Extra browser origins for the API |
 | `VITE_API_URL` | `.env.public` | API base URL baked into the frontend image |
 
@@ -428,8 +429,8 @@ Most endpoints depend on `get_current_user`.
 ## Data model
 
 - **`Company`** — unique by `name`; enriched with employee count, founded year,
-  review score, financial health score (0–10), consulting/startup flags, industry,
-  country.
+  review score, financial health score (1–5, only with evidence), consulting/startup
+  flags, industry, country; `enriched_at` / `enrich_attempts` pace the enrichment retries.
 - **`Job`** — unique by `url`; parsed fields (employment type, location type,
   seniority, required languages) plus `chunks` JSONB (text + embedding each).
 - **`Outbox`** — transient sync table; `processed_at` is NULL until the worker
@@ -453,7 +454,8 @@ runs it before rollout; on AWS it is the one-shot bootstrap RunTask.
 | LLM | Groq SDK; agents use `langchain-openai` against Groq's OpenAI-compatible API |
 | Agents / checkpointing | LangGraph + `langgraph-checkpoint-postgres` |
 | Auth | python-jose (JWT) + passlib[bcrypt] |
-| Scraping | python-jobspy, Playwright, trafilatura, ddgs |
+| Scraping | python-jobspy, Playwright, trafilatura |
+| Company web search | Tavily REST API |
 | Infrastructure | OpenTofu, Helm, kube-hetzner (k3s), AWS ECS Fargate |
 | Package manager | uv workspace |
 

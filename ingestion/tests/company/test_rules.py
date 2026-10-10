@@ -6,6 +6,7 @@ from ingestion.company.parsing.rules import (
     country_from_location,
     detect_consulting,
     detect_startup,
+    parse_answer,
     parse_employee_count,
     parse_glassdoor,
 )
@@ -82,3 +83,19 @@ def test_detect_startup():
 ])
 def test_country_from_location(location, expected):
     assert country_from_location(location) == expected
+
+
+@pytest.mark.parametrize("answer, expected", [
+    ("Menhir AI is an AI company founded in 2019, headquartered in Pozuelo de Alarcón, Spain, with 13 employees.",
+     {"founded_year": 2019, "employee_count": "13", "country": "Spain"}),
+    ("Darktrace was founded in 2013 and has 2,400 employees; it is based in Cambridge, United Kingdom.",
+     {"founded_year": 2013, "employee_count": "2,400", "country": "United Kingdom"}),
+    # a bare year in front of "employees" is not a head count
+    ("Instaffo is headquartered in Heidelberg, Germany. In 2014 employees moved offices.", {"country": "Germany"}),
+    # a founding date in the future is a misread
+    ("MBDA, founded in 2031, makes missiles.", {}),
+    ("The sources do not provide specific information.", {}),
+    (None, {}),
+])
+def test_parse_answer(answer, expected):
+    assert parse_answer(answer, today=date(2026, 10, 8)) == expected

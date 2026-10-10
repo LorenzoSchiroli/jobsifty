@@ -43,7 +43,6 @@ resource "aws_secretsmanager_secret_version" "app" {
     ACCESS_TOKEN_EXPIRE_DAYS = "7"
     ADZUNA_APP_ID            = var.adzuna_app_id
     ADZUNA_APP_KEY           = var.adzuna_app_key
-    SERPERDEV_API_KEY        = var.serperdev_api_key
-    DDGS_PROXY               = var.ddgs_proxy
+    TAVILY_API_KEY           = var.tavily_api_key
   })
 }

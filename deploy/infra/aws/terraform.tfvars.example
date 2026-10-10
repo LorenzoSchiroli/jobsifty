@@ -11,5 +11,5 @@ alert_email          = "you@example.com"
 groq_model_large     = "openai/gpt-oss-120b"
 groq_model_base      = "qwen/qwen3-32b"
 offer_query          = "machine learning engineer"
-# groq_api_key / cloudflare_api_token / adzuna_* / serperdev_api_key / ddgs_proxy via TF_VAR_ or terraform.tfvars (gitignored)
+# groq_api_key / cloudflare_api_token / adzuna_* / tavily_api_key via TF_VAR_ or terraform.tfvars (gitignored)
 # Private GHCR packages only: set ghcr_username + ghcr_token (PAT, read:packages).

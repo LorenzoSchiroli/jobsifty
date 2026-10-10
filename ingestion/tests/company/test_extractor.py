@@ -5,7 +5,10 @@ import httpx
 import pytest
 from groq import PermissionDeniedError, RateLimitError
 
-from ingestion.company.parsing.extractor import breaker_open, extract_jsonld, extract_with_llm, reset_breaker
+from ingestion.company.parsing import extractor
+from ingestion.company.parsing.extractor import (
+    breaker_open, extract_jsonld, extract_with_llm, format_sources, reset_breaker,
+)
 
 _HTML_WITH_JSONLD = """<html><head>
 <script type="application/ld+json">
@@ -48,11 +51,12 @@ def test_extract_jsonld_returns_empty_on_wrong_type():
     assert result == {}
 
 
-_SOURCES = {"company_pages": ["We are Acme, founded in 2010 in Berlin."]}
+_SOURCES = "Summary: Acme is a software company founded in 2010 in Berlin."
 
 
 @pytest.fixture(autouse=True)
-def _reset_breaker():
+def _reset_breaker(monkeypatch):
+    monkeypatch.setattr(extractor, "_MIN_SECONDS_BETWEEN_CALLS", 0)
     reset_breaker()
     yield
     reset_breaker()
@@ -82,7 +86,6 @@ def test_extract_with_llm_returns_parsed_fields():
         "review_count": 312,
         "financial_health_score": 4,
         "financial_health_rationale": "Revenue grew 12% YoY.",
-        "registration_numbers": {"VAT": "DE123456789", "EIN": "12-3456789"},
     }))
 
     result = extract_with_llm("Acme", "Berlin", client, _SOURCES)
@@ -92,7 +95,6 @@ def test_extract_with_llm_returns_parsed_fields():
     assert result.is_startup is True
     assert result.founded_year == 2010
     assert result.financial_health_score == 4
-    assert result.registration_numbers == {"VAT": "DE123456789", "EIN": "12-3456789"}
 
 
 def test_extract_with_llm_returns_none_on_invalid_json():
@@ -117,10 +119,48 @@ def test_extract_with_llm_strips_markdown_code_block():
 
 def test_extract_with_llm_includes_sources_in_prompt():
     client = _client_returning(json.dumps({}))
-    extract_with_llm("Acme", "Berlin", client, {"financial_snippets": ["Revenue grew 12% YoY."]})
+    extract_with_llm("Acme", "Berlin", client, "- Revenue grew 12% YoY.")
     prompt_sent = client.chat.completions.create.call_args[1]["messages"][0]["content"]
     assert "Revenue grew 12% YoY." in prompt_sent
-    assert "financial_snippets" in prompt_sent
+    assert "Job location: Berlin" in prompt_sent
+
+
+def test_extract_with_llm_skips_the_call_without_sources():
+    client = _client_returning("{}")
+    assert extract_with_llm("Acme", "Berlin", client, "") is None
+    client.chat.completions.create.assert_not_called()
+
+
+def test_extract_with_llm_drops_an_out_of_range_financial_score():
+    client = _client_returning(json.dumps({"financial_health_score": 0, "financial_health_rationale": "No data."}))
+    result = extract_with_llm("Acme", "Berlin", client, _SOURCES)
+    assert result.financial_health_score is None
+    assert result.financial_health_rationale is None
+
+
+def test_calls_are_spaced_to_stay_under_the_per_minute_limit(monkeypatch):
+    monkeypatch.setattr(extractor, "_MIN_SECONDS_BETWEEN_CALLS", 12)
+    clock = iter([100.0, 100.0, 103.0, 112.0])
+    monkeypatch.setattr(extractor.time, "monotonic", lambda: next(clock))
+    sleeps = []
+    monkeypatch.setattr(extractor.time, "sleep", sleeps.append)
+    client = _client_returning("{}")
+    extract_with_llm("Acme", "Berlin", client, _SOURCES)
+    extract_with_llm("Acme", "Berlin", client, _SOURCES)
+    assert sleeps == [9.0]
+
+
+def test_format_sources_keeps_the_input_small():
+    text = format_sources("Acme makes anvils.", ["x" * 1000] * 8, "Board blurb", page_text="About us")
+    assert text.startswith("Summary: Acme makes anvils.")
+    assert "Job board description: Board blurb" in text
+    assert text.count("\n- ") == 5
+    assert "About us" not in text  # the page is only a fallback for a missing answer
+    assert len(text) < 3000
+
+
+def test_format_sources_uses_the_company_page_without_a_search_answer():
+    assert format_sources(None, [], page_text="We build anvils.") == "Company website: We build anvils."
 
 
 def test_breaker_trips_on_daily_quota_and_skips_later_calls():
