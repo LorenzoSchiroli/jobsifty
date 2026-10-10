@@ -7,13 +7,15 @@ from tqdm import tqdm
 from ingestion.offer.offer import enrich_all
 from ingestion.company.company import enrich as enrich_company
 from ingestion.client import get_pending_companies, post_company, post_job
-from ingestion.company.scraping.searcher import pick_website, searches_used
+from ingestion.company.parsing.extractor import breaker_open as llm_down
+from ingestion.company.scraping.searcher import pick_website, pool as search_pool
 
 logger = logging.getLogger(__name__)
 
-# Companies searched per run. Each costs 2 Tavily credits (company + Glassdoor) out of a
-# small monthly allowance; at the 2-hourly schedule, 1 per run is ~720 credits a month.
-DEFAULT_COMPANIES_PER_RUN = 1
+# Companies enriched per run: 2 web searches + one Groq call (~2k tokens) each. Search
+# runs on a pool of providers, so the limit is Groq's free 200k tokens/day: at the
+# 2-hourly schedule, 6 per run is ~72 companies and ~150k tokens a day.
+DEFAULT_COMPANIES_PER_RUN = 6
 # More failed job posts than this fails the run, so the CronJob shows Failed.
 MAX_POST_ERROR_RATE = 0.2
 
@@ -74,16 +76,24 @@ def _enrich_pending(groq: Groq | None, board_facts: dict[str, dict], budget: int
     if budget <= 0:
         logger.info("Company enrichment disabled (budget 0)")
         return
-    if not os.environ.get("TAVILY_API_KEY"):
-        logger.warning("TAVILY_API_KEY not set: companies are enriched without web search")
+    if configured := search_pool().configured():
+        logger.info("Search providers: %s", ", ".join(configured))
+    else:
+        logger.warning("No search provider key set: companies are enriched without web search")
     try:
         pending = get_pending_companies(budget)
     except Exception as e:
         logger.warning("Could not fetch companies to enrich: %s", e)
         return
 
-    filled = empty = failed = 0
-    for company in pending:
+    filled = empty = failed = skipped = 0
+    for i, company in enumerate(pending):
+        # An attempt without search or LLM finds little and still counts towards the
+        # retry limit, so the rest wait for a run where both are back.
+        if search_pool().down() or (groq is not None and llm_down()):
+            skipped = len(pending) - i
+            logger.warning("Search or LLM unavailable for the rest of the run; %d companies left for later", skipped)
+            break
         stored = {k: v for k, v in company.items() if v}
         # Older enrichments stored websites from unfiltered search results (registries, job
         # boards); such a site would be scraped as the employer's own, so it is not used.
@@ -106,8 +116,8 @@ def _enrich_pending(groq: Groq | None, board_facts: dict[str, dict], budget: int
         else:
             empty += 1
     logger.info(
-        "Company enrichment: %d searched, %d filled, %d nothing found, %d failed; %d Tavily searches",
-        len(pending), filled, empty, failed, searches_used(),
+        "Company enrichment: %d pending, %d filled, %d nothing found, %d failed, %d skipped; searches: %s",
+        len(pending), filled, empty, failed, skipped, search_pool().stats(),
     )
 
 

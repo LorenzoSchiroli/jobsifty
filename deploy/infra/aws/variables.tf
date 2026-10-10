@@ -113,3 +113,15 @@ variable "tavily_api_key" {
   sensitive = true
   default   = ""
 }
+
+variable "tinyfish_api_key" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
+variable "exa_api_key" {
+  type      = string
+  sensitive = true
+  default   = ""
+}

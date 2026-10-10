@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ingestion.company.scraping import searcher
 from ingestion.offer.models import EnrichedOffer
 from ingestion.pipeline.__main__ import _collect_companies, new_fields, run
 
@@ -12,7 +13,11 @@ _P = "ingestion.pipeline.__main__"
 def _env(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-    monkeypatch.delenv("COMPANY_ENRICH_PER_RUN", raising=False)
+    for key in ("TINYFISH_API_KEY", "EXA_API_KEY", "SEARCH_PROVIDERS", "COMPANY_ENRICH_PER_RUN"):
+        monkeypatch.delenv(key, raising=False)
+    searcher.reset()
+    yield
+    searcher.reset()
 
 
 def _offer(i: int, company: str = "Acme", location: str = "Berlin", **info) -> EnrichedOffer:
@@ -56,7 +61,7 @@ def test_run_upserts_companies_with_board_facts_then_enriches_pending():
         assert run("q", 2) == 0
 
     assert mock_post_company.call_args_list[0].args[0] == {"name": "Acme", "website": "https://acme.com"}
-    mock_pending.assert_called_once_with(1)
+    mock_pending.assert_called_once_with(6)
     name, location, client, known = mock_enrich.call_args.args
     assert (name, location, client) == ("acme", "Berlin", None)
     assert known["website"] == "https://acme.com"  # this run's board facts reach the enrichment
@@ -133,3 +138,44 @@ def test_a_stored_website_that_is_not_the_company_is_not_used():
         run("q", 2)
     assert "website" not in mock_enrich.call_args_list[0].args[3]
     assert mock_enrich.call_args_list[1].args[3]["website"] == "https://www.cgi.com/uk/en-gb"
+
+
+def _pending(n: int) -> list[dict]:
+    return [{"name": f"c{i}", "location": "", "live_jobs": 1} for i in range(n)]
+
+
+def test_companies_wait_for_the_next_run_once_search_is_down():
+    def enrich(*args):
+        for provider in searcher.pool().providers:  # e.g. Tavily, the only key, said 432
+            provider.disabled = True
+        return _profile(), []
+
+    with patch(f"{_P}.enrich_all", return_value=[]), \
+         patch(f"{_P}.post_company", return_value=(200, {})) as mock_post_company, \
+         patch(f"{_P}.get_pending_companies", return_value=_pending(3)), \
+         patch(f"{_P}.enrich_company", side_effect=enrich) as mock_enrich:
+        assert run("q", 2) == 0
+    assert mock_enrich.call_count == 1 and mock_post_company.call_count == 1
+
+
+def test_companies_wait_for_the_next_run_once_the_llm_is_down(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    llm_state = iter([False, True])
+    with patch(f"{_P}.Groq"), \
+         patch(f"{_P}.llm_down", side_effect=lambda: next(llm_state)), \
+         patch(f"{_P}.enrich_all", return_value=[]), \
+         patch(f"{_P}.post_company", return_value=(200, {})), \
+         patch(f"{_P}.get_pending_companies", return_value=_pending(3)), \
+         patch(f"{_P}.enrich_company", return_value=(_profile(), [])) as mock_enrich:
+        assert run("q", 2) == 0
+    assert mock_enrich.call_count == 1
+
+
+def test_no_search_key_still_enriches(monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY")
+    with patch(f"{_P}.enrich_all", return_value=[]), \
+         patch(f"{_P}.post_company", return_value=(200, {})), \
+         patch(f"{_P}.get_pending_companies", return_value=_pending(2)), \
+         patch(f"{_P}.enrich_company", return_value=(_profile(), [])) as mock_enrich:
+        assert run("q", 2) == 0
+    assert mock_enrich.call_count == 2

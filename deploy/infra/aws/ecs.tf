@@ -22,6 +22,8 @@ locals {
     "ADZUNA_APP_ID",
     "ADZUNA_APP_KEY",
     "TAVILY_API_KEY",
+    "TINYFISH_API_KEY",
+    "EXA_API_KEY",
   ]
 
   app_container_secrets = [

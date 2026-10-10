@@ -57,8 +57,9 @@ RunTask): scrape → fill missing descriptions with trafilatura → parse each
 offer with rules (strip boilerplate sections, regex fields, language detection — no LLM)
 → embed ≤4 ~400-token chunks → `POST` to the backend, then upsert companies with
 what the job boards say about them, and enrich a few of the emptiest companies per
-run within a fixed search budget (two Tavily searches each; JSON-LD/Wikidata/regex
-first, one small LLM call for what is still missing).
+run (two web searches each through a pool of free-tier providers — TinyFish, Exa,
+Tavily — rotated on rate limits and exhausted credits; JSON-LD/Wikidata/regex first,
+one small LLM call on snippets and scraped pages for what is still missing).
 
 ### Why it is built this way
 
@@ -331,12 +332,13 @@ cp .env.example .env      # then fill in the keys below
 |----------|-------|---------|
 | `GROQ_API_KEY` | `.env` | LLM parsing, agents |
 | `SECRET_KEY` | `.env` | JWT signing |
-| `TAVILY_API_KEY` | `.env` | Company enrichment web search (free tier: 1,000 searches/month) |
+| `TINYFISH_API_KEY` / `EXA_API_KEY` / `TAVILY_API_KEY` | `.env` | Company enrichment web search pool; any subset, missing keys are skipped |
 | `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | `.env` | Optional job source |
 | `BACKUP_SBOX_HOST` / `_USER` / `_RCLONE_PASS` | `.env` | Optional nightly Postgres backup |
 | `GROQ_MODEL_LARGE` / `GROQ_MODEL_BASE` | `.env.public` | Model IDs for agents / company enrichment |
 | `OFFER_QUERY` | `.env.public` | Query used by the ingestion container / CronJob |
-| `COMPANY_ENRICH_PER_RUN` | `.env.public` | Companies web-searched per ingestion run (2 Tavily credits each; 0 disables) |
+| `COMPANY_ENRICH_PER_RUN` | `.env.public` | Companies enriched per ingestion run (2 searches + 1 Groq call each; 0 disables) |
+| `SEARCH_PROVIDERS` | `.env.public` | Search pool order (default `tinyfish,exa,tavily`) |
 | `CORS_ORIGINS` | `.env.public` | Extra browser origins for the API |
 | `VITE_API_URL` | `.env.public` | API base URL baked into the frontend image |
 
@@ -455,7 +457,7 @@ runs it before rollout; on AWS it is the one-shot bootstrap RunTask.
 | Agents / checkpointing | LangGraph + `langgraph-checkpoint-postgres` |
 | Auth | python-jose (JWT) + passlib[bcrypt] |
 | Scraping | python-jobspy, Playwright, trafilatura |
-| Company web search | Tavily REST API |
+| Company web search | TinyFish / Exa / Tavily REST APIs (provider pool) |
 | Infrastructure | OpenTofu, Helm, kube-hetzner (k3s), AWS ECS Fargate |
 | Package manager | uv workspace |
 

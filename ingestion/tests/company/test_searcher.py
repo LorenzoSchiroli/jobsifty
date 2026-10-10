@@ -10,6 +10,9 @@ from ingestion.company.scraping.searcher import (
 
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
+    # only Tavily configured: the pool's order and fallbacks are covered in test_providers
+    for key in ("TINYFISH_API_KEY", "EXA_API_KEY", "SEARCH_PROVIDERS"):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
     searcher.reset()
     yield
@@ -68,7 +71,7 @@ def test_search_company_combines_both_searches():
         assert headers["Authorization"] == "Bearer test-key"
         return _response(body=reviews if "glassdoor" in json["query"] else company)
 
-    with patch("ingestion.company.scraping.searcher.requests.post", side_effect=post) as mock_post:
+    with patch("ingestion.company.scraping.providers.requests.post", side_effect=post) as mock_post:
         result = search_company("Flyability", "Paudex, Vaud, Switzerland")
 
     queries = sorted(c.kwargs["json"]["query"] for c in mock_post.call_args_list)
@@ -81,7 +84,7 @@ def test_search_company_combines_both_searches():
 
 
 def test_quota_error_stops_searching_for_the_run():
-    with patch("ingestion.company.scraping.searcher.requests.post",
+    with patch("ingestion.company.scraping.providers.requests.post",
                return_value=_response(432, text='{"detail": "usage limit exceeded"}')) as mock_post:
         first = search_company("Acme", "Berlin")
         calls_for_first = mock_post.call_count  # 1 or 2: the two searches run in parallel
@@ -93,14 +96,14 @@ def test_quota_error_stops_searching_for_the_run():
 
 
 def test_transient_errors_do_not_stop_searching():
-    with patch("ingestion.company.scraping.searcher.requests.post", return_value=_response(500, text="oops")):
+    with patch("ingestion.company.scraping.providers.requests.post", return_value=_response(500, text="oops")):
         search_company("Acme", "Berlin")
     assert not breaker_open()
 
 
 def test_no_api_key_means_no_search(monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY")
-    with patch("ingestion.company.scraping.searcher.requests.post") as mock_post:
+    with patch("ingestion.company.scraping.providers.requests.post") as mock_post:
         result = search_company("Acme", "Berlin")
     mock_post.assert_not_called()
     assert result.answer is None and searches_used() == 0

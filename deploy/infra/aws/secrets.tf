@@ -44,5 +44,7 @@ resource "aws_secretsmanager_secret_version" "app" {
     ADZUNA_APP_ID            = var.adzuna_app_id
     ADZUNA_APP_KEY           = var.adzuna_app_key
     TAVILY_API_KEY           = var.tavily_api_key
+    TINYFISH_API_KEY         = var.tinyfish_api_key
+    EXA_API_KEY              = var.exa_api_key
   })
 }
