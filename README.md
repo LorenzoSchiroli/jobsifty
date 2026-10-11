@@ -56,8 +56,8 @@ Three processes, split so they scale and fail independently:
 RunTask): scrape → fill missing descriptions with trafilatura → parse each
 offer with rules (strip boilerplate sections, regex fields, language detection — no LLM)
 → embed ≤4 ~400-token chunks → `POST` to the backend, then upsert companies with
-what the job boards say about them, and enrich a few of the emptiest companies per
-run (two web searches each through a pool of free-tier providers — TinyFish, Exa,
+what the job boards say about them, and spend a fixed time per run enriching companies,
+newest jobs' employers first (two web searches each through a pool of free-tier providers — TinyFish, Exa,
 Tavily — rotated on rate limits and exhausted credits; JSON-LD/Wikidata/regex first,
 one small LLM call on snippets and scraped pages for what is still missing, through
 a pool of free LLM providers in the same way).
@@ -340,7 +340,7 @@ cp .env.example .env      # then fill in the keys below
 | `GROQ_MODEL_LARGE` / `GROQ_MODEL_BASE` | `.env.public` | Model IDs for agents / company enrichment |
 | `NVIDIA_MODEL` / `GEMINI_MODEL` / `LLM_PROVIDERS` | `.env.public` | Company enrichment LLM pool: models and order (default `nvidia,gemini,groq`) |
 | `OFFER_QUERY` | `.env.public` | Query used by the ingestion container / CronJob |
-| `COMPANY_ENRICH_PER_RUN` | `.env.public` | Companies enriched per ingestion run (2 searches + 1 LLM call each; 0 disables) |
+| `COMPANY_ENRICH_MINUTES` | `.env.public` | Minutes per ingestion run spent enriching companies, newest jobs' employers first (0 disables) |
 | `SEARCH_PROVIDERS` | `.env.public` | Search pool order (default `tinyfish,exa,tavily`) |
 | `CORS_ORIGINS` | `.env.public` | Extra browser origins for the API |
 | `VITE_API_URL` | `.env.public` | API base URL baked into the frontend image |

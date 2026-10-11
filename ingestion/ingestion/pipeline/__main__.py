@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import sys
+import time
 from tqdm import tqdm
 from ingestion.offer.offer import enrich_all
 from ingestion.company.company import enrich as enrich_company
@@ -11,9 +12,11 @@ from ingestion.llm import LLMPool
 
 logger = logging.getLogger(__name__)
 
-# Companies enriched per run: 2 web searches + 1 LLM call each, both on provider pools,
-# so the limit is time: ~25 s a company, and the CronJob is killed after 30 minutes.
-DEFAULT_COMPANIES_PER_RUN = 15
+# Minutes a run spends enriching companies (~20 s each), after the jobs are posted. Quotas
+# are the provider pools' business; this keeps the run inside the CronJob's 30 minutes.
+DEFAULT_ENRICH_MINUTES = 15
+# Pending companies fetched per run: more than fit in the time
+_PENDING_FETCH = 200
 # More failed job posts than this fails the run, so the CronJob shows Failed.
 MAX_POST_ERROR_RATE = 0.2
 
@@ -75,24 +78,33 @@ def _upsert_companies(companies: dict[str, dict]) -> int:
     return new
 
 
-def _enrich_pending(llm: LLMPool | None, board_facts: dict[str, dict], budget: int) -> None:
+def _enrich_pending(llm: LLMPool | None, board_facts: dict[str, dict], minutes: float) -> None:
     """Search and enrich the companies the backend says are most due. Best effort: a failure
-    here is logged and never fails the run; whatever is not done waits for the next run."""
-    if budget <= 0:
-        logger.info("Company enrichment disabled (budget 0)")
+    here is logged and never fails the run; whatever is not done waits for the next run.
+
+    The backend lists the employers of the newest jobs first, so this run's companies come
+    before the backlog, which fills the remaining time.
+    """
+    if minutes <= 0:
+        logger.info("Company enrichment disabled (0 minutes)")
         return
+    deadline = time.monotonic() + minutes * 60
     if configured := search_pool().configured():
         logger.info("Search providers: %s", ", ".join(configured))
     else:
         logger.warning("No search provider key set: companies are enriched without web search")
     try:
-        pending = get_pending_companies(budget)
+        pending = get_pending_companies(_PENDING_FETCH)
     except Exception as e:
         logger.warning("Could not fetch companies to enrich: %s", e)
         return
 
     filled = empty = failed = skipped = 0
     for i, company in enumerate(pending):
+        if time.monotonic() >= deadline:
+            skipped = len(pending) - i
+            logger.info("Enrichment time is up; %d companies left for later", skipped)
+            break
         # An attempt without search or LLM finds little and still counts towards the
         # retry limit, so the rest wait for a run where both are back.
         if search_pool().down() or (llm is not None and llm.down()):
@@ -137,7 +149,7 @@ def run(query: str, hours: int) -> int:
     else:
         logger.info("No LLM provider key set — company enrichment runs without the LLM")
         llm = None
-    budget = int(os.environ.get("COMPANY_ENRICH_PER_RUN", DEFAULT_COMPANIES_PER_RUN))
+    minutes = float(os.environ.get("COMPANY_ENRICH_MINUTES", DEFAULT_ENRICH_MINUTES))
 
     logger.info("[1/4] Scraping & parsing offers: %r, last %dh", query, hours)
     offers = enrich_all(query, hours)
@@ -152,9 +164,9 @@ def run(query: str, hours: int) -> int:
     new_companies = _upsert_companies(companies)
     logger.info("Companies: %d new, out of %d unique", new_companies, len(companies))
 
-    logger.info("[4/4] Enriching up to %d pending companies...", budget)
+    logger.info("[4/4] Enriching pending companies for up to %g minutes...", minutes)
     board_facts = {_key(name): {f: e[f] for f in _BOARD_FIELDS if e.get(f)} for name, e in companies.items()}
-    _enrich_pending(llm, board_facts, budget)
+    _enrich_pending(llm, board_facts, minutes)
 
     if offers and errors / len(offers) > MAX_POST_ERROR_RATE:
         logger.error("Job post error rate %.0f%% exceeds %.0f%%", 100 * errors / len(offers), 100 * MAX_POST_ERROR_RATE)

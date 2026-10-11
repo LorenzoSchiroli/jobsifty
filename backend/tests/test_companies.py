@@ -81,14 +81,14 @@ async def _post_job(client, company: str, i: int, location: str = "Berlin, Germa
     assert resp.status_code == 201
 
 
-async def test_pending_orders_by_live_jobs_and_returns_location(client):
-    await _post_job(client, "Small", 1)
+async def test_pending_orders_by_newest_job_and_returns_location(client):
     for i in range(3):
         await _post_job(client, "Big", i, location="Paris, France")
+    await _post_job(client, "Small", 1)
     resp = await client.get("/companies/pending", params={"limit": 10})
     assert resp.status_code == 200
     assert [(c["name"], c["live_jobs"], c["location"]) for c in resp.json()] == [
-        ("big", 3, "Paris, France"), ("small", 1, "Berlin, Germany"),
+        ("small", 1, "Berlin, Germany"), ("big", 3, "Paris, France"),
     ]
 
 
@@ -121,19 +121,18 @@ async def _age(db_session, name: str, days: int):
     await db_session.commit()
 
 
-async def test_pending_refreshes_year_old_data_after_new_companies(client, db_session):
-    for i in range(3):
-        await _post_job(client, "Old", i)
+async def test_pending_refreshes_year_old_data_by_newest_job_too(client, db_session):
     await _post_job(client, "New", 1)
     await _post_job(client, "Recent", 1)
+    await _post_job(client, "Old", 1)  # stale data, but the newest job: first
     await client.post("/companies/", json={"name": "Old", "founded_year": 2010, "enrichment_attempted": True})
     await client.post("/companies/", json={"name": "Recent", "founded_year": 2011, "enrichment_attempted": True})
     await _age(db_session, "old", 400)
     await _age(db_session, "recent", 300)
 
     pending = (await client.get("/companies/pending")).json()
-    # new companies first even with fewer live jobs; data under a year old is left alone
-    assert [(c["name"], c["refresh"]) for c in pending] == [("new", False), ("old", True)]
+    # data under a year old is left alone
+    assert [(c["name"], c["refresh"]) for c in pending] == [("old", True), ("new", False)]
 
 
 async def test_refresh_replaces_stale_values_and_keeps_what_was_not_found(client, db_session):

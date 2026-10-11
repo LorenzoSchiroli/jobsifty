@@ -40,7 +40,7 @@ def post_company(data: dict) -> tuple[int, dict]:
 
 
 def get_pending_companies(limit: int) -> list[dict]:
-    """Companies due for enrichment, most live jobs first (name, website, linkedin_url, industry, location)."""
+    """Companies due for enrichment, newest job first (name, website, linkedin_url, industry, location)."""
     resp = requests.get(f"{_base()}/companies/pending", params={"limit": limit}, timeout=30)
     if not resp.ok:
         raise requests.HTTPError(f"{resp.status_code} — {resp.text}", response=resp)

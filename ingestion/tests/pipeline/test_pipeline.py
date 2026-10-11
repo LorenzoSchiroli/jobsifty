@@ -13,7 +13,7 @@ _P = "ingestion.pipeline.__main__"
 def _env(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-    for key in ("TINYFISH_API_KEY", "EXA_API_KEY", "SEARCH_PROVIDERS", "COMPANY_ENRICH_PER_RUN",
+    for key in ("TINYFISH_API_KEY", "EXA_API_KEY", "SEARCH_PROVIDERS", "COMPANY_ENRICH_MINUTES",
                 "NVIDIA_NIM_API_KEY", "GEMINI_API_KEY", "LLM_PROVIDERS"):
         monkeypatch.delenv(key, raising=False)
     searcher.reset()
@@ -72,7 +72,7 @@ def test_run_upserts_companies_with_board_facts_then_enriches_pending():
         assert run("q", 2) == 0
 
     assert mock_post_company.call_args_list[0].args[0] == {"name": "Acme", "website": "https://acme.com"}
-    mock_pending.assert_called_once_with(15)
+    mock_pending.assert_called_once_with(200)
     name, location, client, known = mock_enrich.call_args.args
     assert (name, location, client) == ("acme", "Berlin", None)
     assert known["website"] == "https://acme.com"  # this run's board facts reach the enrichment
@@ -90,8 +90,8 @@ def test_attempt_is_recorded_even_when_nothing_is_found():
     assert mock_post_company.call_args_list[-1].args[0] == {"name": "acme", "enrichment_attempted": True}
 
 
-def test_budget_comes_from_the_environment_and_zero_disables(monkeypatch):
-    monkeypatch.setenv("COMPANY_ENRICH_PER_RUN", "0")
+def test_zero_minutes_disables_enrichment(monkeypatch):
+    monkeypatch.setenv("COMPANY_ENRICH_MINUTES", "0")
     with patch(f"{_P}.enrich_all", return_value=[_offer(1)]), \
          patch(f"{_P}.post_job", return_value=(201, {})), \
          patch(f"{_P}.post_company", return_value=(201, {})), \
@@ -202,3 +202,23 @@ def test_a_refresh_ignores_the_stored_values():
          patch(f"{_P}.enrich_company", return_value=(_profile(), [])) as mock_enrich:
         run("q", 2)
     assert mock_enrich.call_args.args[3] == {"industry": "Software"}  # this run's board facts only
+
+
+def test_enrichment_stops_when_its_time_is_up(monkeypatch):
+    import ingestion.pipeline.__main__ as pipeline
+
+    now = [1000.0]
+    monkeypatch.setattr(pipeline.time, "monotonic", lambda: now[0])
+    monkeypatch.setenv("COMPANY_ENRICH_MINUTES", "1")
+
+    def enrich(*args):
+        now[0] += 25  # each company takes 25 s
+        return _profile(), []
+
+    with patch(f"{_P}.enrich_all", return_value=[]), \
+         patch(f"{_P}.post_company", return_value=(200, {})) as mock_post_company, \
+         patch(f"{_P}.get_pending_companies", return_value=_pending(10)), \
+         patch(f"{_P}.enrich_company", side_effect=enrich) as mock_enrich:
+        assert run("q", 2) == 0
+    # started at 0 s, 25 s and 50 s; at 75 s the minute is over
+    assert mock_enrich.call_count == 3 and mock_post_company.call_count == 3

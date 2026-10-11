@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_session
@@ -77,15 +77,16 @@ async def upsert_company(body: CompanyRequest, response: Response, session: Asyn
 
 @router.get("/pending", response_model=list[PendingCompany])
 async def pending_companies(limit: int = Query(10, ge=1, le=500), session: AsyncSession = Depends(get_session)):
-    """Companies with live jobs that are due for enrichment, those with the most live jobs first.
+    """Companies with live jobs that are due for enrichment, newest job first.
 
     Due means never attempted; or attempted fewer than ENRICH_MAX_ATTEMPTS times, at least
-    ENRICH_RETRY_DAYS ago, and still without any of the core facts; or (after those, as
-    `refresh`) last enriched more than ENRICH_REFRESH_DAYS ago.
+    ENRICH_RETRY_DAYS ago, and still without any of the core facts; or (as `refresh`) last
+    enriched more than ENRICH_REFRESH_DAYS ago. Newest job first puts the employers of the
+    jobs just posted ahead of the backlog, which follows by recency.
     """
     now = datetime.now(timezone.utc)
     live = (
-        select(Job.company_id, func.count().label("live_jobs"))
+        select(Job.company_id, func.count().label("live_jobs"), func.max(Job.created_at).label("newest_job"))
         .where(Job.created_at >= now - timedelta(days=RECONCILE_WINDOW_DAYS))
         .group_by(Job.company_id)
         .subquery()
@@ -113,7 +114,7 @@ async def pending_companies(limit: int = Query(10, ge=1, le=500), session: Async
         select(Company, location.label("location"), live.c.live_jobs)
         .join(live, live.c.company_id == Company.id)
         .where(or_(new_or_retry, stale), Company.name != "")
-        .order_by(case((new_or_retry, 0), else_=1), live.c.live_jobs.desc(), Company.created_at.desc())
+        .order_by(live.c.newest_job.desc(), live.c.live_jobs.desc())
         .limit(limit)
     )
     return [
