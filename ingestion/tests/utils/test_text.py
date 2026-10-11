@@ -1,3 +1,4 @@
+from unittest.mock import patch
 from ingestion.utils.text import clean_html, has_text, _dedup_paragraphs, truncate_description, MAX_OFFER_DESCRIPTION_CHARS as MAX_DESCRIPTION_CHARS
 
 
@@ -151,3 +152,11 @@ def test_truncate_description_breaks_at_newline():
     assert len(result) <= MAX_DESCRIPTION_CHARS
     # result length + 1 (stripped \n) should align with line boundary (101 chars per line)
     assert (len(result) + 1) % 101 == 0
+
+
+def test_clean_html_plain_text_skips_trafilatura():
+    # jobspy's Indeed/Glassdoor descriptions are markdown; "<5" is not a tag
+    with patch("ingestion.utils.text.trafilatura.extract") as extract:
+        result = clean_html("**About the role**\n\nPython, <5 people team.")
+    extract.assert_not_called()
+    assert "Python, <5 people team." in result

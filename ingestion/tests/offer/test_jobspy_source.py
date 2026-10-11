@@ -203,7 +203,6 @@ def test_missing_company_name_is_empty_not_nan():
 
 
 def test_glassdoor_is_searched_per_country_not_europe():
-    from ingestion.offer.scraping.sources.jobspy_source import _GLASSDOOR_COUNTRIES
 
     mock_scraper = MagicMock()
     mock_scraper.scrape.return_value = MagicMock(jobs=[])
@@ -212,7 +211,9 @@ def test_glassdoor_is_searched_per_country_not_europe():
         JobspySource().fetch("python", hours=72)
 
     glassdoor = [c.kwargs for c in mock_scrape.call_args_list if c.kwargs["site_name"] == ["glassdoor"]]
-    assert [c["location"] for c in glassdoor] == _GLASSDOOR_COUNTRIES
+    assert [c["country_indeed"] for c in glassdoor] == ["UK", "Germany", "France", "Netherlands"]
+    # Glassdoor's location lookup does not know "UK"
+    assert [c["location"] for c in glassdoor] == ["United Kingdom", "Germany", "France", "Netherlands"]
     assert all(c["fetch_description"] for c in glassdoor)
     assert not any(c.kwargs["site_name"] == ["google"] for c in mock_scrape.call_args_list)
 

@@ -45,3 +45,11 @@ def test_adzuna_preferred_over_arbeitnow():
     ]
     result = deduplicate(offers)
     assert result[0].source == "adzuna"
+
+
+def test_indeed_jobs_differing_only_in_query_string_are_kept():
+    offers = [
+        _offer(url="https://de.indeed.com/viewjob?jk=a1b2c3", title="ML Engineer", company="Zalando", source="jobspy:indeed"),
+        _offer(url="https://de.indeed.com/viewjob?jk=d4e5f6", title="Data Scientist", company="N26", source="jobspy:indeed"),
+    ]
+    assert len(deduplicate(offers)) == 2

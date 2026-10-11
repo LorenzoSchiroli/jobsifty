@@ -4,6 +4,8 @@ import ftfy
 import trafilatura
 from bs4 import BeautifulSoup
 
+_HTML_TAG = re.compile(r"<[a-zA-Z!/][^>]*>")
+
 
 def clean_html(html: str, aggressive: bool = True) -> str:
     """Extract and clean main text from HTML.
@@ -14,13 +16,15 @@ def clean_html(html: str, aggressive: bool = True) -> str:
     if not html or not html.strip():
         return ""
 
+    # Plain or markdown text (jobspy's Indeed/Glassdoor descriptions) is no HTML tree:
+    # trafilatura would only log two errors before the fallback below takes it anyway.
     extracted = trafilatura.extract(
         html,
         include_comments=False,
         include_tables=False,
         favor_recall=not aggressive,
         no_fallback=False,
-    )
+    ) if _HTML_TAG.search(html) else None
 
     if extracted:
         text = extracted

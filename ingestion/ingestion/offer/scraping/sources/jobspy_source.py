@@ -12,8 +12,15 @@ from ingestion.offer.scraping.sources.base import Source
 logger = logging.getLogger(__name__)
 
 _INDEED_COUNTRIES = ["UK", "Germany", "France", "Netherlands", "Spain", "Italy", "Belgium", "Austria"]
-# Glassdoor needs a concrete place: "Europe" resolves to France only.
-_GLASSDOOR_COUNTRIES = ["UK", "Germany", "France", "Netherlands"]
+# Glassdoor needs a concrete place ("Europe" resolves to France only), looked up by name
+# on the country's own site: glassdoor.co.uk knows "United Kingdom", not "UK".
+# country (jobspy's name) → location
+_GLASSDOOR_LOCATIONS = {
+    "UK": "United Kingdom",
+    "Germany": "Germany",
+    "France": "France",
+    "Netherlands": "Netherlands",
+}
 
 
 class _SkippingLinkedIn(LinkedIn):
@@ -124,7 +131,7 @@ def _scrape_glassdoor(query: str, hours: int, country: str) -> list[JobOffer]:
         df = scrape_jobs(
             site_name=["glassdoor"],
             search_term=query,
-            location=country,
+            location=_GLASSDOOR_LOCATIONS[country],
             country_indeed=country,
             hours_old=hours,
             results_wanted=25,
@@ -157,7 +164,7 @@ class JobspySource(Source):
     def fetch(self, query: str, hours: int) -> list[JobOffer]:
         results: list[JobOffer] = []
         results.extend(_scrape_linkedin(query, hours))
-        for country in _GLASSDOOR_COUNTRIES:
+        for country in _GLASSDOOR_LOCATIONS:
             results.extend(_scrape_glassdoor(query, hours, country))
         for country in _INDEED_COUNTRIES:
             results.extend(_scrape_indeed(query, hours, country))
