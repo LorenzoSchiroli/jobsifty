@@ -66,7 +66,11 @@ def extract_jsonld(html: str) -> dict:
                 except (KeyError, ValueError):
                     pass
             if address := data.get("address"):
-                if country := address.get("addressCountry"):
+                country = address.get("addressCountry")
+                # schema.org allows a Country object: {"@type": "Country", "name": "United States"}
+                if isinstance(country, dict):
+                    country = country.get("name")
+                if country and isinstance(country, str):
                     result["country"] = country
             if employees := data.get("numberOfEmployees"):
                 val = employees.get("value") if isinstance(employees, dict) else employees

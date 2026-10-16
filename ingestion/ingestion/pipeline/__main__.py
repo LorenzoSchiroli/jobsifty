@@ -128,6 +128,12 @@ def _enrich_pending(llm: LLMPool | None, board_facts: dict[str, dict], minutes: 
         except Exception as e:
             logger.warning("Failed to enrich company %r: %s", company["name"], e)
             failed += 1
+            # Counted as an attempt: an error that recurs would otherwise bring the
+            # company back first in every run, never reaching the attempt limit.
+            try:
+                post_company({"name": company["name"], "enrichment_attempted": True})
+            except Exception as e:
+                logger.warning("Could not record the attempt for %r: %s", company["name"], e)
             continue
         found = new_fields(data, known)
         if found:

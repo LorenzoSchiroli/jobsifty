@@ -32,6 +32,12 @@ def test_extract_jsonld_parses_all_fields():
     assert result["description"] == "Acme makes things."
 
 
+def test_extract_jsonld_country_object_gives_its_name():
+    # anaplan.com and coherent.com ship schema.org Country objects
+    html = _HTML_WITH_JSONLD.replace('"addressCountry": "DE"', '"addressCountry": {"@type": "Country", "name": "United States"}')
+    assert extract_jsonld(html)["country"] == "United States"
+
+
 def test_extract_jsonld_returns_empty_on_no_jsonld():
     result = extract_jsonld(_HTML_NO_JSONLD)
     assert result == {}

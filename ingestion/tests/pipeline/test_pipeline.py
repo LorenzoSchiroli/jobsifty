@@ -115,7 +115,10 @@ def test_enrichment_error_for_one_company_does_not_stop_the_next():
          patch(f"{_P}.get_pending_companies", return_value=pending), \
          patch(f"{_P}.enrich_company", side_effect=[RuntimeError("boom"), (_profile(country="DE"), [])]):
         assert run("q", 2) == 0
-    assert mock_post_company.call_count == 1
+    assert mock_post_company.call_count == 2
+    # the failed company still counts an attempt, so a recurring error cannot bring it back every run
+    assert mock_post_company.call_args_list[0].args[0] == {"name": "a", "enrichment_attempted": True}
+    assert mock_post_company.call_args_list[1].args[0]["country"] == "DE"
 
 
 def test_run_exit_code_on_post_errors():
