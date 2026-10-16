@@ -8,6 +8,7 @@ from tabulate import tabulate
 from ingestion.offer.scraping.scraping import scrape
 from ingestion.offer.scraping.sources.adzuna_source import AdzunaSource
 from ingestion.offer.scraping.sources.arbeitnow_source import ArbeitnowSource
+from ingestion.offer.scraping.sources.freehire_source import FreehireSource
 from ingestion.offer.scraping.sources.jobspy_source import JobspySource
 from ingestion.offer.scraping.sources.remotive_source import RemotiveSource
 
@@ -18,6 +19,7 @@ _ALL_SOURCES = {
     "jobspy": JobspySource,
     "adzuna": AdzunaSource,
     "arbeitnow": ArbeitnowSource,
+    "freehire": FreehireSource,
     "remotive": RemotiveSource,
 }
 

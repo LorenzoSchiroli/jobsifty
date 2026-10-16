@@ -184,7 +184,7 @@ Jobs and companies are written atomically to Postgres with an `outbox` row. Ever
 ### Ingestion Pipeline
 
 `ingestion/pipeline/__main__.py` runs end-to-end (`--hours` defaults to 72):
-1. Scrape job offers from sources (jobspy, adzuna, arbeitnow, remotive) via `ingestion.offer.scraping`
+1. Scrape job offers from sources (jobspy, adzuna, arbeitnow, freehire, remotive) via `ingestion.offer.scraping`; a source that fails or raises is skipped and the others carry on. freehire.me (`freehire_source.py`) is a keyless aggregator of employers' ATS boards, EURES and the Bundesagentur, with full descriptions; its window is on `created_at` (when freehire indexed the posting, often hours after `posted_at`), and postings it flags as stale re-posts or evergreen are skipped
 2. Fetch full description if missing (requests + trafilatura; Playwright is used only by company-page scraping)
 3. Parse each offer **without an LLM** (`offer/parsing/`): `sections.py` splits the description on headings and drops company/benefits/apply/legal blocks and EEO boilerplate; `rules.py` derives seniority, employment/location type, office, salary, text language (lingua) and required languages from multilingual tables in `lexicon.py`. There is no job summary any more: the kept text is only chunked and embedded.
 4. Embed: kept text → ≤4 chunks of ~400 tokens (64 overlap), each `title\nwindow`, encoded with `passage: ` by `intfloat/multilingual-e5-small` (`embedder.embed_chunks`)

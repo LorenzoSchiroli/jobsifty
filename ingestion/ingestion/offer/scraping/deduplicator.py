@@ -1,7 +1,7 @@
 import re
 from ingestion.offer.scraping.models import JobOffer
 
-_PRIORITY = {"jobspy": 0, "adzuna": 1, "arbeitnow": 2, "remotive": 3}
+_PRIORITY = {"jobspy": 0, "freehire": 1, "adzuna": 2, "arbeitnow": 3, "remotive": 4}
 
 
 def _tc_key(title: str, company: str) -> tuple[str, str]:

@@ -8,12 +8,13 @@ from ingestion.offer.scraping.models import JobOffer
 from ingestion.offer.scraping.sources.adzuna_source import AdzunaSource
 from ingestion.offer.scraping.sources.arbeitnow_source import ArbeitnowSource
 from ingestion.offer.scraping.sources.base import Source
+from ingestion.offer.scraping.sources.freehire_source import FreehireSource
 from ingestion.offer.scraping.sources.jobspy_source import JobspySource
 from ingestion.offer.scraping.sources.remotive_source import RemotiveSource
 
 logger = logging.getLogger(__name__)
 
-_ALL_SOURCE_CLASSES = [AdzunaSource, ArbeitnowSource, JobspySource, RemotiveSource]
+_ALL_SOURCE_CLASSES = [AdzunaSource, ArbeitnowSource, FreehireSource, JobspySource, RemotiveSource]
 
 
 def scrape(query: str, hours: int, sources: list[Source] | None = None) -> list[JobOffer]:
@@ -22,7 +23,13 @@ def scrape(query: str, hours: int, sources: list[Source] | None = None) -> list[
     logger.info("Scraping %d source(s)...", len(sources))
     all_offers: list[JobOffer] = []
     for src in tqdm(sources, desc="Scraping sources", unit="source"):
-        offers = src.fetch(query, hours)
+        # Sources are meant to return [] on failure; one that raises anyway (a
+        # changed API, a parsing bug) must not cost the run the other sources.
+        try:
+            offers = src.fetch(query, hours)
+        except Exception:
+            logger.exception("  %-20s failed; skipped", src.__class__.__name__)
+            continue
         logger.info("  %-20s %d offers", src.__class__.__name__, len(offers))
         all_offers.extend(offers)
     # A job without an employer name cannot be tied to a company (jobspy used to

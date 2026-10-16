@@ -27,7 +27,7 @@ Fargate**, from one command.
 
 ```mermaid
 flowchart TB
-    SRC["Job sources<br/>jobspy · adzuna · arbeitnow · remotive"]
+    SRC["Job sources<br/>jobspy · adzuna · arbeitnow · freehire · remotive"]
     ING["ingestion · every 2h<br/>scrape → LLM parse → embed"]
     CLI["Clients<br/>React SPA"]
     API["backend API<br/>FastAPI · JWT · search · agents"]
@@ -399,7 +399,7 @@ uv run python -m ingestion.offer "machine learning engineer" --hours 48 --source
 uv run python -m ingestion.company "Stripe" "San Francisco" --debug
 ```
 
-Offer sources: `jobspy`, `adzuna`, `arbeitnow`, `remotive` (default: all).
+Offer sources: `jobspy`, `adzuna`, `arbeitnow`, `freehire`, `remotive` (default: all).
 
 ## Repository layout
 

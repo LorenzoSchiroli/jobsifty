@@ -17,3 +17,13 @@ def _offer(company: str, i: int) -> JobOffer:
 def test_scrape_drops_offers_without_a_company_name():
     offers = scrape("q", 2, sources=[_Source([_offer("Acme", 1), _offer("", 2), _offer("  ", 3)])])
     assert [o.company for o in offers] == ["Acme"]
+
+
+class _BrokenSource:
+    def fetch(self, query, hours):
+        raise KeyError("data")
+
+
+def test_a_source_that_raises_does_not_stop_the_others():
+    offers = scrape("q", 2, sources=[_BrokenSource(), _Source([_offer("Acme", 1)])])
+    assert [o.company for o in offers] == ["Acme"]
