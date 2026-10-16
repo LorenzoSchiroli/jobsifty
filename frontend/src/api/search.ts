@@ -14,6 +14,7 @@ export interface Job {
   title: string
   url: string
   location: string | null
+  posted_at: string | null
   employment_type: string | null
   location_type: string | null
   seniority: string | null

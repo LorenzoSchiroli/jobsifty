@@ -1,7 +1,18 @@
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 import pandas as pd
+import pytest
+from bs4 import BeautifulSoup
 from ingestion.offer.scraping.sources.jobspy_source import JobspySource, _scrape_linkedin
+
+
+@pytest.fixture(autouse=True)
+def _no_real_indeed():
+    """Indeed is called as a scraper class; no test may reach the real site."""
+    scraper = MagicMock()
+    scraper.scrape.return_value.jobs = []
+    with patch("ingestion.offer.scraping.sources.jobspy_source._TimedIndeed", return_value=scraper) as cls:
+        yield cls
 
 
 def _make_job_post(title, job_id="123"):
@@ -165,14 +176,14 @@ def test_linkedin_unknown_country_skips_only_that_job():
 
 # --- company facts and missing names ---
 
-from ingestion.offer.scraping.sources.jobspy_source import _df_to_offers, _linkedin_job_to_offer
+from ingestion.offer.scraping.sources.jobspy_source import _df_to_offers, _post_to_offer
 
 
 def test_linkedin_offer_carries_canonical_company_page_and_industry():
     job = _make_job_post("Data Engineer")
     job.company_url = "https://ee.linkedin.com/company/markit-eu?trk=public_jobs"
     job.company_industry = "IT Services and IT Consulting"
-    offer = _linkedin_job_to_offer(job)
+    offer = _post_to_offer(job, "linkedin")
     assert offer.company_info == {
         "linkedin_url": "https://www.linkedin.com/company/markit-eu",
         "industry": "IT Services and IT Consulting",
@@ -180,14 +191,15 @@ def test_linkedin_offer_carries_canonical_company_page_and_industry():
 
 
 def test_indeed_offer_carries_website_and_description_but_not_head_count():
-    df = pd.DataFrame([{
-        "title": "Data Engineer", "company": "Wolt", "location": "Berlin", "job_url": "https://indeed.com/1",
-        "date_posted": None, "site": "indeed", "description": None,
-        "company_url": "https://de.indeed.com/cmp/Wolt", "company_url_direct": "https://www.wolt.com",
-        "company_industry": "Transport And Freight", "company_description": "Wolt delivers food.",
-        "company_num_employees": "11 to 50", "company_revenue": "less than $1M (USD)",
-    }])
-    assert _df_to_offers(df)[0].company_info == {
+    job = _make_job_post("Data Engineer")
+    job.company_url = "https://de.indeed.com/cmp/Wolt"
+    job.company_url_direct = "https://www.wolt.com"
+    job.company_industry = "Transport And Freight"
+    job.company_description = "Wolt delivers food."
+    job.company_num_employees = "11 to 50"
+    offer = _post_to_offer(job, "indeed")
+    assert offer.source == "jobspy:indeed"
+    assert offer.company_info == {
         "website": "https://www.wolt.com", "industry": "Transport And Freight", "description": "Wolt delivers food.",
     }
 
@@ -225,3 +237,79 @@ def test_skipping_linkedin_matches_the_installed_jobspy():
 
     params = list(inspect.signature(LinkedIn._process_job).parameters)
     assert params[:3] == ["self", "job_card", "job_id"]
+
+
+# --- posting times ---
+
+from ingestion.offer.scraping.sources.jobspy_source import _card_posted_at, _TimedIndeed
+
+
+def _card(text: str):
+    return BeautifulSoup(f'<div><time datetime="2026-10-16">{text}</time></div>', "html.parser")
+
+
+def _utcnow():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+@pytest.mark.parametrize("text, ago", [("3 hours ago", timedelta(hours=3)), ("1 hour ago", timedelta(hours=1)),
+                                       ("25 minutes ago", timedelta(minutes=25))])
+def test_linkedin_card_hours_and_minutes_give_a_time(text, ago):
+    assert abs(_card_posted_at(_card(text)) - (_utcnow() - ago)) < timedelta(seconds=5)
+
+
+@pytest.mark.parametrize("text", ["2 days ago", "1 week ago", ""])
+def test_linkedin_card_days_or_nothing_keep_the_day(text):
+    assert _card_posted_at(_card(text)) is None
+    assert _card_posted_at(BeautifulSoup("<div></div>", "html.parser")) is None
+
+
+def test_linkedin_job_takes_the_card_time():
+    from jobspy.linkedin import LinkedIn
+    from ingestion.offer.scraping.sources.jobspy_source import _SkippingLinkedIn
+
+    def fake_process(self, job_card, job_id):
+        post = MagicMock()
+        post.date_posted = date(2026, 10, 16)
+        return post
+
+    with patch.object(LinkedIn, "_process_job", fake_process):
+        post = _SkippingLinkedIn()._process_job(_card("2 hours ago"), "1")
+    assert abs(post.date_posted - (_utcnow() - timedelta(hours=2))) < timedelta(seconds=5)
+
+
+def test_indeed_job_keeps_the_timestamp():
+    from jobspy.indeed import Indeed
+
+    def fake_process(self, job):
+        post = MagicMock()
+        post.date_posted = date(2026, 10, 16)
+        return post
+
+    stamp = datetime(2026, 10, 16, 13, 5, tzinfo=timezone.utc)
+    with patch.object(Indeed, "_process_job", fake_process):
+        post = _TimedIndeed._process_job(object.__new__(_TimedIndeed), {"dateOnIndeed": stamp.timestamp() * 1000})
+    assert post.date_posted == datetime(2026, 10, 16, 13, 5)
+
+
+def test_offer_posted_at_is_the_time_or_the_day_at_midnight():
+    job = _make_job_post("Data Engineer")
+    job.date_posted = datetime(2026, 10, 16, 13, 5)
+    assert _post_to_offer(job, "indeed").posted_at == datetime(2026, 10, 16, 13, 5)
+    job.date_posted = date(2026, 10, 16)
+    assert _post_to_offer(job, "glassdoor").posted_at == datetime(2026, 10, 16)
+
+
+def test_indeed_is_searched_per_country_with_html_descriptions(_no_real_indeed):
+    with _mock_linkedin([]), patch("ingestion.offer.scraping.sources.jobspy_source.scrape_jobs", return_value=pd.DataFrame()):
+        JobspySource().fetch("python", hours=72)
+    inputs = [c.args[0] for c in _no_real_indeed.return_value.scrape.call_args_list]
+    assert [i.country.name for i in inputs] == ["UK", "GERMANY", "FRANCE", "NETHERLANDS", "SPAIN", "ITALY", "BELGIUM", "AUSTRIA"]
+    assert all(i.description_format.name == "HTML" and i.hours_old == 72 for i in inputs)
+
+
+def test_timed_indeed_matches_the_installed_jobspy():
+    import inspect
+    from jobspy.indeed import Indeed
+
+    assert list(inspect.signature(Indeed._process_job).parameters)[:2] == ["self", "job"]

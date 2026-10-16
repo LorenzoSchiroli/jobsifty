@@ -1,10 +1,11 @@
 import logging
 import re
-from datetime import datetime, time as dt_time
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 import pandas as pd
 from jobspy import scrape_jobs
+from jobspy.indeed import Indeed
 from jobspy.linkedin import LinkedIn
-from jobspy.model import ScraperInput, Site, DescriptionFormat
+from jobspy.model import Country, ScraperInput, Site, DescriptionFormat
 from ingestion.offer.scraping.filters import is_english, _strip_html
 from ingestion.offer.scraping.models import JobOffer
 from ingestion.offer.scraping.sources.base import Source
@@ -23,16 +24,62 @@ _GLASSDOOR_LOCATIONS = {
 }
 
 
+# jobspy keeps only the day a job was posted. The boards say more: Indeed sends a
+# timestamp, LinkedIn cards read "3 hours ago" next to the date. Freshness matters
+# (applying early), so both are kept; a time that cannot be read leaves the day.
+_AGO = re.compile(r"(\d+)\s+(minute|hour)s?\s+ago")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _card_posted_at(job_card) -> datetime | None:
+    """'3 hours ago' on a LinkedIn card as a UTC time; None for days or an unreadable card."""
+    try:
+        m = _AGO.search(job_card.find("time").get_text(" ", strip=True).lower())
+    except AttributeError:
+        return None
+    if not m:
+        return None
+    amount, unit = int(m.group(1)), m.group(2)
+    return _utc_now() - (timedelta(minutes=amount) if unit == "minute" else timedelta(hours=amount))
+
+
 class _SkippingLinkedIn(LinkedIn):
     """jobspy aborts the whole search when one card has a country outside its enum
-    (e.g. 'north macedonia'); drop that card instead."""
+    (e.g. 'north macedonia'); drop that card instead. Also keeps the card's hour."""
 
     def _process_job(self, job_card, job_id, *args):
         try:
-            return super()._process_job(job_card, job_id, *args)
+            post = super()._process_job(job_card, job_id, *args)
         except ValueError as e:
             logger.info("LinkedIn job %s skipped: %s", job_id, str(e).split(". Valid")[0])
             return None
+        if post is not None and (posted := _card_posted_at(job_card)):
+            post.date_posted = posted
+        return post
+
+
+class _TimedIndeed(Indeed):
+    """Indeed with the posting timestamp it sends (dateOnIndeed, ms) instead of the day."""
+
+    def _process_job(self, job: dict):
+        post = super()._process_job(job)
+        try:
+            post.date_posted = datetime.fromtimestamp(job["dateOnIndeed"] / 1000, timezone.utc).replace(tzinfo=None)
+        except (KeyError, TypeError, ValueError, OSError):
+            pass
+        return post
+
+
+def _posted_at(value) -> datetime | None:
+    """A posting time; a bare day becomes its midnight."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, dt_time.min)
+    return None
 
 
 def _text(value) -> str:
@@ -88,19 +135,22 @@ def _df_to_offers(df: pd.DataFrame) -> list[JobOffer]:
     return results
 
 
-def _linkedin_job_to_offer(job) -> JobOffer:
+def _post_to_offer(job, site: str) -> JobOffer:
+    """A jobspy JobPost (from a scraper called directly) as an offer."""
     location = job.location.display_location() if job.location else ""
     return JobOffer(
         title=job.title,
         company=_text(job.company_name),
         location=location,
         url=job.job_url,
-        source="jobspy:linkedin",
-        posted_at=datetime.combine(job.date_posted, dt_time.min) if job.date_posted else None,
+        source=f"jobspy:{site}",
+        posted_at=_posted_at(job.date_posted),
         description=_strip_html(job.description) if job.description else None,
-        company_info=_company_info(
-            "linkedin", {"company_url": job.company_url, "company_industry": job.company_industry},
-        ),
+        company_info=_company_info(site, {
+            "company_url": job.company_url, "company_industry": job.company_industry,
+            "company_url_direct": getattr(job, "company_url_direct", None),
+            "company_description": getattr(job, "company_description", None),
+        }),
     )
 
 
@@ -117,7 +167,7 @@ def _scrape_linkedin(query: str, hours: int) -> list[JobOffer]:
             description_format=DescriptionFormat.HTML,
         ))
         return [
-            _linkedin_job_to_offer(job)
+            _post_to_offer(job, "linkedin")
             for job in response.jobs
             if job.title and is_english(job.title)
         ]
@@ -146,15 +196,15 @@ def _scrape_glassdoor(query: str, hours: int, country: str) -> list[JobOffer]:
 
 def _scrape_indeed(query: str, hours: int, country: str) -> list[JobOffer]:
     try:
-        df = scrape_jobs(
-            site_name=["indeed"],
+        response = _TimedIndeed().scrape(ScraperInput(
+            site_type=[Site.INDEED],
             search_term=query,
+            country=Country.from_string(country),
             hours_old=hours,
             results_wanted=20,
-            country_indeed=country,
-            verbose=0,
-        )
-        return _df_to_offers(df)
+            description_format=DescriptionFormat.HTML,
+        ))
+        return [_post_to_offer(job, "indeed") for job in response.jobs if job.title and is_english(job.title)]
     except Exception as e:
         logger.warning("jobspy Indeed/%s fetch failed: %s", country, e)
         return []

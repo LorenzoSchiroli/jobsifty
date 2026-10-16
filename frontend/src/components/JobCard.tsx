@@ -1,5 +1,30 @@
 import { Job } from '../api/search'
 
+const HOUR = 3_600_000
+const DAY = 24 * HOUR
+
+// "3 hours ago" under a day, "2 days ago" after. Some boards give only the day
+// (stored as midnight UTC): those read "today" / "N days ago".
+function postedAgo(postedAt: string | null): string | null {
+  if (!postedAt) return null
+  const posted = new Date(postedAt)
+  if (Number.isNaN(posted.getTime())) return null
+  const now = new Date()
+  if (posted.getTime() % DAY === 0) {
+    const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+    const days = Math.round((today - posted.getTime()) / DAY)
+    return days <= 0 ? 'today' : `${days} day${days === 1 ? '' : 's'} ago`
+  }
+  const elapsed = Math.max(0, now.getTime() - posted.getTime())
+  if (elapsed < HOUR) return 'under 1 hour ago'
+  if (elapsed < DAY) {
+    const hours = Math.floor(elapsed / HOUR)
+    return `${hours} hour${hours === 1 ? '' : 's'} ago`
+  }
+  const days = Math.floor(elapsed / DAY)
+  return `${days} day${days === 1 ? '' : 's'} ago`
+}
+
 export default function JobCard({ job }: { job: Job }) {
   const tags = [
     job.employment_type,
@@ -42,7 +67,7 @@ export default function JobCard({ job }: { job: Job }) {
         </div>
       )}
       <div style={{ fontSize: '0.875rem', opacity: 0.5, marginTop: '0.2rem' }}>
-        {[job.location, job.company.country].filter(Boolean).join(' · ')}
+        {[job.location, job.company.country, postedAgo(job.posted_at)].filter(Boolean).join(' · ')}
       </div>
       {tags.length > 0 && (
         <div style={{ marginTop: '0.5rem', display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
