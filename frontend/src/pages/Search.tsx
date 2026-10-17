@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { searchJobs, startAdvancedSearch, resumeAdvancedSearch, Job } from '../api/search'
 import { useSearchMode } from '../hooks/useSearchMode'
 import JobCard from '../components/JobCard'
+import SearchHelp from '../components/SearchHelp'
 
 export default function Search() {
   const { mode } = useSearchMode()
@@ -100,6 +101,8 @@ export default function Search() {
           <p style={{ opacity: 0.4 }}>No results found.</p>
         )}
       </div>
+
+      {!query && results.length === 0 && !loading && !threadId && <SearchHelp />}
     </div>
   )
 }
