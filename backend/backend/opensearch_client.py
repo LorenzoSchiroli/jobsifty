@@ -3,10 +3,10 @@ from opensearchpy import AsyncOpenSearch
 
 _client: AsyncOpenSearch | None = None
 
-INDEX_NAME = "jobs_v2"
-# Pre-chunking index (single `embedding` vector). Its knn mapping can't be
-# changed in place, so bootstrap drops it and reconcile repopulates INDEX_NAME.
-LEGACY_INDEX_NAME = "jobs"
+INDEX_NAME = "jobs_v3"
+# Earlier indexes: `jobs` (single `embedding` vector), `jobs_v2` (no `posted_at`).
+# Bootstrap drops them and reconcile repopulates INDEX_NAME from Postgres.
+LEGACY_INDEX_NAMES = ("jobs", "jobs_v2")
 PIPELINE_NAME = "hybrid-pipeline"
 
 _INDEX_BODY = {
@@ -22,6 +22,8 @@ _INDEX_BODY = {
                 "type": "nested",
                 "properties": {
                     "text": {"type": "text"},
+                    # the job's posted_at again: a knn filter only sees the chunk's own fields
+                    "posted_at": {"type": "date"},
                     "embedding": {
                         "type": "knn_vector",
                         "dimension": 384,
@@ -40,6 +42,8 @@ _INDEX_BODY = {
             "review_score":             {"type": "float"},
             "financial_health_score":   {"type": "integer"},
             "created_at":               {"type": "date"},
+            # posted_at, else created_at: the date the age window filters on
+            "posted_at":                {"type": "date"},
         }
     },
 }
@@ -76,11 +80,14 @@ async def get_existing_job_ids(
     return found
 
 
-async def drop_legacy_index(os_client: AsyncOpenSearch) -> bool:
-    if await os_client.indices.exists(index=LEGACY_INDEX_NAME):
-        await os_client.indices.delete(index=LEGACY_INDEX_NAME)
-        return True
-    return False
+async def drop_legacy_index(os_client: AsyncOpenSearch) -> list[str]:
+    """Deletes the earlier indexes that still exist; returns their names."""
+    dropped = []
+    for name in LEGACY_INDEX_NAMES:
+        if await os_client.indices.exists(index=name):
+            await os_client.indices.delete(index=name)
+            dropped.append(name)
+    return dropped
 
 
 async def init_opensearch() -> None:

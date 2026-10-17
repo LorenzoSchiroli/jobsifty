@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +9,7 @@ from opensearchpy import AsyncOpenSearch
 from opensearchpy.helpers import async_bulk
 
 from backend.database import get_session_factory
+from backend.live import job_date, job_live_days, live_since
 from backend.models import Outbox, Job, Company
 from backend.opensearch_client import get_opensearch, get_existing_job_ids, INDEX_NAME
 
@@ -20,19 +21,20 @@ RECONCILE_BATCH_SIZE = 2000
 # Jobs loaded and bulk-indexed per slice; each carries several 384-d chunk
 # vectors, so a full batch at once does not fit the worker's memory limit.
 RECONCILE_SLICE_SIZE = 250
-RECONCILE_WINDOW_DAYS = 30
-RETENTION_MAX_AGE_DAYS = 30
 
 
 def _build_job_doc(job: Job) -> dict:
     c = job.company
+    posted_at = (job.posted_at or job.created_at).isoformat()
     return {
         "job_id": str(job.id),
         "company_id": str(job.company_id),
         "company_name": c.name if c else None,
         "title": job.title,
         "description": job.description or "",
-        "chunks": [{"text": c["text"], "embedding": c["embedding"]} for c in job.chunks or []],
+        "chunks": [
+            {"text": c["text"], "embedding": c["embedding"], "posted_at": posted_at} for c in job.chunks or []
+        ],
         "employment_type": job.employment_type,
         "location_type": job.location_type,
         "seniority": job.seniority,
@@ -44,6 +46,7 @@ def _build_job_doc(job: Job) -> dict:
         "review_score": c.review_score if c else None,
         "financial_health_score": c.financial_health_score if c else None,
         "created_at": job.created_at.isoformat(),
+        "posted_at": posted_at,
     }
 
 
@@ -84,7 +87,7 @@ async def reconcile(
     batch_size: int = RECONCILE_BATCH_SIZE,
 ) -> int:
     now = datetime.now(timezone.utc)
-    window_start = now - timedelta(days=RECONCILE_WINDOW_DAYS)
+    window_start = live_since(now)
 
     # 1. Changed entities: everything with an unprocessed outbox row.
     events = (
@@ -93,11 +96,11 @@ async def reconcile(
     changed_job_ids = {e.entity_id for e in events if e.event_type == "job_upserted"}
     company_events = [e for e in events if e.event_type == "company_upserted"]
 
-    # 2. Missing entities: live jobs (created within the window) absent from OpenSearch.
+    # 2. Missing entities: live jobs absent from OpenSearch.
     live_ids = [
         str(jid)
         for (jid,) in (
-            await session.execute(select(Job.id).where(Job.created_at >= window_start))
+            await session.execute(select(Job.id).where(job_date >= window_start))
         ).all()
     ]
     present = await get_existing_job_ids(os_client, live_ids)
@@ -157,12 +160,12 @@ async def reconcile(
     return len(indexed_ids)
 
 
-async def purge_expired_jobs(
-    os_client: AsyncOpenSearch, max_age_days: int = RETENTION_MAX_AGE_DAYS
-) -> None:
+async def purge_expired_jobs(os_client: AsyncOpenSearch, max_age_days: int | None = None) -> None:
+    """Deletes the docs of jobs no longer live (by posted_at, which falls back to created_at)."""
+    days = job_live_days() if max_age_days is None else max_age_days
     await os_client.delete_by_query(
         index=INDEX_NAME,
-        body={"query": {"range": {"created_at": {"lt": f"now-{max_age_days}d"}}}},
+        body={"query": {"range": {"posted_at": {"lt": f"now-{days}d"}}}},
     )
 
 

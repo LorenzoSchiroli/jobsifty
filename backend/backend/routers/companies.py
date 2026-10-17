@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_session
 from backend.models import Company, Job, Outbox
-from backend.outbox.worker import RECONCILE_WINDOW_DAYS
+from backend.live import job_date, live_since
 from backend.schemas import CompanyRequest, CompanyResponse, PendingCompany
 
 router = APIRouter(prefix="/companies", tags=["companies"])
@@ -87,7 +87,7 @@ async def pending_companies(limit: int = Query(10, ge=1, le=500), session: Async
     now = datetime.now(timezone.utc)
     live = (
         select(Job.company_id, func.count().label("live_jobs"), func.max(Job.created_at).label("newest_job"))
-        .where(Job.created_at >= now - timedelta(days=RECONCILE_WINDOW_DAYS))
+        .where(job_date >= live_since(now))
         .group_by(Job.company_id)
         .subquery()
     )

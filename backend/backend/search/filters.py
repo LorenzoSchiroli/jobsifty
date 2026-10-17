@@ -46,7 +46,8 @@ class SearchFilters(BaseModel):
     location_type: str | None = None
     seniority: str | None = None
     languages_required: list[str] | None = None
-    max_age_hours: int | None = 720
+    # Jobs posted within this many hours, a hard limit; the query can widen it ("last 2 weeks")
+    max_age_hours: int | None = 72
     semantic_query: str
     strict: bool = False
 
@@ -91,7 +92,11 @@ def build_clauses(filters: SearchFilters) -> list[dict]:
             if strict
             else {"terms": {"languages_required": langs, "boost": _BOOST}}
         )
-    if filters.max_age_hours is not None:
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=filters.max_age_hours)).isoformat()
-        clauses.append(rng("created_at", cutoff))
     return clauses
+
+
+def age_cutoff(filters: SearchFilters) -> str | None:
+    """The oldest posted_at the search returns, or None for no limit."""
+    if filters.max_age_hours is None:
+        return None
+    return (datetime.now(timezone.utc) - timedelta(hours=filters.max_age_hours)).isoformat()

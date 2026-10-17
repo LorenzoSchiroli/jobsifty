@@ -20,7 +20,7 @@ Return a JSON object with exactly these fields (null for unknown):
   "location_type": "one of: on-site, remote, hybrid — or null if not specified",
   "seniority": "one of: junior, mid, senior, lead, principal, staff, director — or null if not specified",
   "languages_required": ["list of spoken/natural languages e.g. English, German, French"] or null,
-  "max_age_hours": integer — how many hours back to search. Default 720 (30 days). Lower when user says "last N hours/days" (e.g. "last 2 hours" → 2, "last 3 days" → 72). Null only if user explicitly asks for no time limit.
+  "max_age_hours": integer — how many hours back to search. Default 72 (3 days). Lower when user says "last N hours/days" (e.g. "last 2 hours" → 2, "last 3 days" → 72). Null only if user explicitly asks for no time limit.
   "strict": false — set to true ONLY when the user explicitly requests strict/exact/no-miss matching (e.g. "strictly", "only", "exact", "no exceptions"). Default false.
 }"""
 

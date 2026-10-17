@@ -7,7 +7,7 @@ def test_plain_query_passthrough():
     assert f.semantic_query == "machine learning engineer"
     assert f.seniority is None
     assert f.location_type is None
-    assert f.max_age_hours == 720  # default preserved
+    assert f.max_age_hours == 72  # default preserved
 
 
 @pytest.mark.parametrize("query,field,value", [

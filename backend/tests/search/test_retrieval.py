@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 from backend.search.retrieval import build_hybrid_query, hybrid_retrieve
 from backend.search.filters import SearchFilters
@@ -34,7 +35,7 @@ def test_build_hybrid_query_soft_applies_boosts_to_both_legs():
 
 
 def test_build_hybrid_query_strict_uses_post_filter():
-    f = SearchFilters(semantic_query="x", is_startup=True, strict=True)
+    f = SearchFilters(semantic_query="x", is_startup=True, strict=True, max_age_hours=None)
     q = build_hybrid_query("x", [0.0] * 384, f)
     assert "post_filter" in q
     assert {"term": {"is_startup": True}} in q["post_filter"]["bool"]["filter"]
@@ -70,6 +71,29 @@ def test_build_hybrid_query_strict_country_uses_post_filter():
     assert {"terms": {"country": ["Germany", "DE"]}} in q["post_filter"]["bool"]["filter"]
     for leg in q["query"]["hybrid"]["queries"]:
         assert "should" not in leg["bool"]
+
+
+def test_build_hybrid_query_age_window_is_a_hard_filter_on_both_legs():
+    for strict in (False, True):
+        q = build_hybrid_query("x", [0.0] * 384, SearchFilters(semantic_query="x", max_age_hours=72, strict=strict))
+        bm25, knn_leg = q["query"]["hybrid"]["queries"]
+        cutoff = bm25["bool"]["filter"][0]["range"]["posted_at"]["gte"]
+        knn = knn_leg["bool"]["must"]["nested"]["query"]["knn"]["chunks.embedding"]
+        assert knn["filter"] == {"range": {"chunks.posted_at": {"gte": cutoff}}}
+        assert "post_filter" not in q
+
+
+def test_build_hybrid_query_default_window_is_72_hours():
+    q = build_hybrid_query("x", [0.0] * 384, SearchFilters(semantic_query="x"))
+    cutoff = datetime.fromisoformat(q["query"]["hybrid"]["queries"][0]["bool"]["filter"][0]["range"]["posted_at"]["gte"])
+    assert abs(datetime.now(timezone.utc) - timedelta(hours=72) - cutoff) < timedelta(minutes=1)
+
+
+def test_build_hybrid_query_no_window_without_max_age():
+    q = build_hybrid_query("x", [0.0] * 384, SearchFilters(semantic_query="x", max_age_hours=None))
+    bm25, knn_leg = q["query"]["hybrid"]["queries"]
+    assert "filter" not in bm25["bool"]
+    assert "filter" not in knn_leg["bool"]["must"]["nested"]["query"]["knn"]["chunks.embedding"]
 
 
 async def test_hybrid_retrieve_uses_pipeline():

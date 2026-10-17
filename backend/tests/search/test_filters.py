@@ -82,3 +82,8 @@ def test_build_clauses_country_combined_with_other_filters():
     assert {"terms": {"country": ["Germany", "DE"], "boost": 2.0}} in result
     assert {"term": {"seniority": {"value": "senior", "boost": 2.0}}} in result
     assert len(result) == 2
+
+
+def test_age_window_is_not_a_soft_clause():
+    # the window is a hard filter applied by retrieval, never a boost
+    assert build_clauses(SearchFilters(semantic_query="x", max_age_hours=24)) == []

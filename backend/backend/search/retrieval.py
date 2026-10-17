@@ -1,6 +1,6 @@
 from opensearchpy import AsyncOpenSearch
 from backend.opensearch_client import INDEX_NAME, PIPELINE_NAME
-from backend.search.filters import SearchFilters, build_clauses
+from backend.search.filters import SearchFilters, age_cutoff, build_clauses
 
 _STRICT_PREFETCH = 200
 
@@ -11,12 +11,19 @@ def build_hybrid_query(
     filters: SearchFilters,
     size: int = 20,
 ) -> dict:
+    knn: dict = {"vector": query_embedding, "k": 100}
+    bm25: dict = {"must": {"match": {"description": semantic_query}}}
+    # The age window is always hard. On the knn leg it goes inside the knn query, so the
+    # k nearest chunks are found among recent jobs instead of being filtered afterwards.
+    if cutoff := age_cutoff(filters):
+        knn["filter"] = {"range": {"chunks.posted_at": {"gte": cutoff}}}
+        bm25["filter"] = [{"range": {"posted_at": {"gte": cutoff}}}]
     legs = [
-        {"bool": {"must": {"match": {"description": semantic_query}}}},
+        {"bool": bm25},
         {"bool": {"must": {"nested": {
             "path": "chunks",
             "score_mode": "max",
-            "query": {"knn": {"chunks.embedding": {"vector": query_embedding, "k": 100}}},
+            "query": {"knn": {"chunks.embedding": knn}},
         }}}},
     ]
     clauses = build_clauses(filters)

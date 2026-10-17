@@ -1,8 +1,9 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 from sqlalchemy import select
 from backend.models import Outbox, Job, Company
-from backend.outbox.worker import reconcile
+from backend.outbox.worker import _build_job_doc, reconcile
 
 
 async def _company(session, name="Acme") -> Company:
@@ -40,7 +41,8 @@ async def test_reconcile_reindexes_changed_job_even_when_present(db_session):
     assert count == 1
     actions = list(mock_bulk.call_args.args[1])
     assert actions[0]["_id"] == str(job.id)
-    assert actions[0]["_source"]["chunks"] == [{"text": "Engineer\npython", "embedding": [0.1] * 384}]
+    source = actions[0]["_source"]
+    assert source["chunks"] == [{"text": "Engineer\npython", "embedding": [0.1] * 384, "posted_at": source["posted_at"]}]
     assert actions[0]["_source"]["company_name"] == "Acme"
     assert "summary_text" not in actions[0]["_source"]
     row = (await db_session.execute(select(Outbox))).scalar_one()
@@ -97,4 +99,45 @@ async def test_purge_expired_jobs_deletes_old_docs():
     await purge_expired_jobs(os_client, max_age_days=30)
     os_client.delete_by_query.assert_called_once()
     body = os_client.delete_by_query.call_args.kwargs["body"]
-    assert body["query"]["range"]["created_at"]["lt"] == "now-30d"
+    assert body["query"]["range"]["posted_at"]["lt"] == "now-30d"
+
+
+async def test_purge_follows_job_live_days(monkeypatch):
+    from backend.outbox.worker import purge_expired_jobs
+    monkeypatch.setenv("JOB_LIVE_DAYS", "7")
+    os_client = AsyncMock()
+    await purge_expired_jobs(os_client)
+    body = os_client.delete_by_query.call_args.kwargs["body"]
+    assert body["query"]["range"]["posted_at"]["lt"] == "now-7d"
+
+
+async def test_reconcile_skips_jobs_posted_before_the_live_window(db_session):
+    company = await _company(db_session, "OldCo")
+    job = await _job(db_session, company.id, "https://ex.com/old")
+    job.posted_at = datetime.now(timezone.utc) - timedelta(days=20)  # stored today, posted 20 days ago
+    await db_session.commit()
+
+    os_client = AsyncMock()
+    os_client.mget.side_effect = _mget(set())
+    with patch("backend.outbox.worker.async_bulk", new_callable=AsyncMock):
+        await reconcile(db_session, os_client)
+    ids = os_client.mget.call_args.kwargs["body"]["ids"] if os_client.mget.called else []
+    assert str(job.id) not in ids
+
+
+def test_job_doc_posted_at_on_job_and_chunks():
+    posted = datetime(2026, 10, 1, 9, 30, tzinfo=timezone.utc)
+    job = Job(id=uuid.uuid4(), company_id=uuid.uuid4(), url="u", title="t", posted_at=posted,
+              created_at=datetime(2026, 10, 2, tzinfo=timezone.utc), chunks=[{"text": "t", "embedding": [0.1]}])
+    doc = _build_job_doc(job)
+    assert doc["posted_at"] == posted.isoformat()
+    assert doc["chunks"][0]["posted_at"] == posted.isoformat()
+
+
+def test_job_doc_posted_at_falls_back_to_created_at():
+    created = datetime(2026, 10, 2, tzinfo=timezone.utc)
+    job = Job(id=uuid.uuid4(), company_id=uuid.uuid4(), url="u", title="t", created_at=created,
+              chunks=[{"text": "t", "embedding": [0.1]}])
+    doc = _build_job_doc(job)
+    assert doc["posted_at"] == created.isoformat()
+    assert doc["chunks"][0]["posted_at"] == created.isoformat()

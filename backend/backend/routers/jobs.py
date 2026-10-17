@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_session
+from backend.live import live_since
 from backend.models import Company, Job, Outbox
 from backend.schemas import JobListItem, JobListResponse, JobRequest, JobResponse
 from backend.routers.companies import _normalize, _is_empty
@@ -91,6 +92,14 @@ async def list_jobs(
     ]
     next_after = items[-1].id if len(items) == limit else None
     return JobListResponse(items=items, next_after=next_after)
+
+
+@router.get("/urls", response_model=list[str])
+async def recent_job_urls(session: AsyncSession = Depends(get_session)):
+    """URLs of the jobs stored within the live window, which ingestion skips instead of
+    fetching, parsing and embedding them again."""
+    rows = await session.execute(select(Job.url).where(Job.created_at >= live_since()))
+    return [url for (url,) in rows]
 
 
 @router.get("/{job_id}", response_model=JobResponse)

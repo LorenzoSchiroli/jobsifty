@@ -92,6 +92,14 @@ async def test_pending_orders_by_newest_job_and_returns_location(client):
     ]
 
 
+async def test_pending_skips_companies_whose_jobs_were_posted_before_the_live_window(client):
+    from datetime import datetime, timedelta, timezone
+    old = (datetime.now(timezone.utc) - timedelta(days=15)).isoformat()
+    await client.post("/jobs/", json={"url": "https://jobs.example/old/1", "title": "Engineer",
+                                      "company_name": "Old", "posted_at": old})
+    assert (await client.get("/companies/pending")).json() == []
+
+
 async def test_pending_skips_recently_attempted_and_companies_without_live_jobs(client):
     await _post_job(client, "Tried", 1)
     await client.post("/companies/", json={"name": "Tried", "enrichment_attempted": True})

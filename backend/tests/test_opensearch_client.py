@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 import backend.opensearch_client as m
-from backend.opensearch_client import get_existing_job_ids, drop_legacy_index, INDEX_NAME, LEGACY_INDEX_NAME
+from backend.opensearch_client import get_existing_job_ids, drop_legacy_index, INDEX_NAME, LEGACY_INDEX_NAMES
 
 
 async def test_init_creates_index_when_missing(monkeypatch):
@@ -92,18 +92,20 @@ def test_index_maps_chunks_as_nested_knn():
     assert chunks["type"] == "nested"
     assert chunks["properties"]["embedding"]["type"] == "knn_vector"
     assert chunks["properties"]["embedding"]["dimension"] == 384
-    assert INDEX_NAME != LEGACY_INDEX_NAME
+    assert chunks["properties"]["posted_at"]["type"] == "date"
+    assert props["posted_at"]["type"] == "date"
+    assert INDEX_NAME not in LEGACY_INDEX_NAMES
 
 
 async def test_drop_legacy_index_deletes_when_present():
     os_client = AsyncMock()
     os_client.indices.exists.return_value = True
-    assert await drop_legacy_index(os_client) is True
-    os_client.indices.delete.assert_called_once_with(index=LEGACY_INDEX_NAME)
+    assert await drop_legacy_index(os_client) == list(LEGACY_INDEX_NAMES)
+    assert [c.kwargs["index"] for c in os_client.indices.delete.call_args_list] == list(LEGACY_INDEX_NAMES)
 
 
 async def test_drop_legacy_index_noop_when_absent():
     os_client = AsyncMock()
     os_client.indices.exists.return_value = False
-    assert await drop_legacy_index(os_client) is False
+    assert await drop_legacy_index(os_client) == []
     os_client.indices.delete.assert_not_called()

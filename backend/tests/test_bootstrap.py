@@ -3,7 +3,7 @@ from unittest.mock import patch, AsyncMock, MagicMock
 from backend import bootstrap
 
 
-async def test_bootstrap_main_runs_init_setup_backfill_in_order():
+async def test_bootstrap_main_runs_init_drop_setup_in_order():
     call_order = []
 
     async def record_init():
@@ -12,12 +12,9 @@ async def test_bootstrap_main_runs_init_setup_backfill_in_order():
     async def record_setup():
         call_order.append("checkpointer.setup")
 
-    async def record_backfill():
-        call_order.append("backfill_created_at")
-
     async def record_drop(_client):
         call_order.append("drop_legacy_index")
-        return False
+        return []
 
     mock_checkpointer = MagicMock()
     mock_checkpointer.setup = AsyncMock(side_effect=record_setup)
@@ -28,8 +25,7 @@ async def test_bootstrap_main_runs_init_setup_backfill_in_order():
     with patch("backend.bootstrap.init_opensearch", new=AsyncMock(side_effect=record_init)), \
          patch("backend.bootstrap.get_opensearch", return_value=MagicMock()), \
          patch("backend.bootstrap.drop_legacy_index", new=AsyncMock(side_effect=record_drop)), \
-         patch("backend.bootstrap.AsyncPostgresSaver.from_conn_string", return_value=mock_saver_cm), \
-         patch("backend.bootstrap.backfill_created_at", new=AsyncMock(side_effect=record_backfill)):
+         patch("backend.bootstrap.AsyncPostgresSaver.from_conn_string", return_value=mock_saver_cm):
         await bootstrap.main()
 
-    assert call_order == ["init_opensearch", "drop_legacy_index", "checkpointer.setup", "backfill_created_at"]
+    assert call_order == ["init_opensearch", "drop_legacy_index", "checkpointer.setup"]
