@@ -60,7 +60,7 @@ The chart does **not** create the secret — it references one by name
 
 Due to kubectl version constraints, `--from-env-file` cannot be combined with
 `--from-literal` in a single invocation. Create the secret in two steps. Pass
-**both** env files: `.env.public` carries `GROQ_MODEL_*`, `OFFER_QUERY` and
+**both** env files: `.env.public` carries `GROQ_MODEL_*`, `JOB_LIVE_DAYS` and
 `CORS_ORIGINS`, which the chart's `envFrom` expects alongside the secrets.
 
     kubectl create secret generic jobsifty-secrets \
@@ -125,7 +125,7 @@ Examples:
       -f deploy/helm/jobsifty/values-local.yaml --set hpa.maxReplicas=6
 
 Notable values: `existingSecret`, `hpa.minReplicas/maxReplicas/targetCPUUtilization`,
-`ingestion.schedule/suspend/activeDeadlineSeconds`, per-service `image.repository/tag`
+`ingestion.intervalHours/suspend` (the schedule and `activeDeadlineSeconds` follow from `intervalHours`), per-service `image.repository/tag`
 and `resources`, `postgres.storage`, `opensearch.storage`.
 
 ## 5. HPA load demo

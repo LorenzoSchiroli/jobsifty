@@ -27,7 +27,7 @@ Fargate**, from one command.
 
 ```mermaid
 flowchart TB
-    SRC["Job sources<br/>jobspy · adzuna · arbeitnow · freehire · remotive"]
+    SRC["Job sources<br/>jobspy · adzuna · arbeitnow · freehire"]
     ING["ingestion · every 2h<br/>scrape → LLM parse → embed"]
     CLI["Clients<br/>React SPA"]
     API["backend API<br/>FastAPI · JWT · search · agents"]
@@ -50,13 +50,13 @@ Three processes, split so they scale and fail independently:
 |---------|------|
 | `backend.main:app` | API only. Loads the two ML models, ensures the OpenSearch index + search pipeline, opens the LangGraph checkpointer. Stateless → horizontally scalable. |
 | `python -m backend.worker` | Singleton. Outbox reconcile (5 min), retention (6 h), nightly `pg_dump` backup. |
-| `python -m backend.bootstrap` | One-shot. Checkpointer tables + `created_at` backfill; migrations run alongside it. |
+| `python -m backend.bootstrap` | One-shot. Checkpointer tables + dropping legacy OpenSearch indexes; migrations run alongside it. |
 
 **Ingestion** runs out-of-process as a scheduled batch (k8s CronJob / EventBridge
-RunTask): scrape → fill missing descriptions with trafilatura → parse each
+RunTask): scrape a *scope* (`ai`: one OR query per board where it supports one, a title rule for every job, jobs already stored skipped) → fill missing descriptions with trafilatura → parse each
 offer with rules (strip boilerplate sections, regex fields, language detection — no LLM)
 → embed ≤4 ~400-token chunks → `POST` to the backend, then upsert companies with
-what the job boards say about them, and spend a fixed time per run enriching companies,
+what the job boards say about them, and enrich companies until shortly before the next run,
 newest jobs' employers first (two web searches each through a pool of free-tier providers — TinyFish, Exa,
 Tavily — rotated on rate limits and exhausted credits; JSON-LD/Wikidata/regex first,
 one small LLM call on snippets and scraped pages for what is still missing, through
@@ -122,6 +122,7 @@ flowchart TB
 | **Hybrid BM25 + k-NN, not one or the other** | Lexical search nails the tokens that must match literally — `Kubernetes`, `SAP`, `PyTorch`, a specific certification. Dense retrieval catches the paraphrase — "ML engineer" ≈ "applied scientist". Job postings need both: they are keyword-dense *and* written in a hundred different dialects. |
 | **Fusion inside an OpenSearch search pipeline** | BM25 scores and cosine similarities live on incomparable scales, so they are min-max normalised before an arithmetic mean with 50/50 weights. Doing it server-side in the `hybrid` query means one round trip and one ranked list, instead of two queries merged in Python. |
 | **Filters are *soft* by default** | The filterable fields (`seniority`, `location_type`, `languages_required`, …) come from an LLM parse of free-text postings, so they are good but not perfect. A hard filter turns one bad extraction into a silently missing result. Instead the clauses are scored `should` clauses with `boost: 2.0` — matching documents win, near-misses still surface. Writing *"strictly"*, *"exactly"* or *"no exceptions"* flips `SearchFilters.strict`, which applies them as a real `post_filter` and raises the prefetch to 200 so the filter has candidates left to keep. |
+| **The age window is always hard, 72 hours by default** | A posting a week old is usually already being interviewed for, so old jobs are left out rather than ranked lower. The window is on `posted_at` (the board's date, `created_at` when it gives none) and the query text changes it: *"last 2 weeks"*, *"today"*, *"this week"*. On the k-NN leg the date is the knn query's own filter on `chunks.posted_at` (each chunk carries the job's date), so the nearest neighbours are searched among recent jobs: a filter around the k-NN result would keep only the recent few of its top 100. |
 | **Cross-encoder rerank on the shortlist only** | The bi-encoder scores query and document independently — necessary, because embeddings must be computed at index time. A cross-encoder reads the pair jointly and is markedly more accurate, but costs one forward pass *per candidate*. Applying it to the top 20–200 retrieved hits buys most of the accuracy for a bounded, predictable cost. |
 | **Chunks instead of an LLM summary** | Descriptions run ~1k tokens (p99 ~2.7k), twice the 512-token window of small CPU encoders. Instead of an LLM summary (which made ingestion depend on Groq quotas), boilerplate sections are stripped by rules and the rest is embedded as ≤4 overlapping chunks; k-NN scores a job by its best chunk and the reranker reads that same chunk. |
 | **384 dimensions, HNSW + cosine on the Lucene engine** | Small vectors keep index size and HNSW memory low, `multilingual-e5-small` covers the non-English offers, and the Lucene engine needs no native plugin and supports filtered k-NN. |
@@ -180,19 +181,19 @@ flowchart TB
 
 Jobs and companies are written to Postgres together with an `outbox` row in the
 same transaction. Every 5 minutes the reconcile worker bulk re-indexes: jobs
-with unprocessed outbox rows, plus any live job (≤30 days old) missing from the
+with unprocessed outbox rows, plus any live job (posted within `JOB_LIVE_DAYS`, default 14) missing from the
 index. `company_upserted` events patch company-derived fields across that
 company's job documents with a single `update_by_query`. Every 6 hours retention
-drops OpenSearch documents older than 30 days, keeping the index at "what you
+drops OpenSearch documents posted more than `JOB_LIVE_DAYS` ago, keeping the index at "what you
 could actually still apply to". With `BACKUP_SBOX_*` set, the worker also runs a
 daily `pg_dump` + rclone upload to a Hetzner Storage Box on a 7-day rolling
 retention.
 
-The `jobs_v2` index carries the nested `chunks` (text + embedding; the reranker
+The `jobs_v3` index carries the nested `chunks` (text + embedding + the job's posted date; the reranker
 re-picks the best chunk from them, since hybrid queries drop `inner_hits`), `description` for BM25, `company_name` for the advanced-search prompts, and the keyword/numeric
 fields the filter clauses target — `employment_type`, `location_type`,
 `seniority`, `languages_required`, `is_consulting`, `is_startup`, `industry`,
-`country`, `review_score`, `financial_health_score`, `created_at`.
+`country`, `review_score`, `financial_health_score`, `created_at`, `posted_at`.
 
 ---
 
@@ -339,8 +340,7 @@ cp .env.example .env      # then fill in the keys below
 | `BACKUP_SBOX_HOST` / `_USER` / `_RCLONE_PASS` | `.env` | Optional nightly Postgres backup |
 | `GROQ_MODEL_LARGE` / `GROQ_MODEL_BASE` | `.env.public` | Model IDs for agents / company enrichment |
 | `NVIDIA_MODEL` / `GEMINI_MODEL` / `LLM_PROVIDERS` | `.env.public` | Company enrichment LLM pool: models and order (default `nvidia,gemini,groq`) |
-| `OFFER_QUERY` | `.env.public` | Query used by the ingestion container / CronJob |
-| `COMPANY_ENRICH_MINUTES` | `.env.public` | Minutes per ingestion run spent enriching companies, newest jobs' employers first (0 disables) |
+| `JOB_LIVE_DAYS` | `.env.public` | Days a job stays live, from its posting time: search retention, reconcile, company enrichment (default 14) |
 | `SEARCH_PROVIDERS` | `.env.public` | Search pool order (default `tinyfish,exa,tavily`) |
 | `CORS_ORIGINS` | `.env.public` | Extra browser origins for the API |
 | `VITE_API_URL` | `.env.public` | API base URL baked into the frontend image |
@@ -388,18 +388,18 @@ Tests need a live Postgres at
 
 ```bash
 cd ingestion
-uv run python -m ingestion.pipeline "machine learning engineer" --hours 48
+uv run python -m ingestion.pipeline ai --hours 48
 uv run pytest
 ```
 
 Ad-hoc CLIs for debugging a single stage:
 
 ```bash
-uv run python -m ingestion.offer "machine learning engineer" --hours 48 --sources jobspy,adzuna
+uv run python -m ingestion.offer ai --hours 48 --sources jobspy,adzuna
 uv run python -m ingestion.company "Stripe" "San Francisco" --debug
 ```
 
-Offer sources: `jobspy`, `adzuna`, `arbeitnow`, `freehire`, `remotive` (default: all).
+Offer sources: `jobspy`, `adzuna`, `arbeitnow`, `freehire` (default: all); what each can do, and why others such as Remotive were dropped, is in [`ingestion/SOURCES.md`](ingestion/SOURCES.md).
 
 ## Repository layout
 

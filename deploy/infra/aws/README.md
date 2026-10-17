@@ -164,8 +164,8 @@ Re-check the AWS console for stray ENIs, EIPs, or OpenSearch domains if destroy 
 
 ## Ingestion schedule
 
-EventBridge Scheduler runs the ingestion task definition every 2 hours (`cron(0 */2 * * ? *)`), mirroring the local Helm CronJob cadence. The task definition already passes `--hours 2` and reads `OFFER_QUERY` from Secrets Manager; no container overrides are applied at schedule time.
+EventBridge Scheduler runs the ingestion task definition every `ingestion_interval_hours` (default 2, `cron(0 */2 * * ? *)`), mirroring the local Helm CronJob cadence. The task definition passes `--interval-hours` (from which the pipeline derives its look-back and company enrichment time) and the scope `offer_scope` (default `ai`) as arguments; no container overrides are applied at schedule time.
 
 **Ingestion targets this stack, not public DNS.** `BACKEND_URL=http://api.<project>.local:8000` (set in `ecs.tf`) is an internal Cloud Map address backed by `service_discovery.tf`, resolving to the `api` service's own tasks inside the VPC. This mirrors the Helm path, where ingestion posts to the in-cluster Service `http://api:8000`. Both stacks therefore ingest into their own database, and running AWS pre-flip cannot pollute Hetzner.
 
-**Overlap risk:** unlike the Helm CronJob’s `concurrencyPolicy: Forbid`, EventBridge has **no overlap guard**. A new RunTask can start every 2 hours even if the previous ingestion task is still running. Long scrapes may overlap; watch ingestion logs and task counts in ECS if runs approach the 2-hour window.
+**No overlap:** unlike the Helm CronJob’s `concurrencyPolicy: Forbid`, EventBridge has no overlap guard, so the task command wraps the pipeline in `timeout` (interval − 10 minutes): a hung run is killed before the next one starts. A healthy run stops enriching companies 20 minutes before the next run.
