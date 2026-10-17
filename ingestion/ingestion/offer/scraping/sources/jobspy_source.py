@@ -6,12 +6,16 @@ from jobspy import scrape_jobs
 from jobspy.indeed import Indeed
 from jobspy.linkedin import LinkedIn
 from jobspy.model import Country, ScraperInput, Site, DescriptionFormat
-from ingestion.offer.scraping.filters import is_english, _strip_html
+from ingestion.offer.scraping.filters import is_latin_script, _strip_html
 from ingestion.offer.scraping.models import JobOffer
+from ingestion.offer.scraping.scopes import Scope
 from ingestion.offer.scraping.sources.base import Source
 
 logger = logging.getLogger(__name__)
 
+# LinkedIn cards looked at per run, skipped ones included. LinkedIn has hundreds of AI
+# jobs in Europe every 4 hours; each card kept costs one more request (its description).
+_LINKEDIN_CARDS = 150
 _INDEED_COUNTRIES = ["UK", "Germany", "France", "Netherlands", "Spain", "Italy", "Belgium", "Austria"]
 # Glassdoor needs a concrete place ("Europe" resolves to France only), looked up by name
 # on the country's own site: glassdoor.co.uk knows "United Kingdom", not "UK".
@@ -48,9 +52,20 @@ def _card_posted_at(job_card) -> datetime | None:
 
 class _SkippingLinkedIn(LinkedIn):
     """jobspy aborts the whole search when one card has a country outside its enum
-    (e.g. 'north macedonia'); drop that card instead. Also keeps the card's hour."""
+    (e.g. 'north macedonia'); drop that card instead. Also keeps the card's hour, and
+    skips cards whose title is off-scope or whose job is already stored before their
+    description is fetched (one request each)."""
+
+    def __init__(self, scope: Scope, known_urls: frozenset[str], **kwargs):
+        super().__init__(**kwargs)
+        self.job_scope = scope
+        self.known_urls = known_urls
 
     def _process_job(self, job_card, job_id, *args):
+        title_tag = job_card.find("h3", class_="base-search-card__title")
+        title = title_tag.get_text(strip=True) if title_tag else ""
+        if not self.job_scope.matches(title) or f"{self.base_url}/jobs/view/{job_id}" in self.known_urls:
+            return None
         try:
             post = super()._process_job(job_card, job_id, *args)
         except ValueError as e:
@@ -110,7 +125,7 @@ def _df_to_offers(df: pd.DataFrame) -> list[JobOffer]:
         title = row.get("title")
         if not title or not isinstance(title, str):
             continue
-        if not is_english(title):
+        if not is_latin_script(title):
             continue
         posted_at: datetime | None = None
         raw_date = row.get("date_posted")
@@ -154,33 +169,34 @@ def _post_to_offer(job, site: str) -> JobOffer:
     )
 
 
-def _scrape_linkedin(query: str, hours: int) -> list[JobOffer]:
+def _scrape_linkedin(scope: Scope, hours: int, known_urls: frozenset[str]) -> list[JobOffer]:
     try:
-        scraper = _SkippingLinkedIn()
+        scraper = _SkippingLinkedIn(scope, known_urls)
         response = scraper.scrape(ScraperInput(
             site_type=[Site.LINKEDIN],
-            search_term=query,
+            search_term=scope.or_query(),
             location="Europe",
             hours_old=hours,
-            results_wanted=50,
+            results_wanted=_LINKEDIN_CARDS,
             fetch_description=True,
             description_format=DescriptionFormat.HTML,
         ))
+        # a skipped card is a None in the list
         return [
             _post_to_offer(job, "linkedin")
             for job in response.jobs
-            if job.title and is_english(job.title)
+            if job is not None and job.title and is_latin_script(job.title)
         ]
     except Exception as e:
         logger.warning("jobspy LinkedIn fetch failed: %s", e)
         return []
 
 
-def _scrape_glassdoor(query: str, hours: int, country: str) -> list[JobOffer]:
+def _scrape_glassdoor(scope: Scope, hours: int, country: str) -> list[JobOffer]:
     try:
         df = scrape_jobs(
             site_name=["glassdoor"],
-            search_term=query,
+            search_term=scope.or_query(),
             location=_GLASSDOOR_LOCATIONS[country],
             country_indeed=country,
             hours_old=hours,
@@ -194,28 +210,28 @@ def _scrape_glassdoor(query: str, hours: int, country: str) -> list[JobOffer]:
         return []
 
 
-def _scrape_indeed(query: str, hours: int, country: str) -> list[JobOffer]:
+def _scrape_indeed(scope: Scope, hours: int, country: str) -> list[JobOffer]:
     try:
         response = _TimedIndeed().scrape(ScraperInput(
             site_type=[Site.INDEED],
-            search_term=query,
+            search_term=scope.or_query(),
             country=Country.from_string(country),
             hours_old=hours,
             results_wanted=20,
             description_format=DescriptionFormat.HTML,
         ))
-        return [_post_to_offer(job, "indeed") for job in response.jobs if job.title and is_english(job.title)]
+        return [_post_to_offer(job, "indeed") for job in response.jobs if job.title and is_latin_script(job.title)]
     except Exception as e:
         logger.warning("jobspy Indeed/%s fetch failed: %s", country, e)
         return []
 
 
 class JobspySource(Source):
-    def fetch(self, query: str, hours: int) -> list[JobOffer]:
+    def fetch(self, scope: Scope, hours: int, known_urls: frozenset[str] = frozenset()) -> list[JobOffer]:
         results: list[JobOffer] = []
-        results.extend(_scrape_linkedin(query, hours))
+        results.extend(_scrape_linkedin(scope, hours, known_urls))
         for country in _GLASSDOOR_LOCATIONS:
-            results.extend(_scrape_glassdoor(query, hours, country))
+            results.extend(_scrape_glassdoor(scope, hours, country))
         for country in _INDEED_COUNTRIES:
-            results.extend(_scrape_indeed(query, hours, country))
+            results.extend(_scrape_indeed(scope, hours, country))
         return results

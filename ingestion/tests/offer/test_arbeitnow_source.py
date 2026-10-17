@@ -1,6 +1,7 @@
 import time
 from unittest.mock import MagicMock, patch
 from ingestion.offer.scraping.sources.arbeitnow_source import ArbeitnowSource
+from ingestion.offer.scraping.scopes import AI
 
 _NOW = time.time()
 
@@ -15,7 +16,7 @@ MOCK_RESPONSE = {
             "description": "<p>Build <b>Python</b> services for data pipelines.</p>",
         },
         {
-            "title": "Softwareentwickler",  # German title — should be discarded
+            "title": "Softwareentwickler",  # off-scope: kept here, dropped by scrape()
             "company_name": "GmbH AG",
             "location": "Munich",
             "url": "https://arbeitnow.com/jobs/sw-456",
@@ -39,19 +40,37 @@ def _mock_get(response):
     return mock
 
 
-def test_returns_matching_english_offers_within_days():
-    with patch("ingestion.offer.scraping.sources.arbeitnow_source.requests.get", return_value=_mock_get(MOCK_RESPONSE)):
-        results = ArbeitnowSource().fetch("python", hours=72)
+_GET = "ingestion.offer.scraping.sources.arbeitnow_source.requests.get"
+_EMPTY = {"data": []}
 
-    assert len(results) == 1
-    assert results[0].title == "Python Developer"
+
+@patch("ingestion.offer.scraping.sources.arbeitnow_source.time.sleep")
+def test_returns_english_offers_within_the_window(_sleep):
+    with patch(_GET, side_effect=[_mock_get(MOCK_RESPONSE), _mock_get(_EMPTY)]):
+        results = ArbeitnowSource().fetch(AI, hours=72)
+
+    # titles are not matched here: scrape() applies the scope to every source
+    assert [r.title for r in results] == ["Python Developer", "Softwareentwickler"]
     assert results[0].source == "arbeitnow"
     assert results[0].company == "TechCorp"
+    # UTC, whatever the machine's time zone
+    from datetime import datetime, timezone
+    assert results[0].posted_at == datetime.fromtimestamp(int(_NOW - 3600), timezone.utc).replace(tzinfo=None)
 
 
-def test_description_is_stripped_of_html():
-    with patch("ingestion.offer.scraping.sources.arbeitnow_source.requests.get", return_value=_mock_get(MOCK_RESPONSE)):
-        results = ArbeitnowSource().fetch("python", hours=72)
+@patch("ingestion.offer.scraping.sources.arbeitnow_source.time.sleep")
+def test_reads_several_pages_and_keeps_them_when_a_later_one_fails(_sleep):
+    page2 = {"data": [{**MOCK_RESPONSE["data"][0], "title": "ML Engineer", "url": "https://arbeitnow.com/jobs/ml"}]}
+    with patch(_GET, side_effect=[_mock_get(MOCK_RESPONSE), _mock_get(page2), Exception("429")]) as get:
+        results = ArbeitnowSource().fetch(AI, hours=72)
+    assert [r.title for r in results] == ["Python Developer", "Softwareentwickler", "ML Engineer"]
+    assert [c.kwargs["params"]["page"] for c in get.call_args_list] == [1, 2, 3]
+
+
+@patch("ingestion.offer.scraping.sources.arbeitnow_source.time.sleep")
+def test_description_is_stripped_of_html(_sleep):
+    with patch(_GET, side_effect=[_mock_get(MOCK_RESPONSE), _mock_get(_EMPTY)]):
+        results = ArbeitnowSource().fetch(AI, hours=72)
 
     assert results[0].description is not None
     assert "Build" in results[0].description
@@ -60,5 +79,5 @@ def test_description_is_stripped_of_html():
 
 
 def test_returns_empty_on_network_error():
-    with patch("ingestion.offer.scraping.sources.arbeitnow_source.requests.get", side_effect=Exception("timeout")):
-        assert ArbeitnowSource().fetch("python", hours=72) == []
+    with patch(_GET, side_effect=Exception("timeout")):
+        assert ArbeitnowSource().fetch(AI, hours=72) == []

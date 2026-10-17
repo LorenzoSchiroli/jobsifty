@@ -257,10 +257,8 @@ aws_resume_writers() {
 # lookback so the gap since the dump was taken gets filled. Not waited on.
 aws_start_initial_ingestion_task() {
   local overrides
-  overrides="$(jq -cn --arg h "${INITIAL_INGESTION_HOURS}" '{containerOverrides: [{
-    name: "ingestion",
-    command: ["sh", "-c", ("uv run python -m ingestion.pipeline \"$OFFER_QUERY\" --hours " + $h)]
-  }]}')"
+  overrides="$(jq -cn --arg h "${INITIAL_INGESTION_HOURS}" --arg cmd "$(aws_tofu_output ingestion_command)" \
+    '{containerOverrides: [{name: "ingestion", command: ["sh", "-c", ($cmd + " --hours " + $h)]}]}')"
   echo "==> starting first ingestion run (--hours ${INITIAL_INGESTION_HOURS})"
   aws ecs run-task \
     --cluster "$(aws_cluster)" \

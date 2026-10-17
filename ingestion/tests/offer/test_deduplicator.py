@@ -12,26 +12,26 @@ def test_no_duplicates_returns_all():
 
 
 def test_same_url_deduped():
-    offers = [_offer(url="https://example.com/1", source="adzuna"), _offer(url="https://example.com/1", source="remotive")]
+    offers = [_offer(url="https://example.com/1", source="adzuna"), _offer(url="https://example.com/1", source="arbeitnow")]
     assert len(deduplicate(offers)) == 1
 
 
 def test_url_trailing_slash_deduped():
-    offers = [_offer(url="https://example.com/1/", source="adzuna"), _offer(url="https://example.com/1", source="remotive")]
+    offers = [_offer(url="https://example.com/1/", source="adzuna"), _offer(url="https://example.com/1", source="arbeitnow")]
     assert len(deduplicate(offers)) == 1
 
 
 def test_same_title_company_deduped():
     offers = [
         _offer(url="https://site1.com/1", title="ML Engineer", company="Acme", source="jobspy:linkedin"),
-        _offer(url="https://site2.com/9", title="ML Engineer", company="Acme", source="remotive"),
+        _offer(url="https://site2.com/9", title="ML Engineer", company="Acme", source="arbeitnow"),
     ]
     assert len(deduplicate(offers)) == 1
 
 
-def test_jobspy_preferred_over_remotive():
+def test_jobspy_preferred_over_arbeitnow():
     offers = [
-        _offer(url="https://example.com/1", source="remotive"),
+        _offer(url="https://example.com/1", source="arbeitnow"),
         _offer(url="https://example.com/1", source="jobspy:linkedin"),
     ]
     result = deduplicate(offers)

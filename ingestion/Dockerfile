@@ -23,4 +23,8 @@ COPY ingestion/ ./ingestion/
 
 WORKDIR /app/ingestion
 
-CMD ["sh", "-c", "if [ -z \"$OFFER_QUERY\" ]; then echo 'ERROR: OFFER_QUERY is not set' >&2; exit 1; fi; while true; do uv run python -m ingestion.pipeline \"$OFFER_QUERY\" --hours 2; sleep 7200; done"]
+# Compose runs this loop (k8s and ECS override the command). INGESTION_INTERVAL_HOURS
+# sets the pause between runs and, through --interval-hours, the run's own timing;
+# OFFER_SCOPE is what to search for (ingestion/offer/scraping/scopes.py).
+ENV INGESTION_INTERVAL_HOURS=2 OFFER_SCOPE=ai
+CMD ["sh", "-c", "while true; do timeout $((INGESTION_INTERVAL_HOURS * 3600 - 600)) uv run python -m ingestion.pipeline \"$OFFER_SCOPE\" --interval-hours $INGESTION_INTERVAL_HOURS; sleep $((INGESTION_INTERVAL_HOURS * 3600)); done"]

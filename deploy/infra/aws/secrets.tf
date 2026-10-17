@@ -39,7 +39,7 @@ resource "aws_secretsmanager_secret_version" "app" {
     GROQ_MODEL_LARGE         = var.groq_model_large
     GROQ_MODEL_BASE          = var.groq_model_base
     CORS_ORIGINS             = "https://app.${var.domain}"
-    OFFER_QUERY              = var.offer_query
+    JOB_LIVE_DAYS            = tostring(var.job_live_days)
     ACCESS_TOKEN_EXPIRE_DAYS = "7"
     ADZUNA_APP_ID            = var.adzuna_app_id
     ADZUNA_APP_KEY           = var.adzuna_app_key

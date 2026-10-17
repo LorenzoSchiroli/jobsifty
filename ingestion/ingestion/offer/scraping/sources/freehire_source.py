@@ -8,6 +8,9 @@ date ("stale") and ones that never close ("likely-evergreen"); those are skipped
 The window is on `created_at`, when freehire first indexed a posting, newest first:
 a quarter of postings are indexed 5+ hours after their `posted_at`, so a window on
 `posted_at` would miss them in every run.
+
+Its keyword search has no OR: a query of several words requires the first one. So each
+of the scope's terms is its own search (most return one page every few hours).
 """
 import logging
 import time
@@ -16,8 +19,10 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 
-from ingestion.offer.scraping.filters import _strip_html, is_english
+from ingestion.live import job_live_days
+from ingestion.offer.scraping.filters import _strip_html, is_latin_script
 from ingestion.offer.scraping.models import JobOffer
+from ingestion.offer.scraping.scopes import Scope
 from ingestion.offer.scraping.sources.base import Source
 
 logger = logging.getLogger(__name__)
@@ -25,10 +30,8 @@ logger = logging.getLogger(__name__)
 _API_URL = "https://freehire.me/api/v1/agent/jobs/search"
 _HEADERS = {"User-Agent": "jobsifty-ingestion"}
 _PAGE_SIZE = 50
-_MAX_PAGES = 10
+_MAX_PAGES = 10  # per term
 _SKIPPED_REALITY = {"stale", "likely-evergreen"}
-# matches the backend's 30-day retention
-_MAX_AGE = timedelta(days=30)
 
 
 def _clean_url(url: str) -> str:
@@ -49,9 +52,9 @@ def _to_offer(item: dict, now: datetime) -> JobOffer | None:
     title = (item.get("title") or "").strip()
     url = item.get("url") or ""
     posted = _utc(item.get("posted_at"))
-    if not title or not url or not is_english(title):
+    if not title or not url or not is_latin_script(title):
         return None
-    if posted is None or posted < now - _MAX_AGE or item.get("closed_at"):
+    if posted is None or posted < now - timedelta(days=job_live_days()) or item.get("closed_at"):
         return None
     if (item.get("reality") or {}).get("class") in _SKIPPED_REALITY:
         return None
@@ -67,20 +70,29 @@ def _to_offer(item: dict, now: datetime) -> JobOffer | None:
 
 
 class FreehireSource(Source):
-    def fetch(self, query: str, hours: int) -> list[JobOffer]:
+    def fetch(self, scope: Scope, hours: int, known_urls: frozenset[str] = frozenset()) -> list[JobOffer]:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         cutoff = now - timedelta(hours=hours)
+        results: dict[str, JobOffer] = {}
+        for term in scope.terms:
+            for offer in self._search(term, cutoff, now):
+                results.setdefault(offer.url, offer)
+            time.sleep(1)
+        return list(results.values())
+
+    def _search(self, term: str, cutoff: datetime, now: datetime) -> list[JobOffer]:
         params = {
-            "q": query,
+            "q": term,
             "regions": "eu",  # includes the UK
             "sort": "created_at",  # newest first
             "include_description": "true",
             "description_format": "html",
-            "semantic_ratio": "0",  # keyword search
             "limit": _PAGE_SIZE,
         }
         results: list[JobOffer] = []
         for page in range(_MAX_PAGES):
+            if page:
+                time.sleep(1)
             try:
                 resp = requests.get(_API_URL, params={**params, "offset": page * _PAGE_SIZE},
                                     headers=_HEADERS, timeout=30)
@@ -88,7 +100,7 @@ class FreehireSource(Source):
                 items = resp.json().get("data") or []
             except Exception as e:
                 # keep what earlier pages returned
-                logger.warning("freehire fetch failed (page %d): %s", page + 1, e)
+                logger.warning("freehire fetch failed (%r, page %d): %s", term, page + 1, e)
                 break
             reached_cutoff = False
             for item in items:
@@ -103,5 +115,4 @@ class FreehireSource(Source):
                     logger.info("freehire job skipped: %s", e)
             if reached_cutoff or len(items) < _PAGE_SIZE:
                 break
-            time.sleep(1)
         return results

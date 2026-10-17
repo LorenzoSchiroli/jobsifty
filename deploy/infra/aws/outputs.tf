@@ -62,3 +62,8 @@ output "ingestion_schedule_name" {
   description = "EventBridge Scheduler name for ingestion (pause/resume in demo scripts)."
   value       = aws_scheduler_schedule.ingestion.name
 }
+
+output "ingestion_command" {
+  description = "The ingestion container's shell command (the first run after `up` appends a longer --hours)."
+  value       = local.ingestion_command
+}

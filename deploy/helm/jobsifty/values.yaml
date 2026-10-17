@@ -84,11 +84,14 @@ ingestion:
   image:
     repository: jobsifty-ingestion
     tag: latest
-  schedule: "0 */2 * * *"
-  # Lookback window for `ingestion.pipeline --hours` (matches compose --hours 2).
-  hours: 2
+  # Hours between runs; must divide 24. Everything else follows from it: the
+  # schedule, the kill deadline (10 minutes before the next run), the pipeline's
+  # look-back (two intervals) and its company enrichment time (until 20 minutes
+  # before the next run).
+  intervalHours: 2
+  # What to search for: a scope in ingestion/offer/scraping/scopes.py
+  scope: ai
   suspend: false
-  activeDeadlineSeconds: 1800
   resources:
     requests:
       cpu: 500m

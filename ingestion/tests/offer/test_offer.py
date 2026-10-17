@@ -6,6 +6,7 @@ import pytest
 from ingestion.offer.models import EnrichedOffer, OfferExtraction
 from ingestion.offer.offer import derive, enrich_all
 from ingestion.offer.scraping.models import JobOffer
+from ingestion.offer.scraping.scopes import AI
 
 _CHUNKS = [{"text": "t", "embedding": [0.0] * 384}]
 
@@ -38,7 +39,7 @@ def test_enrich_all_returns_enriched_offers():
 
     with patch("ingestion.offer.offer.scrape", return_value=offers):
         with patch("ingestion.offer.offer.parse_with_text", return_value=(extraction, "body")):
-            results = enrich_all("python", hours=72)
+            results = enrich_all(AI, hours=72)
 
     assert len(results) == 2
     assert all(isinstance(r, EnrichedOffer) for r in results)
@@ -48,14 +49,14 @@ def test_enrich_all_returns_enriched_offers():
 
 def test_enrich_all_returns_empty_list_when_no_offers():
     with patch("ingestion.offer.offer.scrape", return_value=[]):
-        assert enrich_all("python", hours=72) == []
+        assert enrich_all(AI, hours=72) == []
 
 
 def test_enrich_all_skips_offer_that_fails():
     offers = [_make_offer("A"), _make_offer("B")]
     with patch("ingestion.offer.offer.scrape", return_value=offers):
         with patch("ingestion.offer.offer.parse_with_text", side_effect=[RuntimeError("boom"), (OfferExtraction(), "")]):
-            results = enrich_all("python", hours=72)
+            results = enrich_all(AI, hours=72)
     assert [r.title for r in results] == ["B"]
 
 
@@ -63,7 +64,7 @@ def test_enrich_all_fetches_description_when_missing():
     offer = _make_offer("Python Dev", description=None)
     with patch("ingestion.offer.offer.scrape", return_value=[offer]):
         with _patch_fetch("Fetched full description.") as mock_fetch:
-            results = enrich_all("python", hours=72)
+            results = enrich_all(AI, hours=72)
     mock_fetch.assert_called_once_with(offer.url)
     assert results[0].description == "Fetched full description."
 
@@ -72,7 +73,7 @@ def test_enrich_all_skips_fetch_when_description_present():
     offer = _make_offer("Python Dev", description="x" * 600)
     with patch("ingestion.offer.offer.scrape", return_value=[offer]):
         with _patch_fetch() as mock_fetch:
-            enrich_all("python", hours=72)
+            enrich_all(AI, hours=72)
     mock_fetch.assert_not_called()
 
 

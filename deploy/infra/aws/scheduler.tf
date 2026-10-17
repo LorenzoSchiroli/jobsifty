@@ -6,7 +6,7 @@ resource "aws_scheduler_schedule" "ingestion" {
     mode = "OFF"
   }
 
-  schedule_expression = "cron(0 */2 * * ? *)"
+  schedule_expression = "cron(0 */${var.ingestion_interval_hours} * * ? *)"
 
   target {
     arn      = aws_ecs_cluster.main.arn

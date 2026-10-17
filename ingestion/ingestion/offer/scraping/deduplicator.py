@@ -1,11 +1,12 @@
 import re
 from ingestion.offer.scraping.models import JobOffer
 
-_PRIORITY = {"jobspy": 0, "freehire": 1, "adzuna": 2, "arbeitnow": 3, "remotive": 4}
+_PRIORITY = {"jobspy": 0, "freehire": 1, "adzuna": 2, "arbeitnow": 3}
 
 
 def _tc_key(title: str, company: str) -> tuple[str, str]:
-    clean = lambda s: re.sub(r"[^a-z0-9]", "", s.lower())
+    # letters of any script, accents kept: "Ingénieur" is not "Ingnieur"
+    clean = lambda s: re.sub(r"[\W_]", "", s.lower())
     return clean(title), clean(company)
 
 

@@ -261,18 +261,18 @@ rerun_bootstrap_job() {
 }
 
 # One ingestion run now instead of at the next schedule tick: a Job cloned from
-# the CronJob with a longer --hours (the last element of its command).
+# the CronJob with a longer look-back (--hours appended to its command).
 start_initial_ingestion_job() {
   local name
   name="ingestion-up-$(date +%s)"
   echo "==> starting first ingestion run (job/${name}, --hours ${INITIAL_INGESTION_HOURS})"
   kctl create job "${name}" --from=cronjob/ingestion --dry-run=client -o json \
-    | jq --arg h "${INITIAL_INGESTION_HOURS}" '.spec.template.spec.containers[0].command[-1] = $h' \
+    | jq --arg h "${INITIAL_INGESTION_HOURS}" '.spec.template.spec.containers[0].command += ["--hours", $h]' \
     | kctl apply -f - >/dev/null
 }
 
 # Both .env.public and .env, in that order: the chart's envFrom expects
-# GROQ_MODEL_*, OFFER_QUERY and CORS_ORIGINS (public) alongside the secrets.
+# GROQ_MODEL_*, JOB_LIVE_DAYS and CORS_ORIGINS (public) alongside the secrets.
 ensure_secret() {
   if kctl get secret jobsifty-secrets >/dev/null 2>&1; then
     echo "secret jobsifty-secrets already exists (leaving unchanged)"

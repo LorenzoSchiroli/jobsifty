@@ -4,6 +4,10 @@ from unittest.mock import MagicMock, patch
 import requests
 
 from ingestion.offer.scraping.sources.freehire_source import FreehireSource
+from ingestion.offer.scraping.scopes import AI, Scope
+
+# one term, one search: the paging tests count requests
+ONE = Scope("one", ("machine learning",), AI.title)
 
 _GET = "ingestion.offer.scraping.sources.freehire_source.requests.get"
 
@@ -33,7 +37,7 @@ def _resp(items):
 @patch("ingestion.offer.scraping.sources.freehire_source.time.sleep")
 def test_maps_a_posting(_sleep):
     with patch(_GET, return_value=_resp([_job()])) as get:
-        offers = FreehireSource().fetch("machine learning engineer", 2)
+        offers = FreehireSource().fetch(ONE, 2)
     assert len(offers) == 1
     o = offers[0]
     assert (o.title, o.company, o.location) == ("Machine Learning Engineer", "Acme", "Berlin, Germany")
@@ -45,19 +49,19 @@ def test_maps_a_posting(_sleep):
 
 
 @patch("ingestion.offer.scraping.sources.freehire_source.time.sleep")
-def test_skips_stale_evergreen_closed_old_and_non_english(_sleep):
+def test_skips_stale_evergreen_closed_old_and_non_latin(_sleep):
     items = [
         _job(1, posted_hours_ago=10),               # indexed late: inside the window by created_at
-        _job(2, posted_hours_ago=24 * 40),          # posted beyond the 30-day retention
+        _job(2, posted_hours_ago=24 * 15),          # posted before the 14-day live window
         _job(6, closed_at=_iso(0)),
         _job(3, reality="stale"),                   # re-posted under a fresh date
         _job(4, reality="likely-evergreen"),
-        _job(5, title="Ingeniero de aprendizaje automático"),
+        _job(5, title="Инженер машинного обучения"),
         {"title": "No url", "created_at": _iso(1), "posted_at": _iso(1)},
         "not a dict",
     ]
     with patch(_GET, return_value=_resp(items)):
-        offers = FreehireSource().fetch("q", 2)
+        offers = FreehireSource().fetch(ONE, 2)
     assert [o.url.rsplit("/", 1)[-1].split("?")[0] for o in offers] == ["1"]
 
 
@@ -65,7 +69,7 @@ def test_skips_stale_evergreen_closed_old_and_non_english(_sleep):
 def test_pages_until_a_short_page(_sleep):
     full = [_job(i) for i in range(50)]
     with patch(_GET, side_effect=[_resp(full), _resp([_job(99)])]) as get:
-        offers = FreehireSource().fetch("q", 2)
+        offers = FreehireSource().fetch(ONE, 2)
     assert len(offers) == 51
     assert [c.kwargs["params"]["offset"] for c in get.call_args_list] == [0, 50]
 
@@ -74,7 +78,7 @@ def test_pages_until_a_short_page(_sleep):
 def test_stops_at_the_first_posting_indexed_before_the_window(_sleep):
     page = [_job(1, indexed_hours_ago=0.5), _job(2, indexed_hours_ago=1.5)] + [_job(i, indexed_hours_ago=3) for i in range(3, 51)]
     with patch(_GET, side_effect=[_resp(page)]) as get:
-        offers = FreehireSource().fetch("q", 2)
+        offers = FreehireSource().fetch(ONE, 2)
     assert len(offers) == 2
     assert get.call_count == 1
 
@@ -83,10 +87,28 @@ def test_stops_at_the_first_posting_indexed_before_the_window(_sleep):
 def test_a_failing_page_keeps_the_earlier_ones(_sleep):
     full = [_job(i) for i in range(50)]
     with patch(_GET, side_effect=[_resp(full), requests.ConnectionError("down")]):
-        offers = FreehireSource().fetch("q", 2)
+        offers = FreehireSource().fetch(ONE, 2)
     assert len(offers) == 50
 
 
-def test_api_down_returns_empty():
+@patch("ingestion.offer.scraping.sources.freehire_source.time.sleep")
+def test_api_down_returns_empty(_sleep):
     with patch(_GET, side_effect=requests.ConnectionError("down")):
-        assert FreehireSource().fetch("q", 2) == []
+        assert FreehireSource().fetch(AI, 2) == []
+
+
+@patch("ingestion.offer.scraping.sources.freehire_source.time.sleep")
+def test_searches_each_term_and_merges_duplicates(_sleep):
+    two = Scope("two", ("LLM", "computer vision"), AI.title)
+    with patch(_GET, side_effect=[_resp([_job(1), _job(2)]), _resp([_job(2), _job(3)])]) as get:
+        offers = FreehireSource().fetch(two, 2)
+    assert [c.kwargs["params"]["q"] for c in get.call_args_list] == ["LLM", "computer vision"]
+    assert len(offers) == 3
+
+
+@patch("ingestion.offer.scraping.sources.freehire_source.time.sleep")
+def test_live_days_follow_job_live_days(_sleep, monkeypatch):
+    monkeypatch.setenv("JOB_LIVE_DAYS", "3")
+    with patch(_GET, return_value=_resp([_job(1, posted_hours_ago=24 * 4), _job(2, posted_hours_ago=24 * 2)])):
+        offers = FreehireSource().fetch(ONE, 2)
+    assert [o.url.rsplit("/", 1)[-1].split("?")[0] for o in offers] == ["2"]

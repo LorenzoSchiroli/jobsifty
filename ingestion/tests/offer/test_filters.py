@@ -1,26 +1,23 @@
 from unittest.mock import MagicMock, patch
 
-from ingestion.offer.scraping.filters import is_english, _strip_html, _fetch_description_from_url
+import pytest
+
+from ingestion.offer.scraping.filters import is_latin_script, _strip_html, _fetch_description_from_url
 
 
-def test_english_title_passes():
-    assert is_english("Machine Learning Engineer") is True
+@pytest.mark.parametrize("title", [
+    "Machine Learning Engineer", "Softwareentwickler für maschinelles Lernen", "Ingénieur en apprentissage automatique",
+    "Inżynier ds. AI (Łódź)", "Ingeniero de IA – España", "Straße 5 · AI Engineer 🚀", "Senior Engineer — Berlin", "",
+])
+def test_latin_script_titles_pass(title):
+    assert is_latin_script(title) is True
 
 
-def test_german_title_fails():
-    assert is_english("Softwareentwickler für maschinelles Lernen") is False
-
-
-def test_french_title_fails():
-    assert is_english("Ingénieur en apprentissage automatique") is False
-
-
-def test_empty_string_passes():
-    assert is_english("") is True
-
-
-def test_mixed_mostly_ascii_passes():
-    assert is_english("Senior Engineer — Berlin") is True
+@pytest.mark.parametrize("title", [
+    "AI Video Creator для мобільних ігор", "Μηχανικός AI", "AI エンジニア", "مهندس ذكاء اصطناعي", "AI 工程师",
+])
+def test_other_scripts_fail(title):
+    assert is_latin_script(title) is False
 
 
 def test_strip_html_removes_tags():

@@ -1,4 +1,6 @@
 import logging
+import unicodedata
+
 import requests
 
 from ingestion.utils.text import clean_html
@@ -14,16 +16,13 @@ _HEADERS = {
 }
 
 
-def is_english(text: str) -> bool:
-    if not text:
-        return True
-    import unicodedata
-    for c in text:
-        if ord(c) >= 128:
-            if unicodedata.category(c) in ('Ll', 'Lu', 'Lt') and ord(c) < 0x250:
-                if any(accent in unicodedata.name(c, '') for accent in ['WITH', 'ACUTE', 'GRAVE', 'DIAERESIS', 'CIRCUMFLEX']):
-                    return False
-    return True
+def is_latin_script(text: str) -> bool:
+    """True when every letter is Latin, accented ones included (é, ß, ł): European titles
+    pass, Cyrillic, Greek, Arabic, CJK and other scripts do not. Digits, punctuation and
+    symbols are ignored."""
+    return all(
+        unicodedata.name(c, "").startswith("LATIN") for c in text or "" if unicodedata.category(c).startswith("L")
+    )
 
 
 def _strip_html(html: str) -> str:

@@ -1,15 +1,20 @@
+{{- $interval := int .Values.ingestion.intervalHours }}
+{{- if or (lt $interval 1) (gt $interval 12) (ne (mod 24 $interval) 0) }}
+{{- fail (printf "ingestion.intervalHours must divide 24 (1, 2, 3, 4, 6, 8 or 12), got %v" .Values.ingestion.intervalHours) }}
+{{- end }}
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: ingestion
 spec:
-  schedule: {{ .Values.ingestion.schedule | quote }}
+  schedule: {{ printf "0 */%d * * *" $interval | quote }}
   concurrencyPolicy: Forbid
   suspend: {{ .Values.ingestion.suspend }}
   jobTemplate:
     spec:
       backoffLimit: 1
-      activeDeadlineSeconds: {{ .Values.ingestion.activeDeadlineSeconds }}
+      # killed 10 minutes before the next run; a healthy run stops itself before that
+      activeDeadlineSeconds: {{ sub (mul $interval 3600) 600 }}
       template:
         spec:
           {{- $nodeContext := dict "root" . "pool" .Values.scheduling.ingestion }}
@@ -22,7 +27,7 @@ spec:
           - name: ingestion
             image: {{ .Values.ingestion.image.repository }}:{{ .Values.ingestion.image.tag }}
             imagePullPolicy: {{ .Values.imagePullPolicy }}
-            command: ["uv", "run", "python", "-m", "ingestion.pipeline", "$(OFFER_QUERY)", "--hours", {{ .Values.ingestion.hours | quote }}]
+            command: ["uv", "run", "python", "-m", "ingestion.pipeline", {{ .Values.ingestion.scope | quote }}, "--interval-hours", {{ $interval | quote }}]
             envFrom:
             - secretRef:
                 name: {{ .Values.existingSecret }}

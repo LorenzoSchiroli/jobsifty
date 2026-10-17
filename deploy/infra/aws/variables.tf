@@ -91,9 +91,34 @@ variable "groq_model_base" {
   default = "qwen/qwen3-32b"
 }
 
-variable "offer_query" {
-  type    = string
-  default = "machine learning engineer"
+variable "ingestion_interval_hours" {
+  description = "Hours between ingestion runs. The schedule, the kill timeout and the pipeline's look-back and company enrichment time all follow from it."
+  type        = number
+  default     = 2
+  validation {
+    condition     = contains([1, 2, 3, 4, 6, 8, 12], var.ingestion_interval_hours)
+    error_message = "ingestion_interval_hours must divide 24: 1, 2, 3, 4, 6, 8 or 12."
+  }
+}
+
+variable "offer_scope" {
+  description = "What ingestion searches for: a scope in ingestion/offer/scraping/scopes.py."
+  type        = string
+  default     = "ai"
+  validation {
+    condition     = can(regex("^[a-z_]+$", var.offer_scope))
+    error_message = "offer_scope is a scope name such as \"ai\"."
+  }
+}
+
+variable "job_live_days" {
+  description = "Days a job stays live, from its posting time: search retention, reconcile, company enrichment."
+  type        = number
+  default     = 14
+  validation {
+    condition     = var.job_live_days >= 1
+    error_message = "job_live_days must be at least 1."
+  }
 }
 
 variable "adzuna_app_id" {

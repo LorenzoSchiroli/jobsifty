@@ -49,15 +49,15 @@ def _indeed_df():
 
 # --- LinkedIn-specific tests ---
 
-def test_linkedin_returns_english_offers_only():
-    jobs = [_make_job_post("Python Engineer", "1"), _make_job_post("Ingénieur Python", "2")]
+def test_linkedin_returns_latin_script_offers_only():
+    jobs = [_make_job_post("Python Engineer", "1"), _make_job_post("Python инженер", "2")]
 
     with _mock_linkedin(jobs):
-        results = _scrape_linkedin("python", hours=72)
+        results = _scrape_linkedin(AI, 72, frozenset())
 
     titles = [r.title for r in results]
     assert "Python Engineer" in titles
-    assert "Ingénieur Python" not in titles
+    assert "Python инженер" not in titles
     assert all(r.source == "jobspy:linkedin" for r in results)
 
 
@@ -66,7 +66,7 @@ def test_linkedin_offers_have_no_description():
     jobs = [_make_job_post("Python Engineer", "1")]
 
     with _mock_linkedin(jobs):
-        results = _scrape_linkedin("python", hours=72)
+        results = _scrape_linkedin(AI, 72, frozenset())
 
     assert results[0].description is None
 
@@ -76,23 +76,23 @@ def test_linkedin_failure_returns_empty_list():
     mock_scraper.scrape.side_effect = Exception("blocked")
 
     with patch("ingestion.offer.scraping.sources.jobspy_source._SkippingLinkedIn", return_value=mock_scraper):
-        results = _scrape_linkedin("python", hours=72)
+        results = _scrape_linkedin(AI, 72, frozenset())
 
     assert results == []
 
 
 # --- JobspySource integration tests ---
 
-def test_returns_english_offers_from_all_calls():
-    jobs = [_make_job_post("Python Engineer", "1"), _make_job_post("Ingénieur Python", "2")]
+def test_returns_latin_script_offers_from_all_calls():
+    jobs = [_make_job_post("Python Engineer", "1"), _make_job_post("Python инженер", "2")]
 
     with _mock_linkedin(jobs):
         with patch("ingestion.offer.scraping.sources.jobspy_source.scrape_jobs", return_value=_indeed_df()):
-            results = JobspySource().fetch("python", hours=72)
+            results = JobspySource().fetch(AI, hours=72)
 
     titles = [r.title for r in results]
     assert "Python Engineer" in titles
-    assert "Ingénieur Python" not in titles
+    assert "Python инженер" not in titles
     assert all(r.source.startswith("jobspy:") for r in results)
 
 
@@ -102,7 +102,7 @@ def test_linkedin_failure_does_not_block_indeed():
 
     with patch("ingestion.offer.scraping.sources.jobspy_source._SkippingLinkedIn", return_value=mock_scraper):
         with patch("ingestion.offer.scraping.sources.jobspy_source.scrape_jobs", return_value=_indeed_df()):
-            results = JobspySource().fetch("python", hours=72)
+            results = JobspySource().fetch(AI, hours=72)
 
     assert results == []  # indeed df has no valid titles
 
@@ -113,7 +113,7 @@ def test_returns_empty_when_all_fail():
 
     with patch("ingestion.offer.scraping.sources.jobspy_source._SkippingLinkedIn", return_value=mock_scraper):
         with patch("ingestion.offer.scraping.sources.jobspy_source.scrape_jobs", side_effect=Exception("blocked")):
-            assert JobspySource().fetch("python", hours=72) == []
+            assert JobspySource().fetch(AI, hours=72) == []
 
 
 def test_description_is_stripped_of_html():
@@ -129,7 +129,7 @@ def test_description_is_stripped_of_html():
 
     with _mock_linkedin([]):
         with patch("ingestion.offer.scraping.sources.jobspy_source.scrape_jobs", return_value=mock_df):
-            results = JobspySource().fetch("python", hours=72)
+            results = JobspySource().fetch(AI, hours=72)
 
     matching = [r for r in results if r.title == "Python Engineer"]
     assert len(matching) >= 1
@@ -152,7 +152,7 @@ def test_description_is_none_when_description_column_is_nan():
 
     with _mock_linkedin([]):
         with patch("ingestion.offer.scraping.sources.jobspy_source.scrape_jobs", return_value=mock_df):
-            results = JobspySource().fetch("python", hours=72)
+            results = JobspySource().fetch(AI, hours=72)
 
     matching = [r for r in results if r.title == "Python Engineer"]
     assert len(matching) >= 1
@@ -169,9 +169,9 @@ def test_linkedin_unknown_country_skips_only_that_job():
         return job_id
 
     with patch.object(LinkedIn, "_process_job", fake_process):
-        scraper = _SkippingLinkedIn()
-        assert scraper._process_job(None, "ok") == "ok"
-        assert scraper._process_job(None, "bad") is None
+        scraper = _SkippingLinkedIn(AI, frozenset())
+        assert scraper._process_job(_card(""), "ok") == "ok"
+        assert scraper._process_job(_card(""), "bad") is None
 
 
 # --- company facts and missing names ---
@@ -220,7 +220,7 @@ def test_glassdoor_is_searched_per_country_not_europe():
     mock_scraper.scrape.return_value = MagicMock(jobs=[])
     with patch("ingestion.offer.scraping.sources.jobspy_source._SkippingLinkedIn", return_value=mock_scraper), \
          patch("ingestion.offer.scraping.sources.jobspy_source.scrape_jobs", return_value=pd.DataFrame()) as mock_scrape:
-        JobspySource().fetch("python", hours=72)
+        JobspySource().fetch(AI, hours=72)
 
     glassdoor = [c.kwargs for c in mock_scrape.call_args_list if c.kwargs["site_name"] == ["glassdoor"]]
     assert [c["country_indeed"] for c in glassdoor] == ["UK", "Germany", "France", "Netherlands"]
@@ -242,10 +242,12 @@ def test_skipping_linkedin_matches_the_installed_jobspy():
 # --- posting times ---
 
 from ingestion.offer.scraping.sources.jobspy_source import _card_posted_at, _TimedIndeed
+from ingestion.offer.scraping.scopes import AI
 
 
-def _card(text: str):
-    return BeautifulSoup(f'<div><time datetime="2026-10-16">{text}</time></div>', "html.parser")
+def _card(text: str, title: str = "AI Engineer"):
+    return BeautifulSoup(f'<div><h3 class="base-search-card__title">{title}</h3>'
+                         f'<time datetime="2026-10-16">{text}</time></div>', "html.parser")
 
 
 def _utcnow():
@@ -274,7 +276,7 @@ def test_linkedin_job_takes_the_card_time():
         return post
 
     with patch.object(LinkedIn, "_process_job", fake_process):
-        post = _SkippingLinkedIn()._process_job(_card("2 hours ago"), "1")
+        post = _SkippingLinkedIn(AI, frozenset())._process_job(_card("2 hours ago"), "1")
     assert abs(post.date_posted - (_utcnow() - timedelta(hours=2))) < timedelta(seconds=5)
 
 
@@ -302,7 +304,7 @@ def test_offer_posted_at_is_the_time_or_the_day_at_midnight():
 
 def test_indeed_is_searched_per_country_with_html_descriptions(_no_real_indeed):
     with _mock_linkedin([]), patch("ingestion.offer.scraping.sources.jobspy_source.scrape_jobs", return_value=pd.DataFrame()):
-        JobspySource().fetch("python", hours=72)
+        JobspySource().fetch(AI, hours=72)
     inputs = [c.args[0] for c in _no_real_indeed.return_value.scrape.call_args_list]
     assert [i.country.name for i in inputs] == ["UK", "GERMANY", "FRANCE", "NETHERLANDS", "SPAIN", "ITALY", "BELGIUM", "AUSTRIA"]
     assert all(i.description_format.name == "HTML" and i.hours_old == 72 for i in inputs)
@@ -313,3 +315,40 @@ def test_timed_indeed_matches_the_installed_jobspy():
     from jobspy.indeed import Indeed
 
     assert list(inspect.signature(Indeed._process_job).parameters)[:2] == ["self", "job"]
+
+
+def test_linkedin_skips_off_scope_and_stored_cards_before_fetching_details():
+    from jobspy.linkedin import LinkedIn
+    from ingestion.offer.scraping.sources.jobspy_source import _SkippingLinkedIn
+
+    processed = []
+
+    def fake_process(self, job_card, job_id):
+        processed.append(job_id)  # the parent fetches the description here
+        return MagicMock(date_posted=None)
+
+    scraper = _SkippingLinkedIn(AI, frozenset({f"{LinkedIn.base_url}/jobs/view/stored"}))
+    with patch.object(LinkedIn, "_process_job", fake_process):
+        assert scraper._process_job(_card("", "Junior Graphic Designer"), "off") is None
+        assert scraper._process_job(_card("", "ML Engineer"), "stored") is None
+        assert scraper._process_job(_card("", "ML Engineer"), "new") is not None
+    assert processed == ["new"]
+
+
+def test_linkedin_skipped_cards_are_left_out():
+    jobs = [None, _make_job_post("ML Engineer", "1"), None]
+    with _mock_linkedin(jobs):
+        results = _scrape_linkedin(AI, 4, frozenset())
+    assert [r.title for r in results] == ["ML Engineer"]
+
+
+def test_jobspy_sites_search_the_scope_or_query():
+    mock_scraper = MagicMock()
+    mock_scraper.scrape.return_value = MagicMock(jobs=[])
+    with patch("ingestion.offer.scraping.sources.jobspy_source._SkippingLinkedIn", return_value=mock_scraper) as li, \
+         patch("ingestion.offer.scraping.sources.jobspy_source.scrape_jobs", return_value=pd.DataFrame()) as gd:
+        JobspySource().fetch(AI, 4, frozenset({"u"}))
+    assert li.call_args.args == (AI, frozenset({"u"}))
+    assert mock_scraper.scrape.call_args.args[0].search_term == AI.or_query()
+    assert mock_scraper.scrape.call_args.args[0].results_wanted == 150
+    assert gd.call_args.kwargs["search_term"] == AI.or_query()

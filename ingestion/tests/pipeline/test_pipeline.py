@@ -5,15 +5,22 @@ import pytest
 from ingestion.company.scraping import searcher
 from ingestion.offer.models import EnrichedOffer
 from ingestion.pipeline.__main__ import _collect_companies, new_fields, run
+from ingestion.offer.scraping.scopes import AI
 
 _P = "ingestion.pipeline.__main__"
+
+
+@pytest.fixture(autouse=True)
+def _no_known_urls():
+    with patch(f"{_P}.get_known_job_urls", return_value=frozenset()):
+        yield
 
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-    for key in ("TINYFISH_API_KEY", "EXA_API_KEY", "SEARCH_PROVIDERS", "COMPANY_ENRICH_MINUTES",
+    for key in ("TINYFISH_API_KEY", "EXA_API_KEY", "SEARCH_PROVIDERS",
                 "NVIDIA_NIM_API_KEY", "GEMINI_API_KEY", "LLM_PROVIDERS"):
         monkeypatch.delenv(key, raising=False)
     searcher.reset()
@@ -69,7 +76,7 @@ def test_run_upserts_companies_with_board_facts_then_enriches_pending():
          patch(f"{_P}.post_company", return_value=(201, {})) as mock_post_company, \
          patch(f"{_P}.get_pending_companies", return_value=pending) as mock_pending, \
          patch(f"{_P}.enrich_company", return_value=(_profile(founded_year=2010), [])) as mock_enrich:
-        assert run("q", 2) == 0
+        assert run(AI, 2, 15) == 0
 
     assert mock_post_company.call_args_list[0].args[0] == {"name": "Acme", "website": "https://acme.com"}
     mock_pending.assert_called_once_with(200)
@@ -86,17 +93,16 @@ def test_attempt_is_recorded_even_when_nothing_is_found():
          patch(f"{_P}.post_company", return_value=(201, {})) as mock_post_company, \
          patch(f"{_P}.get_pending_companies", return_value=pending), \
          patch(f"{_P}.enrich_company", return_value=(_profile(), [])):
-        run("q", 2)
+        run(AI, 2, 15)
     assert mock_post_company.call_args_list[-1].args[0] == {"name": "acme", "enrichment_attempted": True}
 
 
-def test_zero_minutes_disables_enrichment(monkeypatch):
-    monkeypatch.setenv("COMPANY_ENRICH_MINUTES", "0")
+def test_zero_minutes_disables_enrichment():
     with patch(f"{_P}.enrich_all", return_value=[_offer(1)]), \
          patch(f"{_P}.post_job", return_value=(201, {})), \
          patch(f"{_P}.post_company", return_value=(201, {})), \
          patch(f"{_P}.get_pending_companies") as mock_pending:
-        assert run("q", 2) == 0
+        assert run(AI, 2, 0) == 0
     mock_pending.assert_not_called()
 
 
@@ -105,7 +111,7 @@ def test_company_failures_never_fail_the_run():
          patch(f"{_P}.post_job", return_value=(201, {})), \
          patch(f"{_P}.post_company", side_effect=RuntimeError("backend down")), \
          patch(f"{_P}.get_pending_companies", side_effect=RuntimeError("backend down")):
-        assert run("q", 2) == 0
+        assert run(AI, 2, 15) == 0
 
 
 def test_enrichment_error_for_one_company_does_not_stop_the_next():
@@ -114,7 +120,7 @@ def test_enrichment_error_for_one_company_does_not_stop_the_next():
          patch(f"{_P}.post_company", return_value=(200, {})) as mock_post_company, \
          patch(f"{_P}.get_pending_companies", return_value=pending), \
          patch(f"{_P}.enrich_company", side_effect=[RuntimeError("boom"), (_profile(country="DE"), [])]):
-        assert run("q", 2) == 0
+        assert run(AI, 2, 15) == 0
     assert mock_post_company.call_count == 2
     # the failed company still counts an attempt, so a recurring error cannot bring it back every run
     assert mock_post_company.call_args_list[0].args[0] == {"name": "a", "enrichment_attempted": True}
@@ -127,7 +133,7 @@ def test_run_exit_code_on_post_errors():
          patch(f"{_P}.post_job", side_effect=[(201, {}), (201, {}), (201, {}), RuntimeError("x"), RuntimeError("y")]), \
          patch(f"{_P}.post_company", return_value=(200, {})), \
          patch(f"{_P}.get_pending_companies", return_value=[]):
-        assert run("q", 2) == 1
+        assert run(AI, 2, 15) == 1
 
 
 def test_run_exit_zero_under_error_threshold():
@@ -136,7 +142,7 @@ def test_run_exit_zero_under_error_threshold():
          patch(f"{_P}.post_job", side_effect=[(201, {})] * 4 + [RuntimeError("x")]), \
          patch(f"{_P}.post_company", return_value=(200, {})), \
          patch(f"{_P}.get_pending_companies", return_value=[]):
-        assert run("q", 2) == 0
+        assert run(AI, 2, 15) == 0
 
 
 def test_a_stored_website_that_is_not_the_company_is_not_used():
@@ -149,7 +155,7 @@ def test_a_stored_website_that_is_not_the_company_is_not_used():
          patch(f"{_P}.post_company", return_value=(200, {})), \
          patch(f"{_P}.get_pending_companies", return_value=pending), \
          patch(f"{_P}.enrich_company", return_value=(_profile(), [])) as mock_enrich:
-        run("q", 2)
+        run(AI, 2, 15)
     assert "website" not in mock_enrich.call_args_list[0].args[3]
     assert mock_enrich.call_args_list[1].args[3]["website"] == "https://www.cgi.com/uk/en-gb"
 
@@ -168,7 +174,7 @@ def test_companies_wait_for_the_next_run_once_search_is_down():
          patch(f"{_P}.post_company", return_value=(200, {})) as mock_post_company, \
          patch(f"{_P}.get_pending_companies", return_value=_pending(3)), \
          patch(f"{_P}.enrich_company", side_effect=enrich) as mock_enrich:
-        assert run("q", 2) == 0
+        assert run(AI, 2, 15) == 0
     assert mock_enrich.call_count == 1 and mock_post_company.call_count == 1
 
 
@@ -181,7 +187,7 @@ def test_companies_wait_for_the_next_run_once_the_llm_is_down():
          patch(f"{_P}.post_company", return_value=(200, {})), \
          patch(f"{_P}.get_pending_companies", return_value=_pending(3)), \
          patch(f"{_P}.enrich_company", return_value=(_profile(), [])) as mock_enrich:
-        assert run("q", 2) == 0
+        assert run(AI, 2, 15) == 0
     assert mock_enrich.call_count == 1
 
 
@@ -191,7 +197,7 @@ def test_no_search_key_still_enriches(monkeypatch):
          patch(f"{_P}.post_company", return_value=(200, {})), \
          patch(f"{_P}.get_pending_companies", return_value=_pending(2)), \
          patch(f"{_P}.enrich_company", return_value=(_profile(), [])) as mock_enrich:
-        assert run("q", 2) == 0
+        assert run(AI, 2, 15) == 0
     assert mock_enrich.call_count == 2
 
 
@@ -203,7 +209,7 @@ def test_a_refresh_ignores_the_stored_values():
          patch(f"{_P}.post_company", return_value=(200, {})), \
          patch(f"{_P}.get_pending_companies", return_value=pending), \
          patch(f"{_P}.enrich_company", return_value=(_profile(), [])) as mock_enrich:
-        run("q", 2)
+        run(AI, 2, 15)
     assert mock_enrich.call_args.args[3] == {"industry": "Software"}  # this run's board facts only
 
 
@@ -212,7 +218,6 @@ def test_enrichment_stops_when_its_time_is_up(monkeypatch):
 
     now = [1000.0]
     monkeypatch.setattr(pipeline.time, "monotonic", lambda: now[0])
-    monkeypatch.setenv("COMPANY_ENRICH_MINUTES", "1")
 
     def enrich(*args):
         now[0] += 25  # each company takes 25 s
@@ -222,6 +227,67 @@ def test_enrichment_stops_when_its_time_is_up(monkeypatch):
          patch(f"{_P}.post_company", return_value=(200, {})) as mock_post_company, \
          patch(f"{_P}.get_pending_companies", return_value=_pending(10)), \
          patch(f"{_P}.enrich_company", side_effect=enrich) as mock_enrich:
-        assert run("q", 2) == 0
+        assert run(AI, 2, 1) == 0
     # started at 0 s, 25 s and 50 s; at 75 s the minute is over
     assert mock_enrich.call_count == 3 and mock_post_company.call_count == 3
+
+
+def test_enrichment_time_counts_from_the_start_of_the_run(monkeypatch):
+    import ingestion.pipeline.__main__ as pipeline
+
+    now = [1000.0]
+    monkeypatch.setattr(pipeline.time, "monotonic", lambda: now[0])
+
+    def scrape(*args, **kwargs):
+        now[0] += 30  # the offers take 30 s of the minute
+        return []
+
+    def enrich(*args):
+        now[0] += 25
+        return _profile(), []
+
+    with patch(f"{_P}.enrich_all", side_effect=scrape), \
+         patch(f"{_P}.post_company", return_value=(200, {})), \
+         patch(f"{_P}.get_pending_companies", return_value=_pending(10)), \
+         patch(f"{_P}.enrich_company", side_effect=enrich) as mock_enrich:
+        assert run(AI, 2, 1) == 0
+    # started at 30 s and 55 s; at 80 s the minute is over
+    assert mock_enrich.call_count == 2
+
+
+def test_enrich_minutes_follow_the_interval():
+    from ingestion.pipeline.__main__ import enrich_minutes
+    assert enrich_minutes(2) == 100
+    assert enrich_minutes(1) == 40
+    assert enrich_minutes(0.25) == 0
+
+
+@pytest.mark.parametrize("argv,hours,minutes", [
+    ([], 4, 100),
+    (["--interval-hours", "6"], 12, 340),
+    (["--interval-hours", "2", "--hours", "72"], 72, 100),
+])
+def test_cli_derives_timing_from_the_interval(monkeypatch, argv, hours, minutes):
+    import ingestion.pipeline.__main__ as pipeline
+
+    monkeypatch.setattr("sys.argv", ["pipeline", "ai", *argv])
+    with patch.object(pipeline, "run", return_value=0) as mock_run, pytest.raises(SystemExit):
+        pipeline.main()
+    mock_run.assert_called_once_with(AI, hours, minutes)
+
+
+def test_stored_job_urls_are_passed_to_the_scrape():
+    known = frozenset({"https://x/1"})
+    with patch(f"{_P}.get_known_job_urls", return_value=known), \
+         patch(f"{_P}.enrich_all", return_value=[]) as mock_enrich_all, \
+         patch(f"{_P}.get_pending_companies", return_value=[]):
+        assert run(AI, 4, 0) == 0
+    assert mock_enrich_all.call_args.kwargs["known_urls"] == known
+
+
+def test_backend_unreachable_for_known_urls_skips_nothing():
+    with patch(f"{_P}.get_known_job_urls", side_effect=ConnectionError("down")), \
+         patch(f"{_P}.enrich_all", return_value=[]) as mock_enrich_all, \
+         patch(f"{_P}.get_pending_companies", return_value=[]):
+        assert run(AI, 4, 0) == 0
+    assert mock_enrich_all.call_args.kwargs["known_urls"] == frozenset()

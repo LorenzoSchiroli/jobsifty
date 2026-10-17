@@ -6,12 +6,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 from tabulate import tabulate
 
+from ingestion.offer.scraping.scopes import SCOPES, get_scope
 from ingestion.offer.offer import enrich_all
 from ingestion.offer.scraping.sources.adzuna_source import AdzunaSource
 from ingestion.offer.scraping.sources.arbeitnow_source import ArbeitnowSource
 from ingestion.offer.scraping.sources.freehire_source import FreehireSource
 from ingestion.offer.scraping.sources.jobspy_source import JobspySource
-from ingestion.offer.scraping.sources.remotive_source import RemotiveSource
 
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 logging.getLogger("offer").setLevel(logging.INFO)
@@ -21,7 +21,6 @@ _ALL_SOURCES = {
     "adzuna": AdzunaSource,
     "arbeitnow": ArbeitnowSource,
     "freehire": FreehireSource,
-    "remotive": RemotiveSource,
 }
 
 
@@ -36,7 +35,7 @@ def main() -> None:
     load_dotenv(".env", override=True)
 
     parser = argparse.ArgumentParser(description="Fetch and parse job offers.")
-    parser.add_argument("query", help="Search query, e.g. 'machine learning engineer'")
+    parser.add_argument("scope", choices=list(SCOPES), help="What to search for (see offer/scraping/scopes.py)")
     parser.add_argument("--hours", type=int, default=72, help="How many hours back to search (default: 72)")
     parser.add_argument(
         "--sources",
@@ -57,9 +56,9 @@ def main() -> None:
 
     sources = [_ALL_SOURCES[name]() for name in source_names]
 
-    print(f"Searching and parsing '{args.query}' (last {args.hours}h)...\n")
+    print(f"Searching and parsing scope '{args.scope}' (last {args.hours}h)...\n")
 
-    results = enrich_all(args.query, args.hours, sources)
+    results = enrich_all(get_scope(args.scope), args.hours, sources)
 
     if not results:
         print("No offers found.")

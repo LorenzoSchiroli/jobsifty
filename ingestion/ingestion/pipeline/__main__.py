@@ -1,20 +1,23 @@
 import argparse
 import logging
-import os
 import sys
 import time
 from tqdm import tqdm
 from ingestion.offer.offer import enrich_all
 from ingestion.company.company import enrich as enrich_company
-from ingestion.client import get_pending_companies, post_company, post_job
+from ingestion.client import get_known_job_urls, get_pending_companies, post_company, post_job
 from ingestion.company.scraping.searcher import pick_website, pool as search_pool
 from ingestion.llm import LLMPool
+from ingestion.offer.scraping.scopes import SCOPES, Scope, get_scope
 
 logger = logging.getLogger(__name__)
 
-# Minutes a run spends enriching companies (~20 s each), after the jobs are posted. Quotas
-# are the provider pools' business; this keeps the run inside the CronJob's 30 minutes.
-DEFAULT_ENRICH_MINUTES = 15
+# Everything about a run's timing follows from how often it is scheduled (--interval-hours):
+# it looks back two intervals, so one missed run loses nothing, and enriches companies until
+# this many minutes before the next run. The scheduler kills a run 10 minutes before the next
+# one, so the last company and the summary still fit.
+DEFAULT_INTERVAL_HOURS = 2
+ENRICH_STOP_BEFORE_NEXT_RUN_MINUTES = 20
 # Pending companies fetched per run: more than fit in the time
 _PENDING_FETCH = 200
 # More failed job posts than this fails the run, so the CronJob shows Failed.
@@ -78,17 +81,16 @@ def _upsert_companies(companies: dict[str, dict]) -> int:
     return new
 
 
-def _enrich_pending(llm: LLMPool | None, board_facts: dict[str, dict], minutes: float) -> None:
+def _enrich_pending(llm: LLMPool | None, board_facts: dict[str, dict], deadline: float) -> None:
     """Search and enrich the companies the backend says are most due. Best effort: a failure
     here is logged and never fails the run; whatever is not done waits for the next run.
 
     The backend lists the employers of the newest jobs first, so this run's companies come
-    before the backlog, which fills the remaining time.
+    before the backlog, which fills the remaining time. `deadline` is a time.monotonic() value.
     """
-    if minutes <= 0:
-        logger.info("Company enrichment disabled (0 minutes)")
+    if time.monotonic() >= deadline:
+        logger.info("No time left for company enrichment")
         return
-    deadline = time.monotonic() + minutes * 60
     if configured := search_pool().configured():
         logger.info("Search providers: %s", ", ".join(configured))
     else:
@@ -147,18 +149,36 @@ def _enrich_pending(llm: LLMPool | None, board_facts: dict[str, dict], minutes: 
     )
 
 
-def run(query: str, hours: int) -> int:
-    """Run the pipeline; returns the process exit code."""
+def enrich_minutes(interval_hours: float) -> float:
+    """Minutes after the run starts that company enrichment may go on for."""
+    return max(0.0, interval_hours * 60 - ENRICH_STOP_BEFORE_NEXT_RUN_MINUTES)
+
+
+def _known_urls() -> frozenset[str]:
+    """URLs of the live jobs already stored, which the scrape skips. Without them (backend
+    unreachable) nothing is skipped: the run does more work but loses nothing."""
+    try:
+        urls = get_known_job_urls()
+    except Exception as e:
+        logger.warning("Could not fetch stored job URLs; none skipped: %s", e)
+        return frozenset()
+    logger.info("%d live jobs already stored", len(urls))
+    return urls
+
+
+def run(scope: Scope, hours: int, enrich_minutes: float) -> int:
+    """Run the pipeline; returns the process exit code. Company enrichment stops
+    `enrich_minutes` after the start of the run."""
+    deadline = time.monotonic() + enrich_minutes * 60
     llm = LLMPool.from_env()
     if llm.configured():
         logger.info("LLM providers: %s", ", ".join(llm.configured()))
     else:
         logger.info("No LLM provider key set — company enrichment runs without the LLM")
         llm = None
-    minutes = float(os.environ.get("COMPANY_ENRICH_MINUTES", DEFAULT_ENRICH_MINUTES))
 
-    logger.info("[1/4] Scraping & parsing offers: %r, last %dh", query, hours)
-    offers = enrich_all(query, hours)
+    logger.info("[1/4] Scraping & parsing offers: scope %r, last %dh", scope.name, hours)
+    offers = enrich_all(scope, hours, known_urls=_known_urls())
     logger.info("Scraped %d offers", len(offers))
 
     logger.info("[2/4] Posting %d jobs...", len(offers))
@@ -170,9 +190,10 @@ def run(query: str, hours: int) -> int:
     new_companies = _upsert_companies(companies)
     logger.info("Companies: %d new, out of %d unique", new_companies, len(companies))
 
-    logger.info("[4/4] Enriching pending companies for up to %g minutes...", minutes)
+    left = max(0.0, (deadline - time.monotonic()) / 60)
+    logger.info("[4/4] Enriching pending companies for up to %.0f minutes...", left)
     board_facts = {_key(name): {f: e[f] for f in _BOARD_FIELDS if e.get(f)} for name, e in companies.items()}
-    _enrich_pending(llm, board_facts, minutes)
+    _enrich_pending(llm, board_facts, deadline)
 
     if offers and errors / len(offers) > MAX_POST_ERROR_RATE:
         logger.error("Job post error rate %.0f%% exceeds %.0f%%", 100 * errors / len(offers), 100 * MAX_POST_ERROR_RATE)
@@ -186,10 +207,17 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s — %(message)s",
     )
     parser = argparse.ArgumentParser(description="Ingest offers and companies into backend")
-    parser.add_argument("query", help="Job search query")
-    parser.add_argument("--hours", type=int, default=72, help="How many hours back to search")
+    parser.add_argument("scope", choices=list(SCOPES), help="What to search for (offer/scraping/scopes.py)")
+    parser.add_argument("--interval-hours", type=float, default=DEFAULT_INTERVAL_HOURS,
+                        help="How often runs are scheduled; sets the look-back and the enrichment time "
+                             f"(default: {DEFAULT_INTERVAL_HOURS})")
+    parser.add_argument("--hours", type=int, default=None,
+                        help="How many hours back to search (default: twice the interval)")
     args = parser.parse_args()
-    sys.exit(run(args.query, args.hours))
+    if args.interval_hours <= 0:
+        parser.error("--interval-hours must be positive")
+    hours = args.hours if args.hours is not None else round(2 * args.interval_hours)
+    sys.exit(run(get_scope(args.scope), hours, enrich_minutes(args.interval_hours)))
 
 
 if __name__ == "__main__":

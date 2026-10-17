@@ -17,7 +17,7 @@ locals {
     "GROQ_MODEL_LARGE",
     "GROQ_MODEL_BASE",
     "CORS_ORIGINS",
-    "OFFER_QUERY",
+    "JOB_LIVE_DAYS",
     "ACCESS_TOKEN_EXPIRE_DAYS",
     "ADZUNA_APP_ID",
     "ADZUNA_APP_KEY",
@@ -185,6 +185,16 @@ resource "aws_ecs_task_definition" "worker" {
   ])
 }
 
+locals {
+  # Fargate has no deadline of its own: `timeout` kills a hung run 10 minutes
+  # before the next one (the pipeline stops enriching 20 minutes before it).
+  ingestion_command = join(" ", [
+    "timeout ${var.ingestion_interval_hours * 3600 - 600}",
+    "uv run python -m ingestion.pipeline ${var.offer_scope}",
+    "--interval-hours ${var.ingestion_interval_hours}",
+  ])
+}
+
 resource "aws_ecs_task_definition" "ingestion" {
   family                   = "${var.project}-ingestion"
   requires_compatibilities = ["FARGATE"]
@@ -204,10 +214,7 @@ resource "aws_ecs_task_definition" "ingestion" {
       name      = "ingestion"
       image     = var.ingestion_image
       essential = true
-      command = [
-        "sh", "-c",
-        "uv run python -m ingestion.pipeline \"$OFFER_QUERY\" --hours 2",
-      ]
+      command   = ["sh", "-c", local.ingestion_command]
       # Internal Cloud Map address, not the public hostname: ingestion must
       # always reach THIS stack's API, whichever cloud currently owns DNS.
       environment = [

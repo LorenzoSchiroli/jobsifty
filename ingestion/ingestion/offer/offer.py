@@ -7,6 +7,7 @@ from ingestion.offer.models import EnrichedOffer
 from ingestion.offer.parsing.parsing import parse_with_text
 from ingestion.offer.scraping.filters import _fetch_description_from_url
 from ingestion.offer.scraping.models import JobOffer
+from ingestion.offer.scraping.scopes import Scope
 from ingestion.offer.scraping.scraping import scrape
 from ingestion.utils.text import truncate_description
 
@@ -43,9 +44,11 @@ def _enrich_one(offer: JobOffer) -> EnrichedOffer:
     return derive(offer)
 
 
-def enrich_all(query: str, hours: int, sources=None) -> list[EnrichedOffer]:
+def enrich_all(
+    scope: Scope, hours: int, sources=None, known_urls: frozenset[str] = frozenset(),
+) -> list[EnrichedOffer]:
     t0 = time.monotonic()
-    offers = scrape(query, hours, sources)
+    offers = scrape(scope, hours, sources, known_urls)
     if not offers:
         return []
     logger.info("Enriching %d offers...", len(offers))
