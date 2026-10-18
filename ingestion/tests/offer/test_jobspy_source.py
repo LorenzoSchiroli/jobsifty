@@ -161,7 +161,7 @@ def test_description_is_none_when_description_column_is_nan():
 
 def test_linkedin_unknown_country_skips_only_that_job():
     from jobspy.linkedin import LinkedIn
-    from ingestion.offer.scraping.sources.jobspy_source import _SkippingLinkedIn
+    from ingestion.offer.scraping.sources.jobspy_source import _Skipped, _SkippingLinkedIn
 
     def fake_process(self, job_card, job_id):
         if job_id == "bad":
@@ -171,7 +171,8 @@ def test_linkedin_unknown_country_skips_only_that_job():
     with patch.object(LinkedIn, "_process_job", fake_process):
         scraper = _SkippingLinkedIn(AI, frozenset())
         assert scraper._process_job(_card(""), "ok") == "ok"
-        assert scraper._process_job(_card(""), "bad") is None
+        with pytest.raises(_Skipped):
+            scraper._process_job(_card(""), "bad")
 
 
 # --- company facts and missing names ---
@@ -319,7 +320,7 @@ def test_timed_indeed_matches_the_installed_jobspy():
 
 def test_linkedin_skips_off_scope_and_stored_cards_before_fetching_details():
     from jobspy.linkedin import LinkedIn
-    from ingestion.offer.scraping.sources.jobspy_source import _SkippingLinkedIn
+    from ingestion.offer.scraping.sources.jobspy_source import _Skipped, _SkippingLinkedIn
 
     processed = []
 
@@ -329,17 +330,38 @@ def test_linkedin_skips_off_scope_and_stored_cards_before_fetching_details():
 
     scraper = _SkippingLinkedIn(AI, frozenset({f"{LinkedIn.base_url}/jobs/view/stored"}))
     with patch.object(LinkedIn, "_process_job", fake_process):
-        assert scraper._process_job(_card("", "Junior Graphic Designer"), "off") is None
-        assert scraper._process_job(_card("", "ML Engineer"), "stored") is None
+        with pytest.raises(_Skipped):
+            scraper._process_job(_card("", "Junior Graphic Designer"), "off")
+        with pytest.raises(_Skipped):
+            scraper._process_job(_card("", "ML Engineer"), "stored")
         assert scraper._process_job(_card("", "ML Engineer"), "new") is not None
     assert processed == ["new"]
 
 
-def test_linkedin_skipped_cards_are_left_out():
-    jobs = [None, _make_job_post("ML Engineer", "1"), None]
-    with _mock_linkedin(jobs):
-        results = _scrape_linkedin(AI, 4, frozenset())
-    assert [r.title for r in results] == ["ML Engineer"]
+def test_linkedin_search_keeps_the_jobs_around_skipped_cards(caplog):
+    """Through jobspy's own search loop: a skipped card once failed the whole search."""
+    from jobspy.linkedin import LinkedIn
+    from jobspy.model import JobPost, Location, ScraperInput, Site
+    from ingestion.offer.scraping.sources.jobspy_source import _SkippingLinkedIn
+
+    cards = "".join(
+        f'<div class="base-search-card" data-entity-urn="urn:li:jobPosting:{i}">'
+        f'<h3 class="base-search-card__title">{title}</h3><time datetime="2026-10-16"></time></div>'
+        for i, title in [("1", "ML Engineer"), ("2", "Graphic Designer"), ("3", "ML Engineer"),
+                         ("4", "AI Researcher")]
+    )
+    page = MagicMock(status_code=200, text=cards)
+
+    def fake_process(self, job_card, job_id):
+        return JobPost(id=job_id, title=job_card.find("h3").get_text(), company_name="Co",
+                       job_url=f"{LinkedIn.base_url}/jobs/view/{job_id}", location=Location())
+
+    scraper = _SkippingLinkedIn(AI, frozenset({f"{LinkedIn.base_url}/jobs/view/3"}))
+    with patch.object(LinkedIn, "_process_job", fake_process), \
+         patch.object(scraper.session, "get", return_value=page):
+        response = scraper.scrape(ScraperInput(site_type=[Site.LINKEDIN], search_term="x", results_wanted=2))
+    assert [job.id for job in response.jobs] == ["1", "4"]  # 2 off-scope, 3 stored: not counted
+    assert "skipping job" not in caplog.text
 
 
 def test_jobspy_sites_search_the_scope_or_query():

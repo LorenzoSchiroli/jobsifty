@@ -58,13 +58,13 @@ def test_description_left_for_url_fetch():
     assert results[0].description is None
 
 
-def test_http_error_log_redacts_app_key(caplog):
-    err = Exception("503 Server Error for url: https://api.adzuna.com/...?app_id=id&app_key=s3cret")
-    with patch.dict("os.environ", {"ADZUNA_APP_ID": "id", "ADZUNA_APP_KEY": "s3cret"}):
+def test_http_error_log_redacts_app_id_and_key(caplog):
+    err = Exception("503 Server Error for url: https://api.adzuna.com/...?app_id=myid42&app_key=s3cret")
+    with patch.dict("os.environ", {"ADZUNA_APP_ID": "myid42", "ADZUNA_APP_KEY": "s3cret"}):
         with patch("ingestion.offer.scraping.sources.adzuna_source.requests.get", side_effect=err):
             AdzunaSource().fetch(AI, hours=72)
-    assert "s3cret" not in caplog.text
-    assert "app_key=***" in caplog.text
+    assert "s3cret" not in caplog.text and "myid42" not in caplog.text
+    assert "app_id=***&app_key=***" in caplog.text
 
 
 def test_asks_for_the_scope_terms_newest_first_and_cuts_the_hours_itself():

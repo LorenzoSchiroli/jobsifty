@@ -13,9 +13,20 @@ from ingestion.offer.scraping.sources.base import Source
 
 logger = logging.getLogger(__name__)
 
-# LinkedIn cards looked at per run, skipped ones included. LinkedIn has hundreds of AI
+# LinkedIn jobs kept per run (skipped cards do not count). LinkedIn has hundreds of AI
 # jobs in Europe every 4 hours; each card kept costs one more request (its description).
 _LINKEDIN_CARDS = 150
+
+
+class _Skipped(Exception):
+    """A LinkedIn card left out. jobspy's search loop catches any exception from
+    _process_job and moves to the next card, while a None would be appended and fail
+    its JobResponse validation, losing the whole search."""
+
+
+# jobspy logs every caught exception as "skipping job: ..."; ours are expected
+logging.getLogger("JobSpy:LinkedIn").addFilter(
+    lambda record: not record.getMessage().startswith(f"skipping job: {_Skipped.__name__}"))
 _INDEED_COUNTRIES = ["UK", "Germany", "France", "Netherlands", "Spain", "Italy", "Belgium", "Austria"]
 # Glassdoor needs a concrete place ("Europe" resolves to France only), looked up by name
 # on the country's own site: glassdoor.co.uk knows "United Kingdom", not "UK".
@@ -65,13 +76,15 @@ class _SkippingLinkedIn(LinkedIn):
         title_tag = job_card.find("h3", class_="base-search-card__title")
         title = title_tag.get_text(strip=True) if title_tag else ""
         if not self.job_scope.matches(title) or f"{self.base_url}/jobs/view/{job_id}" in self.known_urls:
-            return None
+            raise _Skipped(f"{_Skipped.__name__}: off-scope or stored")
         try:
             post = super()._process_job(job_card, job_id, *args)
         except ValueError as e:
             logger.info("LinkedIn job %s skipped: %s", job_id, str(e).split(". Valid")[0])
-            return None
-        if post is not None and (posted := _card_posted_at(job_card)):
+            raise _Skipped(f"{_Skipped.__name__}: {job_id}") from None
+        if post is None:
+            raise _Skipped(f"{_Skipped.__name__}: {job_id} gave no job")
+        if posted := _card_posted_at(job_card):
             post.date_posted = posted
         return post
 
@@ -181,11 +194,10 @@ def _scrape_linkedin(scope: Scope, hours: int, known_urls: frozenset[str]) -> li
             fetch_description=True,
             description_format=DescriptionFormat.HTML,
         ))
-        # a skipped card is a None in the list
         return [
             _post_to_offer(job, "linkedin")
             for job in response.jobs
-            if job is not None and job.title and is_latin_script(job.title)
+            if job.title and is_latin_script(job.title)
         ]
     except Exception as e:
         logger.warning("jobspy LinkedIn fetch failed: %s", e)
