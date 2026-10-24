@@ -1,5 +1,7 @@
 import logging
+import random
 import re
+import time
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 import pandas as pd
 from jobspy import scrape_jobs
@@ -14,14 +16,21 @@ from ingestion.offer.scraping.sources.base import Source
 logger = logging.getLogger(__name__)
 
 # LinkedIn jobs kept per run (skipped cards do not count). LinkedIn has hundreds of AI
-# jobs in Europe every 4 hours; each card kept costs one more request (its description).
-_LINKEDIN_CARDS = 150
+# jobs in Europe every 4 hours; each card kept costs one more request (its description),
+# so the cap is mostly how many requests a run sends: LinkedIn rate-limits bursts (429).
+_LINKEDIN_CARDS = 80
+# Seconds before each description request: jobspy fires them back to back.
+_DETAIL_PAUSE = (1.0, 3.0)
 
 
 class _Skipped(Exception):
     """A LinkedIn card left out. jobspy's search loop catches any exception from
     _process_job and moves to the next card, while a None would be appended and fail
     its JobResponse validation, losing the whole search."""
+
+
+class _Blocked(Exception):
+    """LinkedIn answered 429 earlier in this run: no further request is sent."""
 
 
 # jobspy logs every caught exception as "skipping job: ..."; ours are expected
@@ -65,24 +74,43 @@ class _SkippingLinkedIn(LinkedIn):
     """jobspy aborts the whole search when one card has a country outside its enum
     (e.g. 'north macedonia'); drop that card instead. Also keeps the card's hour, and
     skips cards whose title is off-scope or whose job is already stored before their
-    description is fetched (one request each)."""
+    description is fetched (one request each), pausing before each fetch.
+
+    The first 429 stops LinkedIn for the rest of the run: jobspy would carry on into the
+    block, keeping jobs without a description (which the pipeline would then request
+    again). The job that got the 429 and every card after it are dropped, so their URLs
+    stay unstored and the next run picks them up. The other sites are separate scrapes."""
 
     def __init__(self, scope: Scope, known_urls: frozenset[str], **kwargs):
         super().__init__(**kwargs)
         self.job_scope = scope
         self.known_urls = known_urls
+        self.blocked = False
+        self._session_get = self.session.get
+        self.session.get = self._get
+
+    def _get(self, *args, **kwargs):
+        if self.blocked:
+            raise _Blocked("429 earlier in this run")
+        response = self._session_get(*args, **kwargs)
+        if response.status_code == 429:
+            self.blocked = True
+        return response
 
     def _process_job(self, job_card, job_id, *args):
+        if self.blocked:
+            raise _Skipped(f"{_Skipped.__name__}: blocked")
         title_tag = job_card.find("h3", class_="base-search-card__title")
         title = title_tag.get_text(strip=True) if title_tag else ""
         if not self.job_scope.matches(title) or f"{self.base_url}/jobs/view/{job_id}" in self.known_urls:
             raise _Skipped(f"{_Skipped.__name__}: off-scope or stored")
+        time.sleep(random.uniform(*_DETAIL_PAUSE))  # super() fetches the description
         try:
             post = super()._process_job(job_card, job_id, *args)
         except ValueError as e:
             logger.info("LinkedIn job %s skipped: %s", job_id, str(e).split(". Valid")[0])
             raise _Skipped(f"{_Skipped.__name__}: {job_id}") from None
-        if post is None:
+        if post is None or self.blocked:
             raise _Skipped(f"{_Skipped.__name__}: {job_id} gave no job")
         if posted := _card_posted_at(job_card):
             post.date_posted = posted
@@ -194,11 +222,14 @@ def _scrape_linkedin(scope: Scope, hours: int, known_urls: frozenset[str]) -> li
             fetch_description=True,
             description_format=DescriptionFormat.HTML,
         ))
-        return [
+        offers = [
             _post_to_offer(job, "linkedin")
             for job in response.jobs
             if job.title and is_latin_script(job.title)
         ]
+        if scraper.blocked:
+            logger.warning("LinkedIn answered 429: stopped for this run with %d jobs", len(offers))
+        return offers
     except Exception as e:
         logger.warning("jobspy LinkedIn fetch failed: %s", e)
         return []

@@ -15,6 +15,13 @@ def _no_real_indeed():
         yield cls
 
 
+@pytest.fixture(autouse=True)
+def detail_pauses():
+    """The pause before each LinkedIn description, recorded instead of slept."""
+    with patch("ingestion.offer.scraping.sources.jobspy_source.time.sleep") as sleep:
+        yield sleep
+
+
 def _make_job_post(title, job_id="123"):
     job = MagicMock()
     job.id = job_id
@@ -338,30 +345,66 @@ def test_linkedin_skips_off_scope_and_stored_cards_before_fetching_details():
     assert processed == ["new"]
 
 
-def test_linkedin_search_keeps_the_jobs_around_skipped_cards(caplog):
-    """Through jobspy's own search loop: a skipped card once failed the whole search."""
-    from jobspy.linkedin import LinkedIn
-    from jobspy.model import JobPost, Location, ScraperInput, Site
-    from ingestion.offer.scraping.sources.jobspy_source import _SkippingLinkedIn
-
-    cards = "".join(
+def _cards(*titles):
+    return "".join(
         f'<div class="base-search-card" data-entity-urn="urn:li:jobPosting:{i}">'
         f'<h3 class="base-search-card__title">{title}</h3><time datetime="2026-10-16"></time></div>'
-        for i, title in [("1", "ML Engineer"), ("2", "Graphic Designer"), ("3", "ML Engineer"),
-                         ("4", "AI Researcher")]
+        for i, title in enumerate(titles, 1)
     )
-    page = MagicMock(status_code=200, text=cards)
 
-    def fake_process(self, job_card, job_id):
-        return JobPost(id=job_id, title=job_card.find("h3").get_text(), company_name="Co",
-                       job_url=f"{LinkedIn.base_url}/jobs/view/{job_id}", location=Location())
 
+def _fake_process_fetching_details(self, job_card, job_id):
+    """jobspy's _process_job, reduced to its description request."""
+    from jobspy.linkedin import LinkedIn
+    from jobspy.model import JobPost, Location
+    self.session.get(f"{LinkedIn.base_url}/jobs/view/{job_id}")
+    return JobPost(id=job_id, title=job_card.find("h3").get_text(), company_name="Co",
+                   job_url=f"{LinkedIn.base_url}/jobs/view/{job_id}", location=Location())
+
+
+def test_linkedin_search_keeps_the_jobs_around_skipped_cards(caplog, detail_pauses):
+    """Through jobspy's own search loop: a skipped card once failed the whole search."""
+    from jobspy.linkedin import LinkedIn
+    from jobspy.model import ScraperInput, Site
+    from ingestion.offer.scraping.sources.jobspy_source import _SkippingLinkedIn
+
+    page = MagicMock(status_code=200, text=_cards("ML Engineer", "Graphic Designer", "ML Engineer", "AI Researcher"))
     scraper = _SkippingLinkedIn(AI, frozenset({f"{LinkedIn.base_url}/jobs/view/3"}))
-    with patch.object(LinkedIn, "_process_job", fake_process), \
-         patch.object(scraper.session, "get", return_value=page):
+    with patch.object(LinkedIn, "_process_job", _fake_process_fetching_details), \
+         patch.object(scraper, "_session_get", return_value=page):
         response = scraper.scrape(ScraperInput(site_type=[Site.LINKEDIN], search_term="x", results_wanted=2))
     assert [job.id for job in response.jobs] == ["1", "4"]  # 2 off-scope, 3 stored: not counted
+    assert detail_pauses.call_count == 2  # one pause per description fetched, none for skipped cards
     assert "skipping job" not in caplog.text
+
+
+def test_linkedin_stops_at_the_first_429_and_drops_the_job_that_got_it(caplog):
+    from jobspy.linkedin import LinkedIn
+    from ingestion.offer.scraping.sources import jobspy_source
+
+    search = MagicMock(status_code=200, text=_cards(*["ML Engineer"] * 10))  # a full page: the loop goes on
+    sent = []
+
+    def session_get(url, **kwargs):
+        sent.append(url)
+        if url.endswith("/jobs/view/3"):
+            return MagicMock(status_code=429)
+        return search if "search" in url else MagicMock(status_code=200)
+
+    real_init = jobspy_source._SkippingLinkedIn.__init__
+
+    def init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        self._session_get = session_get
+
+    with patch.object(LinkedIn, "_process_job", _fake_process_fetching_details), \
+         patch.object(jobspy_source._SkippingLinkedIn, "__init__", init), \
+         caplog.at_level("WARNING"):
+        offers = _scrape_linkedin(AI, 4, frozenset())
+
+    assert [o.url.rsplit("/", 1)[1] for o in offers] == ["1", "2"]
+    assert sent[-1].endswith("/jobs/view/3")  # nothing after the 429: no more cards, no next page
+    assert "stopped for this run with 2 jobs" in caplog.text
 
 
 def test_jobspy_sites_search_the_scope_or_query():
@@ -372,5 +415,5 @@ def test_jobspy_sites_search_the_scope_or_query():
         JobspySource().fetch(AI, 4, frozenset({"u"}))
     assert li.call_args.args == (AI, frozenset({"u"}))
     assert mock_scraper.scrape.call_args.args[0].search_term == AI.or_query()
-    assert mock_scraper.scrape.call_args.args[0].results_wanted == 150
+    assert mock_scraper.scrape.call_args.args[0].results_wanted == 80
     assert gd.call_args.kwargs["search_term"] == AI.or_query()
