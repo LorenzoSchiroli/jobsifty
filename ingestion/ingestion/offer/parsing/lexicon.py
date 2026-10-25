@@ -6,20 +6,23 @@ by the caller. Languages covered: en, de, fr, it, es, nl, pt, sv, pl.
 
 # --- Section headings -------------------------------------------------------
 # A heading line is classified by the first class whose fragment it contains.
-# Order matters: more specific classes first ("about the role" is not "about us").
+# Order matters: more specific classes first ("about the role" is not "about us"), and
+# company last, since its "about <name>" would also catch "about the assignment".
 
 SECTION_HEADINGS: dict[str, list[str]] = {
     "responsibilities": [
         r"responsibilit", r"what you'?ll do", r"what you will do", r"your role", r"the role",
         r"about the role", r"about the job", r"about the position", r"role overview", r"job description",
-        r"your (?:mission|tasks|impact|day)", r"key (?:tasks|duties)", r"duties", r"day[- ]to[- ]day",
-        r"what you'?ll be doing", r"in this role", r"the opportunity", r"the position", r"tasks",
+        r"your (?:mission|tasks|impact|day)", r"key (?:tasks|duties)", r"duties", r"day[- ]to[- ]day", r"assignment",
+        r"what you'?ll be doing", r"what you will be doing", r"in this role", r"the opportunity", r"the position", r"tasks",
         # de
-        r"aufgaben", r"deine rolle", r"ihre rolle", r"das erwartet dich", r"was dich erwartet",
+        r"aufgaben", r"deine rolle", r"ihre rolle", r"das erwartet dich", r"was dich erwartet", r"dein impact",
+        r"deine position", r"dein neuer job",
         r"was sie erwartet", r"tätigkeiten", r"stellenbeschreibung",
         # fr
         r"^missions?$", r"^la mission$", r"vos missions", r"tes missions", r"le poste", r"descriptif du poste",
-        r"responsabilités", r"votre rôle", r"ton rôle",
+        r"responsabilités", r"votre rôle", r"ton rôle", r"vos nouveaux challenges", r"description du poste",
+        r"poste et missions",
         # it
         r"mansioni", r"responsabilità", r"il ruolo", r"attività", r"cosa farai", r"compiti",
         # es
@@ -29,7 +32,7 @@ SECTION_HEADINGS: dict[str, list[str]] = {
         # pt
         r"responsabilidades", r"atividades", r"o que vais fazer", r"o que você vai fazer",
         # sv
-        r"arbetsuppgifter", r"ansvarsområden", r"rollen",
+        r"arbetsuppgifter", r"ansvarsområden", r"rollen", r"om rollen",
         # pl
         r"obowiązki", r"zakres obowiązków", r"twoje zadania",
     ],
@@ -59,17 +62,19 @@ SECTION_HEADINGS: dict[str, list[str]] = {
     ],
     "benefits": [
         r"benefits?", r"perks", r"what we offer", r"we offer", r"what'?s in it for you", r"why join",
-        r"why work", r"compensation", r"our offer", r"rewards", r"what you get",
+        r"why work", r"compensation", r"our offer", r"rewards", r"what you get", r"why here",
         # de
         r"wir bieten", r"was wir bieten", r"unser angebot", r"deine vorteile", r"ihre vorteile", r"benefits",
+        r"darauf kannst du dich freuen", r"deine chance", r"flexible arbeitsmodelle",
         # fr
         r"ce que nous offrons", r"nous offrons", r"avantages", r"pourquoi nous rejoindre", r"on vous offre",
+        r"nous proposons", r"concrètement",
         # it
-        r"cosa offriamo", r"offriamo", r"benefit", r"vantaggi",
+        r"cosa offriamo", r"offriamo", r"benefit", r"vantaggi", r"cosa ti offriamo",
         # es
         r"qué ofrecemos", r"ofrecemos", r"beneficios",
         # nl
-        r"wat bieden wij", r"wij bieden", r"arbeidsvoorwaarden",
+        r"wat bieden wij", r"wij bieden", r"arbeidsvoorwaarden", r"dit krijg (?:jij|je)",
         # pt
         r"oferecemos", r"benefícios",
         # sv
@@ -77,32 +82,13 @@ SECTION_HEADINGS: dict[str, list[str]] = {
         # pl
         r"oferujemy", r"benefity",
     ],
-    "company": [
-        r"about us", r"about the company", r"who we are", r"our company", r"company overview",
-        r"our story", r"our mission", r"our team", r"the team", r"about the team", r"our culture",
-        r"about [a-z0-9&.\- ]{1,30}$",
-        # de
-        r"über uns", r"wer wir sind", r"unternehmen", r"das unternehmen", r"unser team",
-        # fr
-        r"qui sommes[- ]nous", r"à propos", r"l'entreprise", r"notre entreprise", r"la société",
-        # it
-        r"chi siamo", r"l'azienda", r"azienda",
-        # es
-        r"quiénes somos", r"sobre nosotros", r"la empresa",
-        # nl
-        r"over ons", r"wie zijn wij", r"het bedrijf",
-        # pt
-        r"quem somos", r"sobre nós", r"a empresa",
-        # sv
-        r"om oss", r"vilka vi är",
-        # pl
-        r"o nas", r"kim jesteśmy",
-    ],
     "apply": [
         r"how to apply", r"application process", r"next steps", r"interview process", r"apply now",
-        r"our process", r"hiring process", r"recruitment process",
+        r"our process", r"hiring process", r"recruitment process", r"^contact", r"your hr contact", r"key dates",
+        r"please submit", r"^step \d",
         # de
-        r"bewerbung", r"bewirb dich", r"kontakt", r"ansprechpartner", r"so bewirbst du dich",
+        r"bewerbung", r"bewirb dich", r"^kontakt", r"ansprechpartner", r"ansprechperson", r"so bewirbst du dich",
+        r"so bewerben sie sich",
         # fr
         r"candidature", r"processus de recrutement", r"postuler",
         # it
@@ -120,10 +106,32 @@ SECTION_HEADINGS: dict[str, list[str]] = {
     ],
     "legal": [
         r"equal opportunit", r"diversity", r"inclusion", r"eeo", r"privacy", r"data protection",
-        r"disclaimer", r"legal", r"accommodation",
+        r"disclaimer", r"legal", r"accommodation", r"de&i", r"visa policy", r"gleiche chancen",
         r"datenschutz", r"chancengleichheit", r"diversité", r"protection des données",
         r"privacy policy", r"informativa", r"protección de datos", r"privacybeleid",
         r"ochrona danych", r"rodo", r"klauzula",
+    ],
+    "company": [
+        r"about us", r"about the company", r"who we are", r"our company", r"company overview",
+        r"our story", r"our mission", r"our team", r"the team", r"about the team", r"our culture",
+        r"about [a-z0-9&.\- ]{1,30}$",
+        # de
+        r"über uns", r"wer wir sind", r"unternehmen", r"das unternehmen", r"unser team",
+        # fr
+        r"qui sommes[- ]nous", r"à propos", r"a propos", r"l'entreprise", r"notre entreprise", r"la société",
+        r"nos activités", r"votre futur collectif",
+        # it
+        r"chi siamo", r"l'azienda", r"azienda",
+        # es
+        r"quiénes somos", r"sobre nosotros", r"la empresa",
+        # nl
+        r"over ons", r"wie zijn wij", r"het bedrijf",
+        # pt
+        r"quem somos", r"sobre nós", r"a empresa",
+        # sv
+        r"om oss", r"vilka vi är",
+        # pl
+        r"o nas", r"kim jesteśmy",
     ],
 }
 
@@ -152,6 +160,54 @@ BOILERPLATE_PHRASES: list[str] = [
     r"gelijke kansen", r"persoonsgegevens", r"acquisitie naar aanleiding",
     # pl
     r"przetwarzanie moich danych", r"dane osobowe", r"wyrażam zgodę",
+]
+
+# --- Job-board clutter --------------------------------------------------------
+# Adzuna appends its salary statistics and similar jobs to the page text: a short line
+# starting that tail ends the description. Badge and tracking lines are dropped.
+
+BOARD_TAIL_PHRASES: list[str] = [
+    r"comparaison de salaire", r"salary comparison", r"número de empleos", r"die anzahl der jobs",
+    r"bekijk de salarisrange", r"empleos similares", r"ähnliche jobs", r"vergelijkbare vacatures",
+    r"il numero di offerte", r"lavori simili", r"offres similaires",
+]
+MARKER_LINES: list[str] = [
+    r"new", r"nuevo", r"neu", r"nuovo", r"nouveau", r"nieuw", r"novo", r"lnkd1_\w+", r"#li-[\w-]+",
+    r"original anzeige",
+]
+
+# --- Opening blurb ------------------------------------------------------------
+# A description often opens with the company's pitch before any heading. Sentences up
+# to the first one about the role are dropped when they talk about the company.
+
+# About the role: hiring, the reader's tasks, "as a <role>".
+ROLE_SIGNALS: list[str] = [
+    r"you will", r"you'll", r"you are", r"you'd", r"your role", r"in this role", r"as an? ", r"as our ",
+    r"we are looking for", r"we're looking for", r"we are seeking", r"we're seeking", r"we are hiring",
+    r"we're hiring", r"is hiring", r"is seeking", r"is looking for", r"looking for an? ", r"seeking an? ",
+    r"the role", r"this role", r"the position",
+    r"vous (?:serez|rejoindrez|allez|êtes|intégrez)", r"en tant que", r"nous recherchons", r"nous cherchons",
+    r"recrute", r"tu (?:seras|rejoindras)", r"recherche",
+    r"wir suchen", r"suchen wir", r"du (?:wirst|bist|arbeitest|übernimmst)", r"sie (?:werden|übernehmen)",
+    r"als (?:ai|ki|data|machine|senior|junior|software|ml|\w+ engineer)", r"sucht",
+    r"buscamos", r"serás", r"busca", r"cerchiamo", r"sarai", r"cerca",
+    r"we zoeken", r"zoeken wij", r"op zoek naar", r"zoekt", r"je gaat", r"jij gaat",
+    r"söker", r"vi söker", r"søker", r"szukamy",
+]
+# Addressing the reader: about the role only when nothing stronger is found.
+READER_SIGNALS: list[str] = [
+    r"you", r"your", r"vous", r"votre", r"tu", r"ton", r"du", r"dein\w*", r"jij", r"jouw", r"tú", r"tuo",
+    r"tua", r"você",
+]
+# About the company.
+COMPANY_SIGNALS: list[str] = [
+    r"we are", r"we're", r"our mission", r"our company", r"our clients", r"our customers", r"founded",
+    r"since \d{4}", r"established", r"leading", r"world'?s", r"global", r"headquartered", r"employees",
+    r"unicorn", r"is a ", r"is an ", r"is the ",
+    r"nous sommes", r"notre mission", r"depuis \d+", r"fondée?", r"leader", r"est une? ",
+    r"wir sind", r"unser(?:e)? (?:mission|unternehmen)", r"seit \d{4}", r"gegründet", r"marktführer", r"ist ein",
+    r"siamo", r"fondata", r"è un", r"somos", r"fundada", r"es una? ", r"wij zijn", r"opgericht",
+    r"grundades", r"är en",
 ]
 
 # --- Seniority --------------------------------------------------------------

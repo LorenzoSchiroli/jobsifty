@@ -14,7 +14,7 @@ def parse_with_text(offer: JobOffer) -> tuple[OfferExtraction, str]:
     Also returns the boilerplate-stripped text the embedder should chunk.
     """
     description = clean_markdown(offer.description)
-    sections = split_sections(description)
+    sections = split_sections(description, offer.company, offer.title)
     body = sections.kept_text or description
 
     # Work arrangement and contract terms often sit in the benefits section, so use the full text.
