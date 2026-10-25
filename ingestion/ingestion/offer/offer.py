@@ -9,6 +9,7 @@ from ingestion.offer.scraping.filters import _fetch_description_from_url
 from ingestion.offer.scraping.models import JobOffer
 from ingestion.offer.scraping.scopes import Scope
 from ingestion.offer.scraping.scraping import scrape
+from ingestion.offer.scraping.stored import StoredJobs
 from ingestion.utils.text import truncate_description
 
 logger = logging.getLogger(__name__)
@@ -45,10 +46,10 @@ def _enrich_one(offer: JobOffer) -> EnrichedOffer:
 
 
 def enrich_all(
-    scope: Scope, hours: int, sources=None, known_urls: frozenset[str] = frozenset(),
+    scope: Scope, hours: int, sources=None, stored: StoredJobs = StoredJobs(),
 ) -> list[EnrichedOffer]:
     t0 = time.monotonic()
-    offers = scrape(scope, hours, sources, known_urls)
+    offers = scrape(scope, hours, sources, stored)
     if not offers:
         return []
     logger.info("Enriching %d offers...", len(offers))

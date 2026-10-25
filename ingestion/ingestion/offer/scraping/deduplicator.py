@@ -4,7 +4,8 @@ from ingestion.offer.scraping.models import JobOffer
 _PRIORITY = {"jobspy": 0, "freehire": 1, "adzuna": 2, "arbeitnow": 3}
 
 
-def _tc_key(title: str, company: str) -> tuple[str, str]:
+def job_key(title: str, company: str) -> tuple[str, str]:
+    """Title + company, compared without case or punctuation: one job, whatever its URL."""
     # letters of any script, accents kept: "Ingénieur" is not "Ingnieur"
     clean = lambda s: re.sub(r"[\W_]", "", s.lower())
     return clean(title), clean(company)
@@ -22,7 +23,7 @@ def deduplicate(offers: list[JobOffer]) -> list[JobOffer]:
     result: list[JobOffer] = []
 
     for offer in sorted_offers:
-        key = _tc_key(offer.title, offer.company)
+        key = job_key(offer.title, offer.company)
         if key in seen:
             continue
         seen.add(key)

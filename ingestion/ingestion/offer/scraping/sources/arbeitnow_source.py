@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from ingestion.offer.scraping.filters import is_latin_script, _strip_html
 from ingestion.offer.scraping.models import JobOffer
 from ingestion.offer.scraping.scopes import Scope
+from ingestion.offer.scraping.stored import StoredJobs
 from ingestion.offer.scraping.sources.base import Source
 
 logger = logging.getLogger(__name__)
@@ -19,7 +20,7 @@ _PAGE_PAUSE = 3
 
 
 class ArbeitnowSource(Source):
-    def fetch(self, scope: Scope, hours: int, known_urls: frozenset[str] = frozenset()) -> list[JobOffer]:
+    def fetch(self, scope: Scope, hours: int, stored: StoredJobs = StoredJobs()) -> list[JobOffer]:
         cutoff = time.time() - hours * 3600
         results = []
         for page in range(1, _PAGES + 1):

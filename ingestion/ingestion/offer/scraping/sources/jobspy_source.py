@@ -11,6 +11,7 @@ from jobspy.model import Country, ScraperInput, Site, DescriptionFormat
 from ingestion.offer.scraping.filters import is_latin_script, _strip_html
 from ingestion.offer.scraping.models import JobOffer
 from ingestion.offer.scraping.scopes import Scope
+from ingestion.offer.scraping.stored import StoredJobs
 from ingestion.offer.scraping.sources.base import Source
 
 logger = logging.getLogger(__name__)
@@ -73,18 +74,18 @@ def _card_posted_at(job_card) -> datetime | None:
 class _SkippingLinkedIn(LinkedIn):
     """jobspy aborts the whole search when one card has a country outside its enum
     (e.g. 'north macedonia'); drop that card instead. Also keeps the card's hour, and
-    skips cards whose title is off-scope or whose job is already stored before their
-    description is fetched (one request each), pausing before each fetch.
+    skips cards whose title is off-scope or whose job is already stored (by URL, or by
+    title + company) before their description is fetched (one request each), pausing before each fetch.
 
     The first 429 stops LinkedIn for the rest of the run: jobspy would carry on into the
     block, keeping jobs without a description (which the pipeline would then request
     again). The job that got the 429 and every card after it are dropped, so their URLs
     stay unstored and the next run picks them up. The other sites are separate scrapes."""
 
-    def __init__(self, scope: Scope, known_urls: frozenset[str], **kwargs):
+    def __init__(self, scope: Scope, stored: StoredJobs, **kwargs):
         super().__init__(**kwargs)
         self.job_scope = scope
-        self.known_urls = known_urls
+        self.stored = stored
         self.blocked = False
         self._session_get = self.session.get
         self.session.get = self._get
@@ -102,7 +103,10 @@ class _SkippingLinkedIn(LinkedIn):
             raise _Skipped(f"{_Skipped.__name__}: blocked")
         title_tag = job_card.find("h3", class_="base-search-card__title")
         title = title_tag.get_text(strip=True) if title_tag else ""
-        if not self.job_scope.matches(title) or f"{self.base_url}/jobs/view/{job_id}" in self.known_urls:
+        company_tag = job_card.find("h4", class_="base-search-card__subtitle")
+        company = company_tag.get_text(strip=True) if company_tag else ""
+        if (not self.job_scope.matches(title) or self.stored.same_url(f"{self.base_url}/jobs/view/{job_id}")
+                or self.stored.same_job(title, company)):
             raise _Skipped(f"{_Skipped.__name__}: off-scope or stored")
         time.sleep(random.uniform(*_DETAIL_PAUSE))  # super() fetches the description
         try:
@@ -210,9 +214,9 @@ def _post_to_offer(job, site: str) -> JobOffer:
     )
 
 
-def _scrape_linkedin(scope: Scope, hours: int, known_urls: frozenset[str]) -> list[JobOffer]:
+def _scrape_linkedin(scope: Scope, hours: int, stored: StoredJobs) -> list[JobOffer]:
     try:
-        scraper = _SkippingLinkedIn(scope, known_urls)
+        scraper = _SkippingLinkedIn(scope, stored)
         response = scraper.scrape(ScraperInput(
             site_type=[Site.LINKEDIN],
             search_term=scope.or_query(),
@@ -270,9 +274,9 @@ def _scrape_indeed(scope: Scope, hours: int, country: str) -> list[JobOffer]:
 
 
 class JobspySource(Source):
-    def fetch(self, scope: Scope, hours: int, known_urls: frozenset[str] = frozenset()) -> list[JobOffer]:
+    def fetch(self, scope: Scope, hours: int, stored: StoredJobs = StoredJobs()) -> list[JobOffer]:
         results: list[JobOffer] = []
-        results.extend(_scrape_linkedin(scope, hours, known_urls))
+        results.extend(_scrape_linkedin(scope, hours, stored))
         for country in _GLASSDOOR_LOCATIONS:
             results.extend(_scrape_glassdoor(scope, hours, country))
         for country in _INDEED_COUNTRIES:

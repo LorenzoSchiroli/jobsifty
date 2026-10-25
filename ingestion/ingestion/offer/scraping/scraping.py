@@ -11,6 +11,7 @@ from ingestion.offer.scraping.sources.arbeitnow_source import ArbeitnowSource
 from ingestion.offer.scraping.sources.base import Source
 from ingestion.offer.scraping.sources.freehire_source import FreehireSource
 from ingestion.offer.scraping.sources.jobspy_source import JobspySource
+from ingestion.offer.scraping.stored import StoredJobs
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +19,10 @@ _ALL_SOURCE_CLASSES = [AdzunaSource, ArbeitnowSource, FreehireSource, JobspySour
 
 
 def scrape(
-    scope: Scope, hours: int, sources: list[Source] | None = None, known_urls: frozenset[str] = frozenset(),
+    scope: Scope, hours: int, sources: list[Source] | None = None, stored: StoredJobs = StoredJobs(),
 ) -> list[JobOffer]:
     """Offers for `scope` from every source, without off-scope titles, jobs already stored
-    (`known_urls`) and duplicates."""
+    (`stored`: the same URL, or the same title + company under another URL) and duplicates."""
     if sources is None:
         sources = [cls() for cls in _ALL_SOURCE_CLASSES]
     logger.info("Scraping %d source(s) for scope %r...", len(sources), scope.name)
@@ -30,14 +31,16 @@ def scrape(
         # Sources are meant to return [] on failure; one that raises anyway (a
         # changed API, a parsing bug) must not cost the run the other sources.
         try:
-            offers = src.fetch(scope, hours, known_urls)
+            offers = src.fetch(scope, hours, stored)
         except Exception:
             logger.exception("  %-20s failed; skipped", src.__class__.__name__)
             continue
         in_scope = [o for o in offers if scope.matches(o.title)]
-        new = [o for o in in_scope if o.url not in known_urls]
-        logger.info("  %-20s %d offers: %d off-scope, %d already stored, %d kept", src.__class__.__name__,
-                    len(offers), len(offers) - len(in_scope), len(in_scope) - len(new), len(new))
+        not_url = [o for o in in_scope if not stored.same_url(o.url)]
+        new = [o for o in not_url if not stored.same_job(o.title, o.company)]
+        logger.info("  %-20s %d offers: %d off-scope, %d already stored (%d same URL, %d same job), %d kept",
+                    src.__class__.__name__, len(offers), len(offers) - len(in_scope), len(in_scope) - len(new),
+                    len(in_scope) - len(not_url), len(not_url) - len(new), len(new))
         all_offers.extend(new)
     # A job without an employer name cannot be tied to a company (jobspy used to
     # turn a missing name into a company literally called "nan").

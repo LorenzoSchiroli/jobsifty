@@ -23,6 +23,7 @@ from ingestion.live import job_live_days
 from ingestion.offer.scraping.filters import _strip_html, is_latin_script
 from ingestion.offer.scraping.models import JobOffer
 from ingestion.offer.scraping.scopes import Scope
+from ingestion.offer.scraping.stored import StoredJobs
 from ingestion.offer.scraping.sources.base import Source
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,7 @@ def _to_offer(item: dict, now: datetime) -> JobOffer | None:
 
 
 class FreehireSource(Source):
-    def fetch(self, scope: Scope, hours: int, known_urls: frozenset[str] = frozenset()) -> list[JobOffer]:
+    def fetch(self, scope: Scope, hours: int, stored: StoredJobs = StoredJobs()) -> list[JobOffer]:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         cutoff = now - timedelta(hours=hours)
         results: dict[str, JobOffer] = {}

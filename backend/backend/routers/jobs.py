@@ -7,7 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.database import get_session
 from backend.live import live_since
 from backend.models import Company, Job, Outbox
-from backend.schemas import JobListItem, JobListResponse, JobRequest, JobResponse
+from backend.schemas import (
+    JobListItem, JobListResponse, JobRequest, JobResponse, StoredJob,
+)
 from backend.routers.companies import _normalize, _is_empty
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -94,12 +96,17 @@ async def list_jobs(
     return JobListResponse(items=items, next_after=next_after)
 
 
-@router.get("/urls", response_model=list[str])
-async def recent_job_urls(session: AsyncSession = Depends(get_session)):
-    """URLs of the jobs stored within the live window, which ingestion skips instead of
-    fetching, parsing and embedding them again."""
-    rows = await session.execute(select(Job.url).where(Job.created_at >= live_since()))
-    return [url for (url,) in rows]
+@router.get("/stored", response_model=list[StoredJob])
+async def stored_jobs(session: AsyncSession = Depends(get_session)):
+    """The jobs stored within the live window. Ingestion skips a scraped job whose URL,
+    or whose title + company (the same job reposted or listed under another URL), is
+    among them, instead of fetching, parsing and embedding it again."""
+    rows = await session.execute(
+        select(Job.url, Job.title, Company.name)
+        .join(Company, Job.company_id == Company.id)
+        .where(Job.created_at >= live_since())
+    )
+    return [StoredJob(url=url, title=title, company_name=company) for url, title, company in rows]
 
 
 @router.get("/{job_id}", response_model=JobResponse)

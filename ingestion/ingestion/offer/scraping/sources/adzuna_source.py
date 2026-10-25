@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from ingestion.offer.scraping.filters import is_latin_script
 from ingestion.offer.scraping.models import JobOffer
 from ingestion.offer.scraping.scopes import Scope
+from ingestion.offer.scraping.stored import StoredJobs
 from ingestion.offer.scraping.sources.base import Source
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ class AdzunaSource(Source):
     `what_or`, newest first. Adzuna filters by whole days only, so the hours are cut here
     on its exact `created` time."""
 
-    def fetch(self, scope: Scope, hours: int, known_urls: frozenset[str] = frozenset()) -> list[JobOffer]:
+    def fetch(self, scope: Scope, hours: int, stored: StoredJobs = StoredJobs()) -> list[JobOffer]:
         app_id = os.getenv("ADZUNA_APP_ID")
         app_key = os.getenv("ADZUNA_APP_KEY")
         if not app_id or not app_key:

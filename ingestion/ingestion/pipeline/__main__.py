@@ -5,10 +5,11 @@ import time
 from tqdm import tqdm
 from ingestion.offer.offer import enrich_all
 from ingestion.company.company import enrich as enrich_company
-from ingestion.client import get_known_job_urls, get_pending_companies, post_company, post_job
+from ingestion.client import get_pending_companies, get_stored_jobs, post_company, post_job
 from ingestion.company.scraping.searcher import pick_website, pool as search_pool
 from ingestion.llm import LLMPool
 from ingestion.offer.scraping.scopes import SCOPES, Scope, get_scope
+from ingestion.offer.scraping.stored import StoredJobs
 
 logger = logging.getLogger(__name__)
 
@@ -154,16 +155,16 @@ def enrich_minutes(interval_hours: float) -> float:
     return max(0.0, interval_hours * 60 - ENRICH_STOP_BEFORE_NEXT_RUN_MINUTES)
 
 
-def _known_urls() -> frozenset[str]:
-    """URLs of the live jobs already stored, which the scrape skips. Without them (backend
+def _stored_jobs() -> StoredJobs:
+    """The live jobs already stored, which the scrape skips. Without them (backend
     unreachable) nothing is skipped: the run does more work but loses nothing."""
     try:
-        urls = get_known_job_urls()
+        stored = StoredJobs.from_rows(get_stored_jobs())
     except Exception as e:
-        logger.warning("Could not fetch stored job URLs; none skipped: %s", e)
-        return frozenset()
-    logger.info("%d live jobs already stored", len(urls))
-    return urls
+        logger.warning("Could not fetch stored jobs; none skipped: %s", e)
+        return StoredJobs()
+    logger.info("%d live jobs already stored", len(stored))
+    return stored
 
 
 def run(scope: Scope, hours: int, enrich_minutes: float) -> int:
@@ -178,7 +179,7 @@ def run(scope: Scope, hours: int, enrich_minutes: float) -> int:
         llm = None
 
     logger.info("[1/4] Scraping & parsing offers: scope %r, last %dh", scope.name, hours)
-    offers = enrich_all(scope, hours, known_urls=_known_urls())
+    offers = enrich_all(scope, hours, stored=_stored_jobs())
     logger.info("Scraped %d offers", len(offers))
 
     logger.info("[2/4] Posting %d jobs...", len(offers))

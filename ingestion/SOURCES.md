@@ -6,8 +6,8 @@ that decided it. The code is in `ingestion/offer/scraping/sources/`; what a run 
 for is the scope in `ingestion/offer/scraping/scopes.py`.
 
 Every source gets the scope's terms in the form it understands, and every job it returns
-must then have a Latin-script title and pass the scope's title rule, whatever the source. Jobs whose URL is already
-stored are skipped before their description is fetched.
+must then have a Latin-script title and pass the scope's title rule, whatever the source. Jobs already
+stored (same URL, or same title + company under another URL) are skipped before their description is fetched.
 
 ## In use
 

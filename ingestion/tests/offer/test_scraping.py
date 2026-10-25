@@ -1,6 +1,7 @@
 from ingestion.offer.scraping.models import JobOffer
 from ingestion.offer.scraping.scraping import scrape
 from ingestion.offer.scraping.scopes import AI
+from ingestion.offer.scraping.stored import StoredJobs
 
 
 class _Source:
@@ -8,8 +9,8 @@ class _Source:
         self.offers = offers
         self.calls = []
 
-    def fetch(self, scope, hours, known_urls=frozenset()):
-        self.calls.append((scope, hours, known_urls))
+    def fetch(self, scope, hours, stored=StoredJobs()):
+        self.calls.append((scope, hours, stored))
         return self.offers
 
 
@@ -23,7 +24,7 @@ def test_scrape_drops_offers_without_a_company_name():
 
 
 class _BrokenSource:
-    def fetch(self, scope, hours, known_urls=frozenset()):
+    def fetch(self, scope, hours, stored=StoredJobs()):
         raise KeyError("data")
 
 
@@ -40,7 +41,14 @@ def test_scrape_keeps_only_titles_in_scope():
 
 
 def test_scrape_skips_jobs_already_stored_and_tells_the_source():
+    stored = StoredJobs(urls=frozenset({"https://x/1"}))
     source = _Source([_offer("A", 1), _offer("B", 2)])
-    offers = scrape(AI, 2, sources=[source], known_urls=frozenset({"https://x/1"}))
+    offers = scrape(AI, 2, sources=[source], stored=stored)
     assert [o.company for o in offers] == ["B"]
-    assert source.calls == [(AI, 2, frozenset({"https://x/1"}))]
+    assert source.calls == [(AI, 2, stored)]
+
+
+def test_scrape_skips_the_same_job_stored_under_another_url():
+    stored = StoredJobs.from_rows([{"url": "https://other/9", "title": "AI Engineer", "company_name": "acme"}])
+    offers = scrape(AI, 2, sources=[_Source([_offer("Acme", 1), _offer("Acme", 2, "ML Engineer")])], stored=stored)
+    assert [o.title for o in offers] == ["ML Engineer"]

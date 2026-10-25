@@ -20,12 +20,12 @@ def post_job(offer: EnrichedOffer) -> tuple[int, dict]:
     return resp.status_code, resp.json()
 
 
-def get_known_job_urls() -> frozenset[str]:
-    """URLs of the live jobs the backend already has."""
-    resp = requests.get(f"{_base()}/jobs/urls", timeout=60)
+def get_stored_jobs() -> list[dict]:
+    """The live jobs the backend already has: [{url, title, company_name}]."""
+    resp = requests.get(f"{_base()}/jobs/stored", timeout=60)
     if not resp.ok:
         raise requests.HTTPError(f"{resp.status_code} — {resp.text}", response=resp)
-    return frozenset(resp.json())
+    return resp.json()
 
 
 def list_jobs(after: str | None = None, limit: int = 500) -> tuple[list[dict], str | None]:

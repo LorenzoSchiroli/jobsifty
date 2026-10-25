@@ -6,13 +6,14 @@ from ingestion.company.scraping import searcher
 from ingestion.offer.models import EnrichedOffer
 from ingestion.pipeline.__main__ import _collect_companies, new_fields, run
 from ingestion.offer.scraping.scopes import AI
+from ingestion.offer.scraping.stored import StoredJobs
 
 _P = "ingestion.pipeline.__main__"
 
 
 @pytest.fixture(autouse=True)
-def _no_known_urls():
-    with patch(f"{_P}.get_known_job_urls", return_value=frozenset()):
+def _no_stored_jobs():
+    with patch(f"{_P}.get_stored_jobs", return_value=[]):
         yield
 
 
@@ -276,18 +277,18 @@ def test_cli_derives_timing_from_the_interval(monkeypatch, argv, hours, minutes)
     mock_run.assert_called_once_with(AI, hours, minutes)
 
 
-def test_stored_job_urls_are_passed_to_the_scrape():
-    known = frozenset({"https://x/1"})
-    with patch(f"{_P}.get_known_job_urls", return_value=known), \
+def test_stored_jobs_are_passed_to_the_scrape():
+    rows = [{"url": "https://x/1", "title": "AI Engineer", "company_name": "acme"}]
+    with patch(f"{_P}.get_stored_jobs", return_value=rows), \
          patch(f"{_P}.enrich_all", return_value=[]) as mock_enrich_all, \
          patch(f"{_P}.get_pending_companies", return_value=[]):
         assert run(AI, 4, 0) == 0
-    assert mock_enrich_all.call_args.kwargs["known_urls"] == known
+    assert mock_enrich_all.call_args.kwargs["stored"] == StoredJobs.from_rows(rows)
 
 
-def test_backend_unreachable_for_known_urls_skips_nothing():
-    with patch(f"{_P}.get_known_job_urls", side_effect=ConnectionError("down")), \
+def test_backend_unreachable_for_stored_jobs_skips_nothing():
+    with patch(f"{_P}.get_stored_jobs", side_effect=ConnectionError("down")), \
          patch(f"{_P}.enrich_all", return_value=[]) as mock_enrich_all, \
          patch(f"{_P}.get_pending_companies", return_value=[]):
         assert run(AI, 4, 0) == 0
-    assert mock_enrich_all.call_args.kwargs["known_urls"] == frozenset()
+    assert mock_enrich_all.call_args.kwargs["stored"] == StoredJobs()

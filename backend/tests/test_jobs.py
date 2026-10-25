@@ -199,14 +199,14 @@ async def test_list_jobs_rejects_limit_over_max(client):
     assert resp.status_code == 422
 
 
-async def test_job_urls_lists_jobs_stored_within_the_live_window(client, db_session):
+async def test_stored_jobs_lists_jobs_stored_within_the_live_window(client, db_session):
     from datetime import datetime, timedelta, timezone
     for i in range(2):
-        await client.post("/jobs/", json={"url": f"https://example.com/u/{i}", "title": "Job", "company_name": "Acme"})
+        await client.post("/jobs/", json={"url": f"https://example.com/u/{i}", "title": f"Job {i}", "company_name": "Acme"})
     old = (await db_session.execute(select(Job).where(Job.url == "https://example.com/u/1"))).scalar_one()
     old.created_at = datetime.now(timezone.utc) - timedelta(days=15)
     await db_session.commit()
 
-    resp = await client.get("/jobs/urls")
+    resp = await client.get("/jobs/stored")
     assert resp.status_code == 200
-    assert resp.json() == ["https://example.com/u/0"]
+    assert resp.json() == [{"url": "https://example.com/u/0", "title": "Job 0", "company_name": "acme"}]

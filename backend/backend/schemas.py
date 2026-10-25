@@ -116,6 +116,14 @@ class JobListResponse(BaseModel):
     next_after: uuid.UUID | None = None
 
 
+class StoredJob(BaseModel):
+    """A live job as ingestion sees it when deciding what is new: its URL, and title +
+    company to recognise the same job under another URL."""
+    url: str
+    title: str
+    company_name: str
+
+
 class CompanyInSearch(BaseModel):
     name: str
     is_consulting: bool | None = None
