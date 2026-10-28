@@ -15,7 +15,8 @@ async def _company(session, name="Acme") -> Company:
 
 async def _job(session, company_id, url="https://ex.com/1") -> Job:
     j = Job(url=url, title="Engineer", company_id=company_id,
-            chunks=[{"text": "Engineer\npython", "embedding": [0.1] * 384}])
+            chunks=[{"text": "Engineer\npython", "embedding": [0.1] * 384},
+                    {"text": "Engineer\nsummary", "embedding": [0.2] * 384, "summary": True}])
     session.add(j)
     await session.flush()
     return j
@@ -42,7 +43,10 @@ async def test_reconcile_reindexes_changed_job_even_when_present(db_session):
     actions = list(mock_bulk.call_args.args[1])
     assert actions[0]["_id"] == str(job.id)
     source = actions[0]["_source"]
-    assert source["chunks"] == [{"text": "Engineer\npython", "embedding": [0.1] * 384, "posted_at": source["posted_at"]}]
+    assert source["chunks"] == [
+        {"text": "Engineer\npython", "embedding": [0.1] * 384, "posted_at": source["posted_at"]},
+        {"text": "Engineer\nsummary", "embedding": [0.2] * 384, "posted_at": source["posted_at"], "summary": True},
+    ]
     assert actions[0]["_source"]["company_name"] == "Acme"
     assert "summary_text" not in actions[0]["_source"]
     row = (await db_session.execute(select(Outbox))).scalar_one()

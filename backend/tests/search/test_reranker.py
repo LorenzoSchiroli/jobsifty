@@ -40,6 +40,17 @@ def test_picks_chunk_closest_to_query_embedding():
     assert reranker.predict.call_args[0][0] == [("pytorch", "pytorch distributed training")]
 
 
+def test_summary_chunk_is_scored_instead_of_the_closest_chunk():
+    reranker = MagicMock()
+    reranker.predict.return_value = [0.5]
+    hit = {"_source": {"job_id": "a", "chunks": [
+        {"text": "ml engineer: ranking, pytorch", "embedding": [0.0, 1.0], "summary": True},
+        {"text": "pytorch distributed training", "embedding": [1.0, 0.0]},
+    ]}}
+    rerank(reranker, [hit], "pytorch", [0.9, 0.1])
+    assert reranker.predict.call_args[0][0] == [("pytorch", "ml engineer: ranking, pytorch")]
+
+
 def test_job_without_chunks_is_scored_on_its_title():
     reranker = MagicMock()
     reranker.predict.return_value = [0.5]

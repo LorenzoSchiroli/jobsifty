@@ -13,8 +13,11 @@ def _best_chunk(chunks: list[dict], query_embedding: list[float]) -> str | None:
 
 
 def _hit_text(hit: dict, query_embedding: list[float]) -> str:
+    # The LLM summary when the job has one: it keeps only the role, so it ranks best.
     source = hit.get("_source", {})
-    return _best_chunk(source.get("chunks") or [], query_embedding) or source.get("title") or ""
+    chunks = source.get("chunks") or []
+    summary = next((c["text"] for c in chunks if c.get("summary") and c.get("text")), None)
+    return summary or _best_chunk(chunks, query_embedding) or source.get("title") or ""
 
 
 def rerank(

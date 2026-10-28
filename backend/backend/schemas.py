@@ -53,6 +53,8 @@ class PendingCompany(BaseModel):
 class JobChunk(BaseModel):
     text: str
     embedding: list[float]
+    # the LLM summary of the job (at most one), which the reranker reads instead of the best chunk
+    summary: bool = False
 
 
 class JobRequest(BaseModel):

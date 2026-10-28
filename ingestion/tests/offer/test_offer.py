@@ -81,6 +81,15 @@ def test_derive_embeds_kept_text(fake_embedder):
     offer = _make_offer("Senior ML Engineer", description="About us\nWe are Acme.\n\nResponsibilities\n- Train models in Python")
     result = derive(offer)
     assert result.seniority == "senior"
-    title, text = fake_embedder.call_args.args
+    title, text, summary = fake_embedder.call_args.args
     assert title == "Senior ML Engineer"
     assert "Train models" in text and "We are Acme" not in text
+    assert summary is None
+
+
+def test_derive_adds_the_llm_summary(fake_embedder):
+    llm = object()
+    with patch("ingestion.offer.offer.summarize", return_value="python, model training") as summarize:
+        derive(_make_offer("ML Engineer"), llm)
+    assert summarize.call_args.args[1] is llm
+    assert fake_embedder.call_args.args[2] == "python, model training"

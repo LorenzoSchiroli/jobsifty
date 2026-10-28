@@ -7,7 +7,7 @@ from ingestion.offer.offer import enrich_all
 from ingestion.company.company import enrich as enrich_company
 from ingestion.client import get_pending_companies, get_stored_jobs, post_company, post_job
 from ingestion.company.scraping.searcher import pick_website, pool as search_pool
-from ingestion.llm import LLMPool
+from ingestion.llm import LLMPool, offer_pool
 from ingestion.offer.scraping.scopes import SCOPES, Scope, get_scope
 from ingestion.offer.scraping.stored import StoredJobs
 
@@ -178,8 +178,14 @@ def run(scope: Scope, hours: int, enrich_minutes: float) -> int:
         logger.info("No LLM provider key set — company enrichment runs without the LLM")
         llm = None
 
+    summaries = offer_pool()
+    if summaries.configured():
+        logger.info("Offer summary providers: %s", ", ".join(summaries.configured()))
+    else:
+        logger.info("No offer summary provider key set — jobs get the plain chunks only")
+
     logger.info("[1/4] Scraping & parsing offers: scope %r, last %dh", scope.name, hours)
-    offers = enrich_all(scope, hours, stored=_stored_jobs())
+    offers = enrich_all(scope, hours, stored=_stored_jobs(), llm=summaries)
     logger.info("Scraped %d offers", len(offers))
 
     logger.info("[2/4] Posting %d jobs...", len(offers))

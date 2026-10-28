@@ -1,10 +1,11 @@
 """Re-derive every stored job with the current parser and embedder.
 
-Pages through GET /jobs/, rebuilds fields and chunks locally (no LLM)
-and POSTs them back; a post with a description makes the backend overwrite the
-previously derived fields.
+Pages through GET /jobs/, rebuilds fields and chunks locally, plus a summary
+chunk from the offer LLM pool unless `--no-summary`, and POSTs them back; a post
+with a description makes the backend overwrite the previously derived fields
+(a job whose summary fails gets the plain chunks).
 
-    uv run python -m ingestion.backfill [--limit-pages N] [--dry-run]
+    uv run python -m ingestion.backfill [--limit-pages N] [--dry-run] [--no-summary]
 """
 import argparse
 import logging
@@ -14,6 +15,7 @@ from datetime import datetime
 from tqdm import tqdm
 
 from ingestion.client import list_jobs, post_job
+from ingestion.llm import LLMPool, offer_pool
 from ingestion.offer.offer import derive
 from ingestion.offer.scraping.models import JobOffer
 
@@ -33,7 +35,9 @@ def _to_offer(item: dict) -> JobOffer:
     )
 
 
-def run(limit_pages: int | None = None, dry_run: bool = False, page_size: int = 500) -> dict:
+def run(
+    limit_pages: int | None = None, dry_run: bool = False, page_size: int = 500, llm: LLMPool | None = None,
+) -> dict:
     counts = {"seen": 0, "posted": 0, "errors": 0}
     after: str | None = None
     pages = 0
@@ -45,7 +49,7 @@ def run(limit_pages: int | None = None, dry_run: bool = False, page_size: int = 
                 counts["seen"] += 1
                 bar.update(1)
                 try:
-                    enriched = derive(_to_offer(item))
+                    enriched = derive(_to_offer(item), llm)
                     if not dry_run:
                         post_job(enriched)
                     counts["posted"] += 1
@@ -54,8 +58,8 @@ def run(limit_pages: int | None = None, dry_run: bool = False, page_size: int = 
                     logger.warning("Backfill failed for %s: %s", item.get("url"), e)
             if not after or not items or (limit_pages is not None and pages >= limit_pages):
                 break
-    logger.info("Backfill done: %d seen, %d %s, %d errors", counts["seen"], counts["posted"],
-                "derived (dry run)" if dry_run else "posted", counts["errors"])
+    logger.info("Backfill done: %d seen, %d %s, %d errors (summaries: %s)", counts["seen"], counts["posted"],
+                "derived (dry run)" if dry_run else "posted", counts["errors"], llm.stats() if llm else "off")
     return counts
 
 
@@ -64,8 +68,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Re-derive and re-post all stored jobs")
     parser.add_argument("--limit-pages", type=int, default=None, help="Stop after N pages of 500 jobs")
     parser.add_argument("--dry-run", action="store_true", help="Derive but do not POST")
+    parser.add_argument("--no-summary", action="store_true", help="Plain chunks only, no LLM call")
     args = parser.parse_args()
-    counts = run(limit_pages=args.limit_pages, dry_run=args.dry_run)
+    counts = run(limit_pages=args.limit_pages, dry_run=args.dry_run, llm=None if args.no_summary else offer_pool())
     sys.exit(1 if counts["seen"] and counts["errors"] / counts["seen"] > 0.2 else 0)
 
 

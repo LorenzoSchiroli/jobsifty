@@ -22,7 +22,7 @@ def _env(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
     for key in ("TINYFISH_API_KEY", "EXA_API_KEY", "SEARCH_PROVIDERS",
-                "NVIDIA_NIM_API_KEY", "GEMINI_API_KEY", "LLM_PROVIDERS"):
+                "NVIDIA_NIM_API_KEY", "GEMINI_API_KEY", "LLM_PROVIDERS", "OFFER_LLM_PROVIDERS"):
         monkeypatch.delenv(key, raising=False)
     searcher.reset()
     yield
@@ -96,6 +96,15 @@ def test_attempt_is_recorded_even_when_nothing_is_found():
          patch(f"{_P}.enrich_company", return_value=(_profile(), [])):
         run(AI, 2, 15)
     assert mock_post_company.call_args_list[-1].args[0] == {"name": "acme", "enrichment_attempted": True}
+
+
+def test_offer_summaries_use_nvidia_and_gemini_only(monkeypatch):
+    for key in ("NVIDIA_NIM_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY"):
+        monkeypatch.setenv(key, "k")
+    with patch(f"{_P}.enrich_all", return_value=[]) as mock_enrich, \
+         patch(f"{_P}.get_pending_companies", return_value=[]):
+        run(AI, 2, 0)
+    assert [p.name for p in mock_enrich.call_args.kwargs["llm"].providers] == ["nvidia", "gemini"]
 
 
 def test_zero_minutes_disables_enrichment():

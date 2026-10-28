@@ -22,6 +22,7 @@ _INDEX_BODY = {
                 "type": "nested",
                 "properties": {
                     "text": {"type": "text"},
+                    "summary": {"type": "boolean"},
                     # the job's posted_at again: a knn filter only sees the chunk's own fields
                     "posted_at": {"type": "date"},
                     "embedding": {

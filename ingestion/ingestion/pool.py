@@ -10,8 +10,9 @@ failure maps onto one of three outcomes:
 - `Transient`: network error, timeout, 5xx or an unusable answer; the call goes
   to the next one, and a provider failing several times in a row is paused too.
 
-The pool never waits for a paused provider: when none is left, the call
-returns None and the caller carries on without it.
+By default the pool never waits for a paused provider: when none is left, the
+call returns None and the caller carries on without it. A caller that would
+rather wait out a short pause passes `wait_up_to`.
 """
 import logging
 import threading
@@ -140,8 +141,25 @@ class Pool(Generic[P]):
         """True when providers were configured but all are out for the rest of the run."""
         return bool(self.configured()) and all(p.disabled for p in self.providers)
 
-    def call(self, what: str, fn: Callable[[P], T]) -> T | None:
-        """`fn(provider)` on the first usable provider that succeeds; None when none does."""
+    def ready_in(self) -> float | None:
+        """Seconds until the first paused provider is usable again; None when all are out for the run."""
+        waits = [p.paused_until - time.monotonic() for p in self.providers if not p.disabled]
+        return max(0.0, min(waits)) if waits else None
+
+    def call(self, what: str, fn: Callable[[P], T], wait_up_to: float = 0.0) -> T | None:
+        """`fn(provider)` on the first usable provider that succeeds; None when none does.
+
+        When every provider is only paused, and the first is back within `wait_up_to`
+        seconds, waits for it instead of giving up."""
+        result = self._call_once(what, fn)
+        while (result is None and not any(p.usable() for p in self.providers)
+               and (ready := self.ready_in()) is not None and ready <= wait_up_to):
+            logger.info("Waiting %.0fs for a paused provider (%s)", ready, what)
+            time.sleep(ready)
+            result = self._call_once(what, fn)
+        return result
+
+    def _call_once(self, what: str, fn: Callable[[P], T]) -> T | None:
         for provider in self.providers:
             if not provider.usable():
                 continue

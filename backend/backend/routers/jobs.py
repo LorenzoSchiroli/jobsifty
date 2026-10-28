@@ -43,6 +43,9 @@ async def upsert_job(body: JobRequest, response: Response, session: AsyncSession
     job = job_result.scalar_one_or_none()
 
     job_data = body.model_dump(exclude={"company_name"})
+    if body.chunks is not None:
+        # only the summary chunk carries its flag
+        job_data["chunks"] = [c.model_dump(exclude_defaults=True) for c in body.chunks]
 
     if job is None:
         job = Job(company_id=company.id, **job_data)

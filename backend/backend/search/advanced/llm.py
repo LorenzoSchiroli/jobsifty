@@ -84,8 +84,8 @@ def job_text(hit: dict, limit: int) -> str:
     head = source.get("title") or ""
     if source.get("company_name"):
         head += f" at {source['company_name']}"
-    chunks = source.get("chunks") or []
-    # The first chunk is "title\n<start of the cleaned text>".
+    chunks = [c for c in source.get("chunks") or [] if not c.get("summary")]
+    # The first text chunk is "title\n<start of the cleaned text>".
     body = chunks[0]["text"].split("\n", 1)[1] if chunks and "\n" in chunks[0]["text"] else ""
     return f"{head}\n{body}".strip()[:limit]
 

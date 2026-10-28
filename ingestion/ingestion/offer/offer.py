@@ -3,8 +3,10 @@ import time
 from tqdm import tqdm
 
 from ingestion.embedder import embed_chunks
+from ingestion.llm import LLMPool
 from ingestion.offer.models import EnrichedOffer
 from ingestion.offer.parsing.parsing import parse_with_text
+from ingestion.offer.parsing.summary import summarize
 from ingestion.offer.scraping.filters import _fetch_description_from_url
 from ingestion.offer.scraping.models import JobOffer
 from ingestion.offer.scraping.scopes import Scope
@@ -14,8 +16,9 @@ from ingestion.utils.text import truncate_description
 
 logger = logging.getLogger(__name__)
 
-def derive(offer: JobOffer) -> EnrichedOffer:
-    """Parse fields and embed chunks — no network, no LLM."""
+def derive(offer: JobOffer, llm: LLMPool | None = None) -> EnrichedOffer:
+    """Parse fields with rules and embed chunks; with `llm`, also a summary chunk
+    (left out when the summary fails)."""
     extraction, body = parse_with_text(offer)
     return EnrichedOffer(
         title=offer.title,
@@ -25,13 +28,13 @@ def derive(offer: JobOffer) -> EnrichedOffer:
         source=offer.source,
         posted_at=offer.posted_at,
         description=offer.description,
-        chunks=embed_chunks(offer.title, body),
+        chunks=embed_chunks(offer.title, body, summarize(offer, llm)),
         company_info=offer.company_info,
         **extraction.model_dump(),
     )
 
 
-def _enrich_one(offer: JobOffer) -> EnrichedOffer:
+def _enrich_one(offer: JobOffer, llm: LLMPool | None = None) -> EnrichedOffer:
     if offer.url and not offer.description:
         logger.info("fetch  [%s] %s", offer.source, offer.title[:60])
         full_desc = _fetch_description_from_url(offer.url)
@@ -42,11 +45,11 @@ def _enrich_one(offer: JobOffer) -> EnrichedOffer:
         offer.description = truncate_description(offer.description)
 
     logger.info("parse  [%s] %s", offer.source, offer.title[:60])
-    return derive(offer)
+    return derive(offer, llm)
 
 
 def enrich_all(
-    scope: Scope, hours: int, sources=None, stored: StoredJobs = StoredJobs(),
+    scope: Scope, hours: int, sources=None, stored: StoredJobs = StoredJobs(), llm: LLMPool | None = None,
 ) -> list[EnrichedOffer]:
     t0 = time.monotonic()
     offers = scrape(scope, hours, sources, stored)
@@ -56,9 +59,11 @@ def enrich_all(
     results = []
     for offer in tqdm(offers, desc="Enriching offers", unit="offer"):
         try:
-            results.append(_enrich_one(offer))
+            results.append(_enrich_one(offer, llm))
         except Exception as e:
             logger.warning("Failed to enrich offer: %s", e)
     elapsed = time.monotonic() - t0
-    logger.info("Enrichment completed in %.1fs — %d offers enriched.", elapsed, len(results))
+    summarized = sum(any(c.get("summary") for c in r.chunks) for r in results)
+    logger.info("Enrichment completed in %.1fs — %d offers enriched, %d with a summary (%s).",
+                elapsed, len(results), summarized, llm.stats() if llm else "no LLM")
     return results

@@ -99,7 +99,8 @@ async def test_get_job_returns_404_when_not_found(client):
 async def test_create_job_accepts_chunks(client, db_session):
     from sqlalchemy import select
     from backend.models import Job
-    chunks = [{"text": "ML Engineer\nbuild models", "embedding": [0.1] * 384}]
+    chunks = [{"text": "ML Engineer\nmodel training", "embedding": [0.2] * 384, "summary": True},
+              {"text": "ML Engineer\nbuild models", "embedding": [0.1] * 384}]
     resp = await client.post("/jobs/", json={
         "url": "https://example.com/job/schema-test",
         "title": "ML Engineer",

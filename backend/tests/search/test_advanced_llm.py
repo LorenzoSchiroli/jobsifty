@@ -60,6 +60,7 @@ async def test_score_fit_falls_back_to_unranked_hits_on_parse_failure():
 def test_job_text_uses_title_company_and_cleaned_text():
     from backend.search.advanced import llm
     hit = {"_source": {"title": "ML Engineer", "company_name": "acme", "chunks": [
+        {"text": "ML Engineer\nranking, pytorch", "embedding": [0.3], "summary": True},
         {"text": "ML Engineer\nBuild ranking models in PyTorch.", "embedding": [0.1]},
         {"text": "ML Engineer\nlater part", "embedding": [0.2]},
     ]}}

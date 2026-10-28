@@ -33,7 +33,9 @@ def _build_job_doc(job: Job) -> dict:
         "title": job.title,
         "description": job.description or "",
         "chunks": [
-            {"text": c["text"], "embedding": c["embedding"], "posted_at": posted_at} for c in job.chunks or []
+            {"text": c["text"], "embedding": c["embedding"], "posted_at": posted_at}
+            | ({"summary": True} if c.get("summary") else {})
+            for c in job.chunks or []
         ],
         "employment_type": job.employment_type,
         "location_type": job.location_type,

@@ -11,7 +11,7 @@ def _item(i: int) -> dict:
     }
 
 
-def _derived(offer):
+def _derived(offer, llm=None):
     return EnrichedOffer(title=offer.title, company=offer.company, location=offer.location, url=offer.url,
                          source=offer.source, posted_at=offer.posted_at)
 

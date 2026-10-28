@@ -56,6 +56,13 @@ def test_embed_chunks_empty_when_nothing():
         assert embed_chunks("", "") == []
 
 
+def test_embed_chunks_summary_comes_first_and_flagged():
+    with patch("ingestion.embedder.get_embedder", return_value=_fake_model()):
+        chunks = embed_chunks("ML Engineer", "Train models in Python", "pytorch training")
+    assert [c["text"] for c in chunks] == ["ML Engineer\npytorch training", "ML Engineer\nTrain models in Python"]
+    assert chunks[0]["summary"] is True and "summary" not in chunks[1]
+
+
 def test_embed_chunks_multiple_windows():
     text = " ".join(f"w{i}" for i in range(900))
     with patch("ingestion.embedder.get_embedder", return_value=_fake_model()):

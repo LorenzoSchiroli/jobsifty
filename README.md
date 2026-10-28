@@ -54,8 +54,8 @@ Three processes, split so they scale and fail independently:
 
 **Ingestion** runs out-of-process as a scheduled batch (k8s CronJob / EventBridge
 RunTask): scrape a *scope* (`ai`: one OR query per board where it supports one, a title rule for every job, jobs already stored skipped) → fill missing descriptions with trafilatura → parse each
-offer with rules (strip boilerplate sections, regex fields, language detection — no LLM)
-→ embed ≤4 ~400-token chunks → `POST` to the backend, then upsert companies with
+offer with rules (strip boilerplate sections, regex fields, language detection) → one LLM
+summary call (NVIDIA → Gemini; skipped when both fail) → embed ≤4 ~400-token chunks plus the summary → `POST` to the backend, then upsert companies with
 what the job boards say about them, and enrich companies until shortly before the next run,
 newest jobs' employers first (two web searches each through a pool of free-tier providers — TinyFish, Exa,
 Tavily — rotated on rate limits and exhausted credits; JSON-LD/Wikidata/regex first,
@@ -124,7 +124,7 @@ flowchart TB
 | **Filters are *soft* by default** | The filterable fields (`seniority`, `location_type`, `languages_required`, …) come from an LLM parse of free-text postings, so they are good but not perfect. A hard filter turns one bad extraction into a silently missing result. Instead the clauses are scored `should` clauses with `boost: 2.0` — matching documents win, near-misses still surface. Writing *"strictly"*, *"exactly"* or *"no exceptions"* flips `SearchFilters.strict`, which applies them as a real `post_filter` and raises the prefetch to 200 so the filter has candidates left to keep. |
 | **The age window is always hard, 72 hours by default** | A posting a week old is usually already being interviewed for, so old jobs are left out rather than ranked lower. The window is on `posted_at` (the board's date, `created_at` when it gives none) and the query text changes it: *"last 2 weeks"*, *"today"*, *"this week"*. On the k-NN leg the date is the knn query's own filter on `chunks.posted_at` (each chunk carries the job's date), so the nearest neighbours are searched among recent jobs: a filter around the k-NN result would keep only the recent few of its top 100. |
 | **Cross-encoder rerank on the shortlist only** | The bi-encoder scores query and document independently — necessary, because embeddings must be computed at index time. A cross-encoder reads the pair jointly and is markedly more accurate, but costs one forward pass *per candidate*. Applying it to the top 20–200 retrieved hits buys most of the accuracy for a bounded, predictable cost. |
-| **Chunks instead of an LLM summary** | Descriptions run ~1k tokens (p99 ~2.7k), twice the 512-token window of small CPU encoders. Instead of an LLM summary (which made ingestion depend on Groq quotas), boilerplate sections are stripped by rules and the rest is embedded as ≤4 overlapping chunks; k-NN scores a job by its best chunk and the reranker reads that same chunk. |
+| **Chunks plus an optional LLM summary** | Descriptions run ~1k tokens (p99 ~2.7k), twice the 512-token window of small CPU encoders. Boilerplate sections are stripped by rules and the rest is embedded as ≤4 overlapping chunks, so every job is searchable whatever the LLM does. An LLM summary (from free-tier providers, never Groq's quota) is added as one more chunk when a provider answers: on a blind comparison the plain chunks ranked worse than the old summary-only index, chunks plus the summary better. k-NN scores a job by its best chunk; the reranker reads the summary, else that best chunk. |
 | **384 dimensions, HNSW + cosine on the Lucene engine** | Small vectors keep index size and HNSW memory low, `multilingual-e5-small` covers the non-English offers, and the Lucene engine needs no native plugin and supports filtered k-NN. |
 | **A `parse=… embed=… retrieve=… rerank=… db=…` timing line per query** | Each stage is logged separately, so a latency regression points at a stage instead of at "search is slow". |
 
@@ -190,7 +190,7 @@ daily `pg_dump` + rclone upload to a Hetzner Storage Box on a 7-day rolling
 retention.
 
 The `jobs_v3` index carries the nested `chunks` (text + embedding + the job's posted date; the reranker
-re-picks the best chunk from them, since hybrid queries drop `inner_hits`), `description` for BM25, `company_name` for the advanced-search prompts, and the keyword/numeric
+reads the summary chunk, else re-picks the best chunk from them, since hybrid queries drop `inner_hits`), `description` for BM25, `company_name` for the advanced-search prompts, and the keyword/numeric
 fields the filter clauses target — `employment_type`, `location_type`,
 `seniority`, `languages_required`, `is_consulting`, `is_startup`, `industry`,
 `country`, `review_score`, `financial_health_score`, `created_at`, `posted_at`.
@@ -339,7 +339,8 @@ cp .env.example .env      # then fill in the keys below
 | `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | `.env` | Optional job source |
 | `BACKUP_SBOX_HOST` / `_USER` / `_RCLONE_PASS` | `.env` | Optional nightly Postgres backup |
 | `GROQ_MODEL_LARGE` / `GROQ_MODEL_BASE` | `.env.public` | Model IDs for agents / company enrichment |
-| `NVIDIA_MODEL` / `GEMINI_MODEL` / `LLM_PROVIDERS` | `.env.public` | Company enrichment LLM pool: models and order (default `nvidia,gemini,groq`) |
+| `NVIDIA_MODEL` / `GEMINI_MODEL` / `LLM_PROVIDERS` | `.env.public` | Company enrichment LLM pool: models (comma-separated fallbacks) and order (default `nvidia,gemini,groq`) |
+| `OFFER_LLM_PROVIDERS` | `.env.public` | Offer summary LLM pool order (default `nvidia,gemini`, Groq left out) |
 | `JOB_LIVE_DAYS` | `.env.public` | Days a job stays live, from its posting time: search retention, reconcile, company enrichment (default 14) |
 | `SEARCH_PROVIDERS` | `.env.public` | Search pool order (default `tinyfish,exa,tavily`) |
 | `CORS_ORIGINS` | `.env.public` | Extra browser origins for the API |

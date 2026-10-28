@@ -45,17 +45,23 @@ def _windows(text: str, tokenizer) -> list[str]:
     return [w for w in windows if w]
 
 
-def embed_chunks(title: str, text: str | None) -> list[dict]:
-    """Embed `title + window` for each token window of `text`.
+def embed_chunks(title: str, text: str | None, summary: str | None = None) -> list[dict]:
+    """Embed `title + window` for each token window of `text`, and `title + summary`
+    first, flagged `summary`, when there is one.
 
-    Returns [{"text", "embedding"}]; a title-only chunk when there is no text,
-    and [] only when both are empty.
+    Returns [{"text", "embedding"[, "summary"]}]; a title-only chunk when there is no
+    text, and [] only when all are empty.
     """
     model = get_embedder()
     windows = _windows(text or "", model.tokenizer) or [""]
     chunk_texts = [f"{title}\n{w}".strip() for w in windows]
     chunk_texts = [t for t in chunk_texts if t]
+    if summary and summary.strip():
+        chunk_texts.insert(0, f"{title}\n{summary.strip()}".strip())
     if not chunk_texts:
         return []
     vectors = model.encode([PASSAGE_PREFIX + t for t in chunk_texts], normalize_embeddings=True)
-    return [{"text": t, "embedding": [float(x) for x in v]} for t, v in zip(chunk_texts, vectors)]
+    chunks = [{"text": t, "embedding": [float(x) for x in v]} for t, v in zip(chunk_texts, vectors)]
+    if summary and summary.strip():
+        chunks[0]["summary"] = True
+    return chunks
