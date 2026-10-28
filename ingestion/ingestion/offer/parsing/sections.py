@@ -165,7 +165,8 @@ def split_sections(description: str | None, company: str = "", title: str = "") 
         cls = _lexicon_heading(line)
         if cls is not None:
             headings_found = True
-            blocks.append((cls, []))
+            # a short skill line looks the same ("Strong Python skills"): kept with its section
+            blocks.append((cls, [] if cls in DROPPED_SECTIONS else [line]))
             continue
 
         blocks[-1][1].append(line)

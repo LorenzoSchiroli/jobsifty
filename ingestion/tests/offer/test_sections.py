@@ -70,7 +70,7 @@ def test_clean_markdown_unescapes():
 
 def test_html_description_becomes_lines():
     kept = split_sections("<div><h3>Your role</h3><p>Build ML models.</p><h3>Benefits</h3><p>Free lunch.</p></div>").kept_text
-    assert kept == "Build ML models."
+    assert kept == "Your role\nBuild ML models."
 
 
 def test_adzuna_salary_tail_and_badges_are_cut():
@@ -92,6 +92,13 @@ def test_more_headings_recognised():
     assert classify_heading("About the assignment") == "responsibilities"
     assert classify_heading("A propos de KPMG :") == "company"
     assert classify_heading("DE&I Statement:") == "legal"
+
+
+def test_a_short_skill_line_is_kept_although_it_reads_like_a_heading():
+    description = "Requirements:\n5 years of Python.\nStrong SQL skills\nExperience with Playwright\nBenefits\nFree lunch."
+    assert split_sections(description).kept_text == (
+        "5 years of Python.\nStrong SQL skills\nExperience with Playwright"
+    )
 
 
 def test_contact_only_counts_at_the_start_of_a_heading():
