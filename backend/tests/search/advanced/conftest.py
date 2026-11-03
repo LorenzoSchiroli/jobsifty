@@ -6,16 +6,15 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from langchain_core.messages import AnyMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
-from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 
 from backend.search.advanced.context import AgentContext
 from backend.search.advanced.state import AgentState
-from backend.search.advanced.tools import TOOLS
-from tests.search.advanced.fakes import ScriptedChatModel, tool_call
+from backend.search.advanced.tools import tools_step
+from tests.search.advanced.fakes import ScriptedChatModel
 from tests.search.advanced.samples import candidate
 
 NOW = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
@@ -48,7 +47,7 @@ class ToolRun:
 
 def _graph():
     builder = StateGraph(AgentState, context_schema=AgentContext)
-    builder.add_node("tools", ToolNode(TOOLS))
+    builder.add_node("tools", tools_step)
     builder.set_entry_point("tools")
     builder.add_edge("tools", END)
     return builder.compile(checkpointer=MemorySaver())
@@ -68,17 +67,25 @@ async def _result(graph, config, events, interrupt_value=None) -> ToolRun:
                    interrupt_value=interrupt_value, events=events)
 
 
-def _start(name: str, args: dict, state: dict | None) -> dict:
-    return {**(state or {}), "messages": [HumanMessage("find me ML jobs"), tool_call(name, args, id="call-1")]}
+def _start(calls: list[tuple[str, dict]], state: dict | None) -> dict:
+    """The state with one AIMessage carrying the calls, with ids call-1, call-2, ..."""
+    message = AIMessage(content="", tool_calls=[
+        {"name": name, "args": args, "id": f"call-{i}", "type": "tool_call"} for i, (name, args) in enumerate(calls, 1)
+    ])
+    return {**(state or {}), "messages": [HumanMessage("find me ML jobs"), message]}
 
 
 @pytest.fixture
 def run_tool(ctx_factory):
-    """Runs one tool call through a one-node ToolNode graph: messages, state, interrupt value, stream events."""
+    """Runs a tool call through a one-node graph of the tools step: messages, state, interrupt value, events.
 
-    async def run(name: str, args: dict, state: dict | None = None, context: AgentContext | None = None) -> ToolRun:
+    `calls=[(name, args), ...]` puts several calls in the one AIMessage instead.
+    """
+
+    async def run(name: str | None = None, args: dict | None = None, state: dict | None = None,
+                  context: AgentContext | None = None, *, calls: list[tuple[str, dict]] | None = None) -> ToolRun:
         graph, config, events = _graph(), {"configurable": {"thread_id": str(uuid.uuid4())}}, []
-        await _stream(graph, _start(name, args, state), config, context or ctx_factory(), events)
+        await _stream(graph, _start(calls or [(name, args)], state), config, context or ctx_factory(), events)
         return await _result(graph, config, events)
 
     return run
@@ -92,7 +99,7 @@ def run_tool_with_resume(ctx_factory):
                   context: AgentContext | None = None) -> ToolRun:
         graph, config, events = _graph(), {"configurable": {"thread_id": str(uuid.uuid4())}}, []
         ctx = context or ctx_factory()
-        await _stream(graph, _start(name, args, state), config, ctx, events)
+        await _stream(graph, _start([(name, args)], state), config, ctx, events)
         paused = await graph.aget_state(config)
         value = paused.interrupts[0].value if paused.interrupts else None
         await _stream(graph, Command(resume=answer), config, ctx, events)

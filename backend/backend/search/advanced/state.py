@@ -9,7 +9,9 @@ def merge_pool(left: dict[str, dict] | None, right: dict[str, dict] | None) -> d
     """Pool entries by job_id; a job found twice keeps its higher-scored entry.
 
     breaks stays only while every search that found the job was a probe breaking something:
-    one normal search (empty breaks) clears it, two probes give the union.
+    one normal search (empty breaks) clears it, two probes give the union. Clearing is consistent
+    because every search applies all the other stated requirements as hard filters: a normal
+    search's job meets them all, and a probe's job with empty breaks met the lifted one too.
     """
     merged = dict(left or {})
     for job_id, new in (right or {}).items():

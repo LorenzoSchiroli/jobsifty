@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from backend.search.advanced.brief import Brief
 from backend.search.advanced.budget import INSPECT_CHARS, MAX_PROBES, MAX_SEARCHES
 from backend.search.advanced.state import add_usage, merge_dicts, merge_pool
+from backend.search.advanced.tools import ONE_CALL_REFUSAL
 from tests.search.advanced.conftest import JOB_A, JOB_B
 from tests.search.advanced.fakes import ScriptedChatModel, tool_call
 from tests.search.advanced.samples import IN_MILAN, REMOTE, STARTUP, candidate
@@ -99,12 +100,31 @@ async def test_probe_of_inferred_item_is_refused(run_tool):
     assert "not a stated requirement" in out.messages[-1].content
 
 
-async def test_probe_of_unmapped_stated_item_returns_run_variant_error(run_tool):
-    # The real run_variant raises ValueError before any I/O: "in Milan" maps to no index field.
+async def test_probe_of_unmapped_stated_item_is_refused(run_tool, patched_run_variant):
     out = await run_tool("search_jobs", {"variants": [{"query": "ml", "probe": "in Milan"}]},
                          state={"brief": Brief(items=[IN_MILAN]).model_dump()})
-    assert "matches no locked requirement" in out.messages[-1].content
+    assert "maps to no index field" in out.messages[-1].content
+    assert patched_run_variant.await_count == 0
     assert out.state.get("searches_run", 0) == 0 and out.state.get("probes_run", 0) == 0
+
+
+async def test_probe_of_stated_preference_is_refused(run_tool, patched_run_variant):
+    out = await run_tool("search_jobs", {"variants": [{"query": "ml", "probe": "startup"}]},
+                         state={"brief": Brief(items=[STARTUP.model_copy(update={"source": "stated"})]).model_dump()})
+    assert "a stated preference, not a hard filter" in out.messages[-1].content
+    assert patched_run_variant.await_count == 0
+
+
+async def test_search_refuses_empty_variants(run_tool):
+    out = await run_tool("search_jobs", {"variants": []})
+    assert "give 1 to 3 variants" in out.messages[-1].content
+
+
+async def test_value_error_inside_a_search_is_logged_as_a_failure(run_tool, patched_run_variant, caplog):
+    patched_run_variant.side_effect = ValueError("bad vector")
+    out = await run_tool("search_jobs", {"variants": [{"query": "ml"}]})
+    assert 'Search "ml" failed: ValueError: bad vector' in out.messages[-1].content
+    assert "advanced search variant failed" in caplog.text
 
 
 async def test_failed_variant_is_reported_and_the_others_still_run(run_tool, patched_run_variant):
@@ -202,6 +222,25 @@ async def test_ask_user_past_budget_does_not_interrupt(run_tool):
     assert out.interrupt_value is None and "No more questions" in out.messages[-1].content
 
 
+async def test_ask_user_without_options_is_refused_without_interrupting(run_tool):
+    out = await run_tool("ask_user", {"question": "Q?", "options": []})
+    assert out.interrupt_value is None and "needs options" in out.messages[-1].content
+
+
+async def test_ask_user_relaxing_an_unknown_item_is_refused_without_interrupting(run_tool):
+    out = await run_tool("ask_user", {"question": "Allow hybrid?",
+                                      "options": [{"label": "Allow hybrid", "relax": ["remote"]}, {"label": "Keep"}]},
+                         state={"brief": Brief(items=[REMOTE]).model_dump()})
+    assert out.interrupt_value is None
+    assert "'remote'" in out.messages[-1].content and "not a stated item" in out.messages[-1].content
+
+
+async def test_ask_user_dict_resume_value_uses_its_answer(run_tool_with_resume):
+    out = await run_tool_with_resume("ask_user", {"question": "Q?", "options": [{"label": "A"}]},
+                                     answer={"answer": "A"})
+    assert out.messages[-1].content == "User chose: A"
+
+
 async def test_ask_user_has_no_side_effects_before_the_answer(run_tool):
     out = await run_tool("ask_user", {"question": "Q?", "options": [{"label": "A"}]}, state={"turns": 1})
     assert out.interrupt_value == {"question": "Q?", "options": ["A"]}
@@ -217,6 +256,34 @@ async def test_finish_resolves_short_ids_and_drops_unknown(run_tool):
     assert out.state["keep"] == [JOB_B, JOB_A]
     assert out.state["notes"] == "remote is thin" and out.state["finished"] is True
     assert "zzzz" in out.messages[-1].content
+
+
+# --- one tool call per turn ---------------------------------------------------------------------
+
+async def test_second_update_brief_in_one_turn_is_refused(run_tool):
+    calls = [("update_brief", {"items": [REMOTE.model_dump()]}), ("update_brief", {"items": [STARTUP.model_dump()]})]
+    out = await run_tool(calls=calls)
+    first, second = out.messages[-2:]
+    assert (first.tool_call_id, first.content) == ("call-1", "ok")
+    assert second.tool_call_id == "call-2" and second.status == "error" and second.name == "update_brief"
+    assert second.content == ONE_CALL_REFUSAL
+    assert Brief(**out.state["brief"]).items == [REMOTE]
+
+
+async def test_extra_call_is_refused_when_the_first_returns_plain_text(run_tool):
+    out = await run_tool(calls=[("inspect_job", {"ids": ["a", "b", "c", "d"]}), ("finish", {"keep": [], "notes": ""})])
+    first, second = out.messages[-2:]
+    assert first.tool_call_id == "call-1" and "at most 3" in first.content
+    assert (second.tool_call_id, second.content) == ("call-2", ONE_CALL_REFUSAL)
+    assert "finished" not in out.state
+
+
+async def test_two_probe_searches_in_one_turn_stay_within_probe_budget(run_tool, patched_run_variant):
+    probe = {"variants": [{"query": "ml", "probe": "remote only"}]}
+    out = await run_tool(calls=[("search_jobs", probe), ("search_jobs", probe)],
+                         state={"brief": Brief(items=[REMOTE]).model_dump(), "probes_run": MAX_PROBES - 1})
+    assert out.state["probes_run"] == MAX_PROBES and patched_run_variant.await_count == 1
+    assert [m.content for m in out.messages if isinstance(m, ToolMessage)].count(ONE_CALL_REFUSAL) == 1
 
 
 # --- ScriptedChatModel --------------------------------------------------------------------------

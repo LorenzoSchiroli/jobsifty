@@ -1,13 +1,18 @@
-"""The five tools of the advanced-search agent.
+"""The five tools of the advanced-search agent, and the graph's tools step that runs them.
 
-Each returns a Command whose update carries the ToolMessage, or a plain string (a refusal the
-model reads as the tool result). Budgets and locked requirements are enforced here, in code.
+Each tool returns a Command whose update carries the ToolMessage, or a plain string (a refusal
+the model reads as the tool result). Budgets and locked requirements are enforced here, in code.
+
+The tools read budgets and the brief from one state snapshot, so they are only safe one call at
+a time: `tools_step`, the graph's "tools" node, runs the first tool call of a turn and refuses
+the others (the agent model is also bound with parallel_tool_calls=False).
 """
 import logging
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
-from langgraph.prebuilt import ToolRuntime
+from langgraph.prebuilt import ToolNode, ToolRuntime
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
@@ -77,9 +82,15 @@ def _refusal(variant: SearchVariant, brief: Brief, searches: int, probes: int) -
         return None
     if probes >= MAX_PROBES:
         return f"probe budget of {MAX_PROBES} is spent"
-    if not any(i.text.casefold() == variant.probe.casefold() for i in brief.locked()):
+    item = next((i for i in brief.locked() if i.text.casefold() == variant.probe.casefold()), None)
+    if item is None:
         return (f'probe "{variant.probe}" is not a stated requirement of the brief; '
                 "a probe lifts one stated item, named by its exact text")
+    if item.field is None:
+        return (f'"{item.text}" maps to no index field, so no search can lift it; '
+                "check it on the job lines instead")
+    if item.kind == "prefer":
+        return f'"{item.text}" is a stated preference, not a hard filter; there is nothing to lift'
     return None
 
 
@@ -94,8 +105,8 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
     jobs are flagged with what they break. `company_country` is where the company is based, not
     the job: check job locations in the lines.
     """
-    if len(variants) > MAX_VARIANTS:
-        return f"Refused: at most {MAX_VARIANTS} variants per call."
+    if not 1 <= len(variants) <= MAX_VARIANTS:
+        return f"Refused: give 1 to {MAX_VARIANTS} variants (at most {MAX_VARIANTS} per call)."
     ctx, state = runtime.context, runtime.state
     brief = _brief(state)
     searches_run, probes_run = state.get("searches_run", 0), state.get("probes_run", 0)
@@ -111,14 +122,11 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
         if refusal := _refusal(variant, brief, searches_run + ran, probes_run + probes):
             parts.append(f'Refused "{variant.query}": {refusal}.')
             continue
-        try:
+        try:  # the probe is already checked: any error here is unexpected
             candidates = await run_variant(
                 variant=variant, brief=brief, search_index=index + 1, biencoder=ctx.biencoder,
                 reranker=ctx.reranker, os_client=ctx.os_client, session_factory=ctx.session_factory,
             )
-        except ValueError as e:
-            parts.append(f'Refused "{variant.query}": {e}.')
-            continue
         except Exception as e:  # a failed search is reported, the others still run
             logger.exception("advanced search variant failed")
             parts.append(f'Search "{variant.query}" failed: {type(e).__name__}: {e}')
@@ -177,6 +185,16 @@ class QuestionOption(BaseModel):
     )
 
 
+def _answer_text(value) -> str:
+    """The resume value as text: a string, or the `answer` of a {"answer": ...} dict.
+
+    Anything else is a caller bug; str() keeps the run going rather than failing the turn.
+    """
+    if isinstance(value, dict) and isinstance(value.get("answer"), str):
+        value = value["answer"]
+    return value if isinstance(value, str) else str(value)
+
+
 @tool
 def ask_user(question: str, options: list[QuestionOption], runtime: Runtime) -> Command | str:
     """Ask the user one question and wait for the answer: a chosen option or free text.
@@ -190,9 +208,17 @@ def ask_user(question: str, options: list[QuestionOption], runtime: Runtime) -> 
     state = runtime.state
     if state.get("questions_asked", 0) >= MAX_QUESTIONS:
         return "No more questions; decide with what you have."
+    if not options:
+        return "Refused: a question needs options, including one that keeps things as they are."
+    brief = _brief(state)
+    stated = {i.text.casefold() for i in brief.locked()}
+    for o in options:
+        if unknown := [t for t in o.relax if t.casefold() not in stated]:
+            return (f"Refused: option '{o.label}' relaxes '{unknown[0]}', which is not a stated item of the "
+                    "brief; name stated items by their exact text.")
     labels = [o.label for o in options]
     # The tool re-runs from the top on resume: nothing may happen before interrupt().
-    answer = str(interrupt({"question": question, "options": labels}))
+    answer = _answer_text(interrupt({"question": question, "options": labels}))
     chosen = next((o for o in options if o.label.strip().casefold() == answer.strip().casefold()), None)
     qa = {"question": question, "options": labels, "answer": answer, "chosen": chosen.label if chosen else None}
     if chosen is None:
@@ -200,7 +226,7 @@ def ask_user(question: str, options: list[QuestionOption], runtime: Runtime) -> 
                       unlock_turn=state.get("turns", 0))
     update = {}
     if chosen.relax:
-        brief = relax(_brief(state), chosen.relax)
+        brief = relax(brief, chosen.relax)
         runtime.stream_writer({"type": "brief", "brief": brief.to_api()})
         update["brief"] = brief.model_dump()
     return _reply(runtime, f"User chose: {chosen.label}", questions_asked=1, qa=[qa], **update)
@@ -218,3 +244,26 @@ def finish(keep: list[str], notes: str, runtime: Runtime) -> Command:
 
 
 TOOLS: list[BaseTool] = [update_brief, search_jobs, inspect_job, ask_user, finish]
+
+ONE_CALL_REFUSAL = "Refused: one tool call per turn — call it again next turn."
+
+_TOOL_NODE = ToolNode(TOOLS)
+
+
+async def tools_step(state: AgentState, config: RunnableConfig):
+    """The graph's "tools" node: runs the first tool call of the last AIMessage and refuses the rest.
+
+    Every tool call id gets exactly one ToolMessage. The inner ToolNode gets the node's config, so
+    the run context, stream writer and interrupts reach the tools as usual.
+    """
+    messages = state["messages"]
+    last = next(m for m in reversed(messages) if isinstance(m, AIMessage))
+    if len(last.tool_calls) <= 1:
+        return await _TOOL_NODE.ainvoke(state, config)
+    first, *rest = last.tool_calls
+    trimmed = last.model_copy(update={"tool_calls": [first]})
+    output = await _TOOL_NODE.ainvoke({**state, "messages": [trimmed if m is last else m for m in messages]}, config)
+    refusals = [ToolMessage(ONE_CALL_REFUSAL, tool_call_id=c["id"], name=c["name"], status="error") for c in rest]
+    if isinstance(output, dict):  # the first tool returned a plain message
+        return {**output, "messages": [*output["messages"], *refusals]}
+    return [*output, {"messages": refusals}]  # Commands from the first tool, then the refusals
