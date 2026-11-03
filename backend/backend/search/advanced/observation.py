@@ -1,0 +1,181 @@
+"""Candidates of an advanced-search run and the compact text the agent reads about a search."""
+from __future__ import annotations
+
+from collections import Counter
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from typing import TYPE_CHECKING
+
+from backend.search.advanced.budget import CANDIDATE_WINDOW, SHOWN_PER_SEARCH
+from backend.search.filters import _COUNTRY_NAME_TO_ISO, SearchFilters
+
+if TYPE_CHECKING:
+    from backend.search.advanced.search import SearchVariant
+
+_ISO_TO_NAME = {iso: name for name, iso in _COUNTRY_NAME_TO_ISO.items()}
+_NAMES = {name.casefold(): name for name in _COUNTRY_NAME_TO_ISO}
+
+
+@dataclass
+class Candidate:
+    job_id: str
+    score: float
+    title: str
+    company: str | None
+    location: str | None
+    job_country: str | None
+    company_country: str | None
+    location_type: str | None
+    seniority: str | None
+    employment_type: str | None
+    languages: list[str]
+    salary: str | None
+    is_startup: bool | None
+    is_consulting: bool | None
+    posted_at: str
+    text: str
+    search_index: int
+    breaks: list[str] = field(default_factory=list)
+
+    def fields(self) -> dict:
+        """The view the brief's rules read."""
+        return {
+            "location_type": self.location_type,
+            "seniority": self.seniority,
+            "employment_type": self.employment_type,
+            "languages_required": self.languages,
+            "is_consulting": self.is_consulting,
+            "is_startup": self.is_startup,
+            "company_country": self.company_country,
+        }
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Candidate:
+        return cls(**data)
+
+
+def canonical_country(value: str | None) -> str | None:
+    """A country name or ISO code as the canonical name; None when it is neither."""
+    if not value:
+        return None
+    v = value.strip()
+    return _NAMES.get(v.casefold()) or _ISO_TO_NAME.get(v.upper())
+
+
+def job_country(location: str | None, office: str | None) -> str | None:
+    """The country at the end of the job's location, else of its office."""
+    for text in (location, office):
+        if text:
+            if country := canonical_country(text.split(",")[-1]):
+                return country
+    return None
+
+
+def assign_short_ids(job_ids: list[str], taken: dict[str, str]) -> dict[str, str]:
+    """New short -> job_id entries: the shortest prefix (4+ hex chars) no other id shares."""
+    already = {job_id: short for short, job_id in taken.items()}
+    hexes = {job_id: job_id.replace("-", "").lower() for job_id in {*job_ids, *taken.values()}}
+    new: dict[str, str] = {}
+    for job_id in job_ids:
+        if job_id in already or job_id in new.values():
+            continue
+        h = hexes[job_id]
+        others = [o for j, o in hexes.items() if j != job_id]
+        length = min(4, len(h))
+        while length < len(h) and any(o.startswith(h[:length]) for o in others):
+            length += 1
+        new[h[:length]] = job_id
+    return new
+
+
+def _age(posted_at: str, now: datetime) -> str:
+    hours = max(0, int((now - datetime.fromisoformat(posted_at)).total_seconds() // 3600))
+    return f"{hours}h" if hours < 24 else f"{hours // 24}d"
+
+
+def job_line(c: Candidate, short_id: str, now: datetime) -> str:
+    parts = [c.title, c.company, c.location.split(",")[0].strip() if c.location else None,
+             c.location_type, c.seniority, "/".join(l.upper() for l in c.languages) or None,
+             c.salary or "—"]
+    if c.is_startup:
+        parts.append("startup")
+    if c.is_consulting:
+        parts.append("consulting")
+    parts += [_age(c.posted_at, now), f"{c.score:.2f}"]
+    line = f"[{short_id}] " + " · ".join(p for p in parts if p)
+    if c.breaks:
+        line += " · breaks: " + ", ".join(c.breaks)
+    return line
+
+
+def _describe(filters: SearchFilters | None, skip: tuple[str, ...] = ()) -> str:
+    if filters is None:
+        return "none"
+    items = [f"{k}={'/'.join(v) if isinstance(v, list) else v}"
+             for k, v in filters.model_dump(exclude={"semantic_query", "strict", "max_age_hours", *skip}).items()
+             if v is not None]
+    return ", ".join(items) or "none"
+
+
+def _last(hours: int | None) -> str:
+    if hours is None:
+        return "any time"
+    return f"{hours}h" if hours < 24 else f"{hours // 24}d"
+
+
+def header_line(observation: str) -> str:
+    return observation.splitlines()[0]
+
+
+def _counts(label: str, values: list, *, prefix: str = "") -> str:
+    counter = Counter("unknown" if v is None else str(v) for v in values)
+    ordered = sorted(counter.items(), key=lambda kv: (kv[0] == "unknown", -kv[1], kv[0]))
+    return f"  {label}: " + ", ".join(f"{prefix}{k} {n}" for k, n in ordered)
+
+
+def _yes_no(values: list[bool | None]) -> str:
+    c = Counter(values)
+    return f"yes {c[True]}, no {c[False]}, unknown {c[None]}"
+
+
+def render_observation(
+    index: int,
+    variant: SearchVariant,
+    locked: SearchFilters | None,
+    candidates: list[Candidate],
+    short_ids: dict[str, str],
+    pool_size: int,
+    now: datetime,
+) -> str:
+    from backend.search.advanced.search import matches_soft
+
+    soft = _describe(variant.filters.to_search_filters(variant.query, variant.max_age_hours))
+    header = (f'search {index} "{variant.query}" · locked: {_describe(locked)} · soft: {soft}'
+              f" · last {_last(variant.max_age_hours)}")
+    if variant.probe:
+        header += f' · probe: lifts "{variant.probe}"'
+    window = candidates[:CANDIDATE_WINDOW]
+    ages = [(now - datetime.fromisoformat(c.posted_at)).days for c in window]
+    langs = [l.upper() for c in window for l in c.languages if l.lower() != "en"]
+    lines = [
+        header,
+        f"over the top {len(window)}:",
+        _counts("location type", [c.location_type for c in window]),
+        _counts("job in", [c.job_country for c in window], prefix="job in "),
+        _counts("company based", [c.company_country and canonical_country(c.company_country) or c.company_country
+                                  for c in window], prefix="company in "),
+        _counts("seniority", [c.seniority for c in window]),
+        "  required languages other than English: " + (", ".join(f"{k} {n}" for k, n in Counter(langs).most_common()) or "none"),
+        f"  startup: {_yes_no([c.is_startup for c in window])}; consulting: {_yes_no([c.is_consulting for c in window])}",
+        f"  posted: ≤3d {sum(a <= 3 for a in ages)}, 4–7d {sum(3 < a <= 7 for a in ages)}, older {sum(a > 7 for a in ages)}",
+        f"  salary known: {sum(1 for c in window if c.salary)}",
+        f"matching all soft filters: {sum(matches_soft(c, variant) for c in window)}",
+    ]
+    by_job = {job_id: short for short, job_id in short_ids.items()}
+    for c in window[:SHOWN_PER_SEARCH]:
+        lines.append("  " + job_line(c, by_job.get(c.job_id, c.job_id[:4]), now))
+    lines.append(f"pool: {pool_size} distinct jobs")
+    return "\n".join(lines)

@@ -56,3 +56,11 @@ def test_job_without_chunks_is_scored_on_its_title():
     reranker.predict.return_value = [0.5]
     rerank(reranker, [{"_source": {"job_id": "a", "title": "Data Scientist", "chunks": []}}], "x", Q)
     assert reranker.predict.call_args[0][0] == [("x", "Data Scientist")]
+
+
+def test_rerank_scored_returns_hits_with_scores_sorted():
+    from backend.search.reranker import rerank_scored
+    reranker = MagicMock()
+    reranker.predict.return_value = [0.2, 0.9, 0.5]
+    result = rerank_scored(reranker, [_hit("a"), _hit("b"), _hit("c")], "python", Q, top_k=2)
+    assert [(h["_source"]["job_id"], s) for h, s in result] == [("b", 0.9), ("c", 0.5)]

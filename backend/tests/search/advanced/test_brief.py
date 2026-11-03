@@ -8,6 +8,7 @@ from backend.search.advanced.brief import (
     hard_filters,
     merge_brief,
     relax,
+    satisfies,
     violations,
 )
 from tests.search.advanced.samples import NO_CONSULTING, REMOTE, STARTUP
@@ -131,3 +132,16 @@ def test_stated_prefer_is_locked_but_not_hard_nor_a_violation():
     assert violations(b, {"location_type": "on-site"}) == []
     with pytest.raises(LockedRequirementError):
         merge_brief(b, Brief(items=[]), unlock_allowed=False)
+
+
+def test_satisfies_true_false_and_unknown():
+    assert satisfies(REMOTE, {"location_type": "remote"}) is True
+    assert satisfies(REMOTE, {"location_type": "onsite"}) is False
+    assert satisfies(REMOTE, {"location_type": None}) is None
+    assert satisfies(REMOTE, {}) is None
+
+
+def test_satisfies_avoid_flips_the_bool():
+    assert satisfies(NO_CONSULTING, {"is_consulting": False}) is True
+    assert satisfies(NO_CONSULTING, {"is_consulting": True}) is False
+    assert satisfies(NO_CONSULTING, {"is_consulting": None}) is None

@@ -142,21 +142,26 @@ def hard_filters(brief: Brief, *, lifted: str | None = None) -> SearchFilters | 
     return SearchFilters(semantic_query="", max_age_hours=None, **values)
 
 
-def _contradicts(item: BriefItem, fields: dict) -> bool:
+def satisfies(item: BriefItem, fields: dict) -> bool | None:
+    """Whether the job's fields positively meet the item; None when the value is unknown."""
     attr, wanted = _wanted(item)
     actual = fields.get(item.field)
     if actual is None and item.field == "company_country":
         actual = fields.get("country")
     if actual is None or wanted is None:
-        return False
+        return None
     if attr == "languages_required":
         allowed = {str(w).casefold() for w in ([wanted] if isinstance(wanted, str) else wanted)}
-        return any(str(a).casefold() not in allowed for a in actual)
+        return all(str(a).casefold() in allowed for a in actual)
     if attr == "min_review_score":
-        return float(actual) < float(wanted)
+        return float(actual) >= float(wanted)
     if isinstance(wanted, str) and isinstance(actual, str):
-        return actual.casefold() != wanted.casefold()
-    return actual != wanted
+        return actual.casefold() == wanted.casefold()
+    return actual == wanted
+
+
+def _contradicts(item: BriefItem, fields: dict) -> bool:
+    return satisfies(item, fields) is False
 
 
 def violations(brief: Brief, fields: dict) -> list[str]:

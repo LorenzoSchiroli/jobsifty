@@ -20,6 +20,19 @@ def _hit_text(hit: dict, query_embedding: list[float]) -> str:
     return summary or _best_chunk(chunks, query_embedding) or source.get("title") or ""
 
 
+def rerank_scored(
+    reranker: CrossEncoder,
+    hits: list[dict],
+    semantic_query: str,
+    query_embedding: list[float],
+    top_k: int = 20,
+) -> list[tuple[dict, float]]:
+    pairs = [(semantic_query, _hit_text(hit, query_embedding)) for hit in hits]
+    scores = reranker.predict(pairs)
+    ranked = sorted(zip(hits, scores), key=lambda x: x[1], reverse=True)
+    return [(hit, float(score)) for hit, score in ranked[:top_k]]
+
+
 def rerank(
     reranker: CrossEncoder,
     hits: list[dict],
@@ -27,7 +40,4 @@ def rerank(
     query_embedding: list[float],
     top_k: int = 20,
 ) -> list[dict]:
-    pairs = [(semantic_query, _hit_text(hit, query_embedding)) for hit in hits]
-    scores = reranker.predict(pairs)
-    ranked = sorted(zip(hits, scores), key=lambda x: x[1], reverse=True)
-    return [hit for hit, _ in ranked[:top_k]]
+    return [hit for hit, _ in rerank_scored(reranker, hits, semantic_query, query_embedding, top_k)]
