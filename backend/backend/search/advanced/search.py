@@ -78,6 +78,9 @@ async def run_variant(
     os_client,
     session_factory,
 ) -> list[Candidate]:
+    item = _probed_item(brief, variant.probe) if variant.probe else None
+    if variant.probe and item is None:
+        raise ValueError(f"probe {variant.probe!r} matches no locked requirement of the brief")
     hard = hard_filters(brief, lifted=variant.probe)
     filters = variant.filters.to_search_filters(variant.query, variant.max_age_hours)
     embedding = await asyncio.to_thread(encode_query, biencoder, variant.query)
@@ -92,7 +95,6 @@ async def run_variant(
         )
         extra = {str(r.id): r for r in rows}
 
-    item = _probed_item(brief, variant.probe) if variant.probe else None
     candidates = []
     for hit, score in ranked:
         src = hit["_source"]
@@ -116,11 +118,11 @@ async def run_variant(
             salary=row.salary_range if row else None,
             is_startup=src.get("is_startup"),
             is_consulting=src.get("is_consulting"),
-            posted_at=src.get("posted_at") or "",
+            posted_at=src.get("posted_at") or "",  # may be empty; rendering treats it as unknown age
             text=text,
             search_index=search_index,
         )
-        if variant.probe and (item is None or satisfies(item, c.fields()) is not True):
+        if item is not None and satisfies(item, c.fields()) is not True:
             c.breaks = [variant.probe]
         candidates.append(c)
     return candidates

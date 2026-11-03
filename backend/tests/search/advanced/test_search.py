@@ -1,3 +1,4 @@
+import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -100,3 +101,11 @@ async def test_matches_soft(engine):
     assert matches_soft(c, SearchVariant(query="x", filters=soft))
     assert not matches_soft(c, SearchVariant(query="x", filters=VariantFilters(seniority="junior")))
     assert matches_soft(c, SearchVariant(query="x", filters=VariantFilters(company_country="DE")))
+
+
+async def test_probe_matching_no_locked_item_is_refused(engine):
+    job = await _seed(engine)
+    with pytest.raises(ValueError, match="no such thing"):
+        await run_variant(variant=SearchVariant(query="ml", probe="no such thing"),
+                          brief=Brief(items=[REMOTE]), search_index=2,
+                          **_deps(engine, _os([_hit(job.id)])))

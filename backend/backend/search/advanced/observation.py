@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from backend.search.advanced.budget import CANDIDATE_WINDOW, SHOWN_PER_SEARCH
@@ -57,19 +57,32 @@ class Candidate:
         return cls(**data)
 
 
-def canonical_country(value: str | None) -> str | None:
-    """A country name or ISO code as the canonical name; None when it is neither."""
+_US_STATES = frozenset(
+    "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH "
+    "OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split()
+)
+
+
+def canonical_country(value: str | None, *, in_location: bool = False) -> str | None:
+    """A country name or ISO code as the canonical name; None when it is neither.
+
+    In a free-text location a code that is also a US state ("San Francisco, CA") is not a country.
+    """
     if not value:
         return None
     v = value.strip()
-    return _NAMES.get(v.casefold()) or _ISO_TO_NAME.get(v.upper())
+    if name := _NAMES.get(v.casefold()):
+        return name
+    if in_location and v.upper() in _US_STATES:
+        return None
+    return _ISO_TO_NAME.get(v.upper())
 
 
 def job_country(location: str | None, office: str | None) -> str | None:
     """The country at the end of the job's location, else of its office."""
     for text in (location, office):
         if text:
-            if country := canonical_country(text.split(",")[-1]):
+            if country := canonical_country(text.split(",")[-1], in_location=True):
                 return country
     return None
 
@@ -91,8 +104,21 @@ def assign_short_ids(job_ids: list[str], taken: dict[str, str]) -> dict[str, str
     return new
 
 
-def _age(posted_at: str, now: datetime) -> str:
-    hours = max(0, int((now - datetime.fromisoformat(posted_at)).total_seconds() // 3600))
+def _age_hours(posted_at: str | None, now: datetime) -> int | None:
+    """Hours since posting; None when the timestamp is missing or unparseable. Naive means UTC."""
+    try:
+        posted = datetime.fromisoformat(posted_at)
+    except (TypeError, ValueError):
+        return None
+    if posted.tzinfo is None:
+        posted = posted.replace(tzinfo=timezone.utc)
+    return max(0, int((now - posted).total_seconds() // 3600))
+
+
+def _age(posted_at: str | None, now: datetime) -> str | None:
+    hours = _age_hours(posted_at, now)
+    if hours is None:
+        return None
     return f"{hours}h" if hours < 24 else f"{hours // 24}d"
 
 
@@ -104,7 +130,7 @@ def job_line(c: Candidate, short_id: str, now: datetime) -> str:
         parts.append("startup")
     if c.is_consulting:
         parts.append("consulting")
-    parts += [_age(c.posted_at, now), f"{c.score:.2f}"]
+    parts += [_age(c.posted_at, now), f"{c.score:.2f}"]  # unknown age is left out
     line = f"[{short_id}] " + " · ".join(p for p in parts if p)
     if c.breaks:
         line += " · breaks: " + ", ".join(c.breaks)
@@ -114,7 +140,7 @@ def job_line(c: Candidate, short_id: str, now: datetime) -> str:
 def _describe(filters: SearchFilters | None, skip: tuple[str, ...] = ()) -> str:
     if filters is None:
         return "none"
-    items = [f"{k}={'/'.join(v) if isinstance(v, list) else v}"
+    items = [f"{'company_country' if k == 'country' else k}={'/'.join(v) if isinstance(v, list) else v}"
              for k, v in filters.model_dump(exclude={"semantic_query", "strict", "max_age_hours", *skip}).items()
              if v is not None]
     return ", ".join(items) or "none"
@@ -130,10 +156,10 @@ def header_line(observation: str) -> str:
     return observation.splitlines()[0]
 
 
-def _counts(label: str, values: list, *, prefix: str = "") -> str:
+def _counts(label: str, values: list) -> str:
     counter = Counter("unknown" if v is None else str(v) for v in values)
     ordered = sorted(counter.items(), key=lambda kv: (kv[0] == "unknown", -kv[1], kv[0]))
-    return f"  {label}: " + ", ".join(f"{prefix}{k} {n}" for k, n in ordered)
+    return f"  {label}: " + " · ".join(f"{k} {n}" for k, n in ordered)
 
 
 def _yes_no(values: list[bool | None]) -> str:
@@ -158,19 +184,19 @@ def render_observation(
     if variant.probe:
         header += f' · probe: lifts "{variant.probe}"'
     window = candidates[:CANDIDATE_WINDOW]
-    ages = [(now - datetime.fromisoformat(c.posted_at)).days for c in window]
+    hours = [_age_hours(c.posted_at, now) for c in window]
+    ages = [h // 24 for h in hours if h is not None]
     langs = [l.upper() for c in window for l in c.languages if l.lower() != "en"]
     lines = [
         header,
         f"over the top {len(window)}:",
         _counts("location type", [c.location_type for c in window]),
-        _counts("job in", [c.job_country for c in window], prefix="job in "),
-        _counts("company based", [c.company_country and canonical_country(c.company_country) or c.company_country
-                                  for c in window], prefix="company in "),
+        _counts("job in", [c.job_country for c in window]),
+        _counts("company based", [canonical_country(c.company_country) or c.company_country for c in window]),
         _counts("seniority", [c.seniority for c in window]),
         "  required languages other than English: " + (", ".join(f"{k} {n}" for k, n in Counter(langs).most_common()) or "none"),
         f"  startup: {_yes_no([c.is_startup for c in window])}; consulting: {_yes_no([c.is_consulting for c in window])}",
-        f"  posted: ≤3d {sum(a <= 3 for a in ages)}, 4–7d {sum(3 < a <= 7 for a in ages)}, older {sum(a > 7 for a in ages)}",
+        f"  posted: ≤3d {sum(a <= 3 for a in ages)}, 4–7d {sum(3 < a <= 7 for a in ages)}, older {sum(a > 7 for a in ages)}, age unknown {hours.count(None)}",
         f"  salary known: {sum(1 for c in window if c.salary)}",
         f"matching all soft filters: {sum(matches_soft(c, variant) for c in window)}",
     ]

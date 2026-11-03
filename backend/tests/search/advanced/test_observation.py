@@ -42,6 +42,9 @@ def sample_candidates():
     ("Milan, IT", None, "Italy"),
     (None, "Remote, Netherlands", "Netherlands"),
     ("Anywhere", None, None),
+    ("San Francisco, CA", None, None),
+    ("Wilmington, DE", None, None),
+    ("Berlin, Germany", "Remote, CA", "Germany"),
 ])
 def test_job_country(location, office, expected):
     assert job_country(location, office) == expected
@@ -67,7 +70,7 @@ def test_observation_shows_counts_lines_and_pool(sample_candidates):
                              assign_short_ids([c.job_id for c in sample_candidates], {}),
                              pool_size=41, now=NOW)
     assert obs.splitlines()[0].startswith('search 1 "ml engineer"')
-    assert "remote 2" in obs and "job in Germany 1" in obs and "unknown 1" in obs
+    assert "remote 2" in obs and "job in: Germany 1" in obs and "unknown 1" in obs
     assert obs.rstrip().endswith("pool: 41 distinct jobs")
     assert sum(1 for line in obs.splitlines() if line.lstrip().startswith("[")) == min(8, len(sample_candidates))
     assert header_line(obs) == obs.splitlines()[0]
@@ -91,3 +94,25 @@ def test_job_line_format_and_unknown_salary():
     assert job_line(c, "a1f3", NOW) == (
         "[a1f3] Senior ML Engineer · Acme · Berlin · hybrid · senior · EN · — · startup · 2d · 0.90"
     )
+
+
+def test_candidate_dict_round_trip():
+    c = _cand("a1f3aaaa-0000", languages=["en"], breaks=["x"], salary="€1k")
+    assert Candidate.from_dict(c.to_dict()) == c
+
+
+def test_missing_or_naive_posted_at_does_not_break_rendering(sample_candidates):
+    sample_candidates[0].posted_at = ""
+    sample_candidates[1].posted_at = "2026-11-01T12:00:00"
+    obs = render_observation(1, SearchVariant(query="ml"), None, sample_candidates,
+                             assign_short_ids([c.job_id for c in sample_candidates], {}),
+                             pool_size=4, now=NOW)
+    assert "age unknown 1" in obs
+    assert "·  ·" not in obs
+
+
+def test_soft_country_is_described_as_company_country():
+    from backend.search.advanced.search import VariantFilters
+    v = SearchVariant(query="ml", filters=VariantFilters(company_country="DE"))
+    obs = render_observation(1, v, None, [], {}, pool_size=0, now=NOW)
+    assert "company_country=DE" in obs.splitlines()[0]
