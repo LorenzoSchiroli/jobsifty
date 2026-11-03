@@ -1,7 +1,9 @@
-import { useState } from 'react'
-import { searchJobs, startAdvancedSearch, resumeAdvancedSearch, Job } from '../api/search'
+import { useRef, useState } from 'react'
+import axios from 'axios'
+import { searchJobs, startAdvancedSearch, resumeAdvancedSearch, Job, AdvancedResponse } from '../api/search'
 import { useSearchMode } from '../hooks/useSearchMode'
 import JobCard from '../components/JobCard'
+import AgentRun from '../components/AgentRun'
 import SearchHelp from '../components/SearchHelp'
 
 export default function Search() {
@@ -11,58 +13,50 @@ export default function Search() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [searched, setSearched] = useState(false)
+  const [run, setRun] = useState<AdvancedResponse | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
 
-  // advanced clarify state
-  const [threadId, setThreadId] = useState<string | null>(null)
-  const [questions, setQuestions] = useState<string[]>([])
-  const [answers, setAnswers] = useState<string[]>([])
+  const pending = run?.status === 'question'
 
-  const resetAdvanced = () => {
-    setThreadId(null)
-    setQuestions([])
-    setAnswers([])
+  // Runs one request; a newer one aborts it and its result and error are dropped.
+  async function track(call: (signal: AbortSignal) => Promise<void>) {
+    abortRef.current?.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+    setError('')
+    setLoading(true)
+    try {
+      await call(ctrl.signal)
+    } catch (err: any) {
+      if (ctrl.signal.aborted || axios.isCancel(err)) return
+      setError(err.response?.data?.detail || 'Search failed')
+    } finally {
+      if (abortRef.current === ctrl) setLoading(false)
+    }
+  }
+
+  function applyRun(r: AdvancedResponse) {
+    setRun(r)
+    setResults(r.results)
   }
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault()
-    setError('')
     setResults([])
-    resetAdvanced()
-    setLoading(true)
+    setRun(null)
     setSearched(true)
-    try {
-      if (mode === 'basic') {
-        setResults(await searchJobs(query))
-      } else {
-        const start = await startAdvancedSearch(query)
-        setThreadId(start.thread_id)
-        setQuestions(start.clarify_questions)
-        setAnswers(new Array(start.clarify_questions.length).fill(''))
-        if (start.clarify_questions.length === 0) {
-          setResults(await resumeAdvancedSearch(start.thread_id, []))
-          resetAdvanced()
-        }
-      }
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Search failed')
-    } finally {
-      setLoading(false)
-    }
+    await track(async signal => {
+      if (mode === 'basic') setResults(await searchJobs(query))
+      else applyRun(await startAdvancedSearch(query, signal))
+    })
   }
 
-  async function submitAnswers(e: React.FormEvent) {
-    e.preventDefault()
-    if (!threadId) return
-    setError('')
-    setLoading(true)
-    try {
-      setResults(await resumeAdvancedSearch(threadId, answers))
-      resetAdvanced()
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Search failed')
-    } finally {
-      setLoading(false)
-    }
+  async function answer(a: string) {
+    if (!run) return
+    const threadId = run.thread_id
+    await track(async signal => {
+      applyRun(await resumeAdvancedSearch(threadId, a, signal))
+    })
   }
 
   return (
@@ -78,31 +72,16 @@ export default function Search() {
 
       {error && <p style={{ color: '#f87171' }}>{error}</p>}
 
-      {threadId && questions.length > 0 && (
-        <form onSubmit={submitAnswers} style={{ margin: '1rem 0', padding: '1rem', border: '1px solid #2a2a2a', borderRadius: 8 }}>
-          <div style={{ fontSize: '0.85rem', opacity: 0.7, marginBottom: '0.5rem' }}>A couple quick questions:</div>
-          {questions.map((q, i) => (
-            <div key={i} style={{ marginBottom: '0.6rem' }}>
-              <label style={{ display: 'block', fontSize: '0.85rem', marginBottom: '0.2rem' }}>{q}</label>
-              <input
-                value={answers[i] || ''}
-                onChange={e => setAnswers(prev => prev.map((a, j) => (j === i ? e.target.value : a)))}
-                style={{ width: '100%' }}
-              />
-            </div>
-          ))}
-          <button type="submit" disabled={loading}>{loading ? '...' : 'Continue'}</button>
-        </form>
-      )}
+      {mode === 'advanced' && (run || loading) && <AgentRun run={run} running={loading} onAnswer={answer} />}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
         {results.map(job => <JobCard key={job.id} job={job} />)}
-        {searched && !threadId && results.length === 0 && !loading && !error && (
+        {searched && !pending && results.length === 0 && !loading && !error && (
           <p style={{ opacity: 0.4 }}>No results found.</p>
         )}
       </div>
 
-      {!query && results.length === 0 && !loading && !threadId && <SearchHelp />}
+      {!query && results.length === 0 && !loading && !pending && <SearchHelp />}
     </div>
   )
 }

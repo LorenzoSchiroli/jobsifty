@@ -5,8 +5,9 @@
 Jobsifty continuously scrapes job offers from several sources, has an LLM
 distil each posting into structured metadata, embeds it, and serves a hybrid
 **BM25 + k-NN** search endpoint with **cross-encoder reranking**. On top of that
-sits a LangGraph agent: an **advanced search** that asks clarifying questions
-and fit-scores every result against your CV.
+sits a LangGraph agent: an **advanced search** that searches in a loop, asks
+questions when a requirement is ambiguous, and fit-scores every result against
+your CV.
 
 It is a full vertical slice, deliberately: scraping and LLM enrichment →
 retrieval and ranking → REST API and SPA → and the same stack deployed two
@@ -128,38 +129,41 @@ flowchart TB
 | **384 dimensions, HNSW + cosine on the Lucene engine** | Small vectors keep index size and HNSW memory low, `multilingual-e5-small` covers the non-English offers, and the Lucene engine needs no native plugin and supports filtered k-NN. |
 | **A `parse=… embed=… retrieve=… rerank=… db=…` timing line per query** | Each stage is logged separately, so a latency regression points at a stage instead of at "search is slow". |
 
-### Advanced search — a checkpointed LangGraph agent (WIP)
+### Advanced search — a tool-calling LangGraph agent (WIP)
 
-`POST /jobs/search/advanced` → `POST /jobs/search/advanced/resume`. Requires an
-uploaded CV.
+`POST /jobs/search/advanced` → optionally `POST /jobs/search/advanced/resume`
+with the answer to a question. Requires an uploaded CV.
 
 ```mermaid
 flowchart TB
-    A["POST /jobs/search/advanced<br/>query + CV + preference memory"]
-    B["generate_questions · at most 2"]
-    C["clarify — interrupt()<br/>state saved by thread_id, request returns"]
-    E["search<br/>retrieve + rerank"]
-    F{"critique"}
-    G["fit_score<br/>0-100 + rationale + gaps"]
+    A["POST /jobs/search/advanced<br/>query · CV and memory in the run context"]
+    L["agent turn<br/>one tool call"]
+    T["update_brief · search_jobs · inspect_job"]
+    Q["ask_user — interrupt()<br/>question + options returned"]
+    F["finalize<br/>fit, gaps, trade-offs over the whole pool"]
     M[("preference memory")]
 
-    A --> B --> C
-    C -->|"POST /resume<br/>thread_id + answers"| E
-    E --> F
-    F -->|"refine · once at most"| E
-    F -->|"good enough"| G
-    G -->|"background: distil"| M
+    A --> L
+    L --> T --> L
+    L --> Q
+    Q -->|"POST /resume<br/>thread_id + answer"| L
+    L -->|"finish, or budget spent"| F
+    F -->|"background: distil"| M
     M -.->|"next search"| A
 ```
 
 | Choice | Motivation |
 |--------|------------|
-| **A state graph with a Postgres checkpointer, not an in-memory conversation** | The agent *interrupts* to ask its clarifying questions, so the run has to survive an HTTP round trip. Checkpointing to Postgres by `thread_id` puts that state in the database rather than in one process's memory — so the `/resume` call can land on any API replica, which is what makes the agent compatible with the HPA and with more than one Fargate task. |
-| **At most two clarifying questions** | Users abandon interrogations. The prompt is explicitly allowed to return fewer, or none, when the query is already unambiguous. |
-| **The self-critique loop runs at most once** (`refined_once`) | Critique-and-retry loops are the classic way to turn a 3-second agent into a 40-second one with an unbounded LLM bill. One refinement is where most of the gain is; the flag makes the worst case provable rather than hoped-for. |
-| **Fit scoring returns `fit_score`, `fit_rationale` *and* `fit_gaps`** | A bare 0-100 number is unactionable. The gaps field turns the ranker into advice: what you would have to learn or show to become a plausible candidate. |
-| **Preference memory is distilled in a background task** | The user gets results at once; the LLM that merges this session's signals into their long-term preference summary runs after the response is sent. A `user_edited` flag protects a hand-written summary — the distiller may only *append* to it, never rewrite it. |
-| **Every LLM response is parsed defensively** | Each call has a typed fallback (empty question list, `need_refine: false`, zero-score results), so a malformed model output degrades the ranking instead of returning a 500. |
+| **A tool loop, one call per turn** | The model decides what to do next (update what it understood, search with 1–3 query variants, read a job, ask, finish) instead of following a fixed graph. One call per turn keeps every step observable and the budget countable. |
+| **Stated vs inferred requirements** | What you typed is locked in the brief and every result must satisfy it; only you can relax it, by answering a question. What the agent inferred from your CV and past searches it may trade. Probes ("what if …" searches) measure what a stated requirement costs, so a question can say so. |
+| **A hard budget: 6 turns, 9 searches (2 probes), 2 questions, 4 minutes** | An agent loop is how a 3-second search becomes a 40-second one with an unbounded LLM bill. When the budget runs out the answer is marked `partial` and still returns the best jobs found. |
+| **`finalize` scores the whole pool** | Fit score, rationale, gaps and trade-offs are written once over every job found, not only the last search, so an early good hit is not lost. |
+| **State in Postgres only while a question is open** | The agent interrupts to ask, so the run survives an HTTP round trip: checkpointed by `thread_id` (`durability="exit"`), `/resume` can land on any API replica. The thread is deleted when a run ends. The CV stays in the run context and out of the checkpoint. |
+| **Any OpenAI-compatible LLM** | Groq by default (the only private provider: it sees the CV); `ADVANCED_LLM_BASE_URL` / `_MODEL` / `_API_KEY` point it elsewhere. |
+| **Preference memory is distilled in a background task** | The user gets results at once; the LLM that merges this session into their long-term preference summary runs after the response. A `user_edited` flag protects a hand-written summary: the distiller may only append. |
+
+Not built yet: one active run per user, the sweep of abandoned threads, and a
+progress stream (the page waits on the JSON call).
 
 ---
 
@@ -339,6 +343,7 @@ cp .env.example .env      # then fill in the keys below
 | `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | `.env` | Optional job source |
 | `BACKUP_SBOX_HOST` / `_USER` / `_RCLONE_PASS` | `.env` | Optional nightly Postgres backup |
 | `GROQ_MODEL_LARGE` / `GROQ_MODEL_BASE` | `.env.public` | Model IDs for agents / company enrichment |
+| `ADVANCED_LLM_BASE_URL` / `_MODEL` / `_API_KEY` | `.env.public` / `.env` | Optional: advanced search on another OpenAI-compatible endpoint (default: Groq settings) |
 | `NVIDIA_MODEL` / `GEMINI_MODEL` / `LLM_PROVIDERS` | `.env.public` | Company enrichment LLM pool: models (comma-separated fallbacks) and order (default `nvidia,gemini,groq`) |
 | `OFFER_LLM_PROVIDERS` | `.env.public` | Offer summary LLM pool order (default `nvidia,gemini`, Groq left out) |
 | `JOB_LIVE_DAYS` | `.env.public` | Days a job stays live, from its posting time: search retention, reconcile, company enrichment (default 14) |

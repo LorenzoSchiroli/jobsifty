@@ -64,6 +64,9 @@ export default function JobCard({ job }: { job: Job }) {
           {job.fit_gaps && (
             <div style={{ fontSize: '0.78rem', opacity: 0.55, marginTop: '0.2rem' }}>Gaps: {job.fit_gaps}</div>
           )}
+          {job.trade_offs && job.trade_offs.length > 0 && (
+            <div style={{ fontSize: '0.78rem', opacity: 0.55, marginTop: '0.2rem' }}>Trade-offs: {job.trade_offs.join('; ')}</div>
+          )}
         </div>
       )}
       <div style={{ fontSize: '0.875rem', opacity: 0.5, marginTop: '0.2rem' }}>

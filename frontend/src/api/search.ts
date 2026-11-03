@@ -20,23 +20,57 @@ export interface Job {
   seniority: string | null
   languages_required: string[]
   company: Company
-  fit_score?: number
+  fit_score?: number | null
   fit_rationale?: string
   fit_gaps?: string
+  trade_offs?: string[]
 }
 
 export const searchJobs = (query: string) =>
   client.post<Job[]>('/jobs/search', { query }).then(r => r.data)
 
-export interface AdvancedStart {
-  thread_id: string
-  clarify_questions: string[]
+export interface BriefItem {
+  text: string
+  kind: 'require' | 'prefer' | 'avoid'
+  source: 'stated' | 'inferred'
+  field: string | null
+  value: string | boolean | number | string[] | null
 }
 
-export const startAdvancedSearch = (query: string) =>
-  client.post<AdvancedStart>('/jobs/search/advanced', { query }).then(r => r.data)
+export interface Brief {
+  stated: BriefItem[]
+  inferred: BriefItem[]
+  avoid: BriefItem[]
+  notes: string
+}
 
-export const resumeAdvancedSearch = (threadId: string, answers: string[]) =>
+export interface AgentQuestion {
+  text: string
+  options: string[]
+}
+
+export interface SearchLog {
+  query: string
+  filters: Record<string, unknown>
+  matches: number
+  probe: string | null
+}
+
+export interface AdvancedResponse {
+  status: 'done' | 'question' | 'partial'
+  thread_id: string
+  question: AgentQuestion | null
+  brief: Partial<Brief>
+  summary: string
+  searches: SearchLog[]
+  results: Job[]
+  usage: Record<string, unknown> | null
+}
+
+export const startAdvancedSearch = (query: string, signal?: AbortSignal) =>
+  client.post<AdvancedResponse>('/jobs/search/advanced', { query }, { signal }).then(r => r.data)
+
+export const resumeAdvancedSearch = (threadId: string, answer: string, signal?: AbortSignal) =>
   client
-    .post<Job[]>('/jobs/search/advanced/resume', { thread_id: threadId, clarify_answers: answers })
+    .post<AdvancedResponse>('/jobs/search/advanced/resume', { thread_id: threadId, answer }, { signal })
     .then(r => r.data)

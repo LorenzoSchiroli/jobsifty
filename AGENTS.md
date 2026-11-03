@@ -137,6 +137,7 @@ BACKUP_SBOX_USER=...
 
 ```
 GROQ_MODEL_LARGE=...                    # advanced search
+ADVANCED_LLM_BASE_URL / _MODEL / _API_KEY   # optional: advanced search on another OpenAI-compatible endpoint (default: Groq settings)
 GROQ_MODEL_BASE=...                     # company enrichment (never offer summaries)
 NVIDIA_MODEL=... / GEMINI_MODEL=...     # models of the other providers; comma-separated: a model answering 404 gives way to the next
 LLM_PROVIDERS=nvidia,gemini,groq        # company enrichment LLM pool order (private Groq last)
@@ -160,17 +161,15 @@ Keep values UNQUOTED: `kubectl create secret --from-env-file` stores quotes verb
 
 1. **Query parsing** — deterministic regex parsing extracts `SearchFilters`
    (seniority, location_type, languages, etc.) and a `semantic_query` from the
-   query text (`search/query_parsing.py`). The LLM-based
-   `search/query_understanding.py` is used only by the separate advanced-search
-   endpoint (`POST /jobs/search/advanced`, `search/advanced/`), which is
-   work-in-progress.
+   query text (`search/query_parsing.py`). The advanced-search agent
+   (`POST /jobs/search/advanced`, below) has its own LLM-driven path.
 2. **Hybrid retrieval** — OpenSearch hybrid query: BM25 on `description` + nested k-NN on `chunks.embedding` (384-dim, `intfloat/multilingual-e5-small`, query encoded with a `query: ` prefix via `encode_query()`; a job scores by its best chunk via `score_mode: max`; hybrid queries drop `inner_hits`, so hits return the chunk vectors in `_source`), results combined via min-max normalization with 50/50 weights (`search/retrieval.py`). Filter clauses are soft by default (scored `should` with boost=2) so near-misses still surface; words like "strictly" / "exactly" / "no exceptions" in the query set `SearchFilters.strict`, applying them as a hard `post_filter` with a larger prefetch (200). The age window is always hard: jobs posted within `max_age_hours` (default 72; the query widens or narrows it with "last 2 weeks", "today", "this week"), on the doc's `posted_at` (the job's `posted_at`, else `created_at`). On the k-NN leg it is the knn query's own `filter` on `chunks.posted_at`, so the k nearest chunks are found among recent jobs rather than filtered afterwards.
 3. **Cross-encoder reranking** — `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` (override with `RERANKER_MODEL`, `max_length=256`) reranks retrieved hits on the job's LLM summary chunk, else the chunk closest to the query embedding, picked in Python from `_source.chunks` (title if a job has no chunks), returns top 20; torch threads follow `TORCH_NUM_THREADS` (default 2, matching the api pod's 2-CPU limit) (`search/reranker.py`)
 4. **Postgres round-trip** — full `Job` + `Company` records fetched by ID for the response
 
 **Auth**: `backend/auth/` + `routers/auth.py` — JWT bearer tokens (`POST /auth/register`, `POST /auth/login`, `GET /auth/me`); most endpoints depend on `get_current_user`.
 
-**Advanced search (WIP)** — `POST /jobs/search/advanced` (`routers/search_advanced.py`, `search/advanced/`): a Postgres-checkpointed LangGraph agent that uses the Groq LLM and per-user preference memory. It interrupts with up to 2 clarifying questions (answered via `POST /jobs/search/advanced/resume`), can critique/refine its retrieval, and returns fit-scored results (the top 10 jobs, each sent to the LLM as title + company + the first 1,500 chars of its cleaned text). Requires an uploaded CV (`ApplicantProfile`).
+**Advanced search (WIP)** — `POST /jobs/search/advanced` and `POST /jobs/search/advanced/resume` (`routers/search_advanced.py`, `search/advanced/`): a tool-calling LangGraph agent with an LLM (`langchain-openai` `ChatOpenAI`; Groq by default, or any OpenAI-compatible endpoint via the optional `ADVANCED_LLM_BASE_URL` / `ADVANCED_LLM_MODEL` / `ADVANCED_LLM_API_KEY`). It needs an uploaded CV (`ApplicantProfile`, else 400); the CV and the per-user preference memory only enter the run context, never the checkpoint. Five tools, one call per turn: `update_brief`, `search_jobs` (1–3 query variants through the normal retrieval + rerank, the observation is match counts), `inspect_job`, `ask_user` (a question with options; the run interrupts) and `finish`. The brief separates **stated** requirements (locked: only the user relaxes one, by answering a question) from **inferred** ones (from the CV and memory; the agent may trade them), and probes ("what if …" searches) test a stated item's cost before asking. Then a `finalize` step scores the whole pool of found jobs (fit score, fits, gaps, trade-offs) and writes the summary, so the shortlist is not limited to the last search. Budget: 6 turns, 9 searches (2 of them probes), 2 questions, 4 minutes; when it runs out the answer is `partial`. Runs use `durability="exit"` and the thread is deleted when a run ends (results or error), so a thread lives only while a question is open. The API answers with results (`status` `done` / `partial`: brief, summary, searches, jobs with fit and trade-offs) or a question (`status` `question`, `thread_id`, text + options, answered by `/resume` with the option label or free text); 404 for an unknown or finished thread, 503 when the LLM is not configured. Not built yet: one active run per user, the 24 h sweep of abandoned threads and the progress stream (the frontend waits on the JSON call).
 
 ### Backend Processes & Outbox Pattern
 
@@ -219,7 +218,7 @@ Alembic is in `backend/alembic/`. Add schema changes there; the compose backend 
 | Bi-encoder (embed) | sentence-transformers (`intfloat/multilingual-e5-small`) |
 | Cross-encoder (rerank) | sentence-transformers (`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`) |
 | Language detection | lingua-language-detector |
-| LLM | Ingestion: OpenAI-compatible pool over NVIDIA NIM / Gemini / Groq (`requests`); backend: Groq SDK, agents use `langchain-openai` `ChatOpenAI` pointed at Groq's OpenAI-compatible API |
+| LLM | Ingestion: OpenAI-compatible pool over NVIDIA NIM / Gemini / Groq (`requests`); backend: no Groq SDK, the advanced agent uses `langchain-openai` `ChatOpenAI` against Groq's OpenAI-compatible API (or `ADVANCED_LLM_*`) |
 | Agents / checkpointing | LangGraph + `langgraph-checkpoint-postgres` (advanced search) |
 | Auth | python-jose (JWT) + passlib[bcrypt] |
 | Scraping | python-jobspy, Playwright, trafilatura |
