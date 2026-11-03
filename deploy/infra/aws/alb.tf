@@ -1,5 +1,5 @@
 resource "aws_acm_certificate" "main" {
-  domain_name               = var.domain
+  domain_name = var.domain
   subject_alternative_names = [
     "app.${var.domain}",
     "api.${var.domain}",
@@ -32,6 +32,9 @@ resource "aws_lb" "main" {
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
   subnets            = aws_subnet.public[*].id
+
+  # Advanced search runs 1-3 minutes per request; the 60 s default would cut it.
+  idle_timeout = 300
 
   tags = {
     Name = "${var.project}-alb"
