@@ -117,3 +117,60 @@ def patched_run_variant():
     ])
     with patch("backend.search.advanced.tools.run_variant", mock):
         yield mock
+
+
+JOB_C = "b2c40000-0000-4000-8000-000000000003"
+PROBE_JOB_ID = "d4e50000-0000-4000-8000-000000000004"
+
+
+def item(short: str, score: int):
+    from backend.search.advanced.finalize import ShortlistItem
+
+    return ShortlistItem(job_id=short, fit_score=score, fits="fits", trade_offs=[], gaps=[])
+
+
+@pytest.fixture
+def pool_state() -> dict:
+    """Brief: remote only. JOB_A is remote, JOB_C on-site (violates the brief)."""
+    from backend.search.advanced.brief import Brief
+    from tests.search.advanced.samples import REMOTE
+
+    return {
+        "brief": Brief(items=[REMOTE]).model_dump(),
+        "pool": {
+            JOB_A: candidate(JOB_A, 0.91).to_dict(),
+            JOB_C: candidate(JOB_C, 0.95, location_type="onsite").to_dict(),
+        },
+        "short_ids": {"a1f3": JOB_A, "b2c4": JOB_C},
+        "searches": [{"index": 1, "header": 'search 1 "ml"',
+                      "filters": {"seniority": "senior", "locked": {"location_type": "remote"}}}],
+    }
+
+
+def _with_probe(brief) -> dict:
+    return {
+        "brief": brief.model_dump(),
+        "pool": {
+            JOB_A: candidate(JOB_A, 0.91).to_dict(),
+            PROBE_JOB_ID: candidate(PROBE_JOB_ID, 0.99, breaks=["in Milan"]).to_dict(),
+        },
+        "short_ids": {"a1f3": JOB_A, "d4e5": PROBE_JOB_ID},
+    }
+
+
+@pytest.fixture
+def pool_state_with_probe() -> dict:
+    """A probe job breaking the still-stated "in Milan"."""
+    from backend.search.advanced.brief import Brief
+    from tests.search.advanced.samples import IN_MILAN, REMOTE
+
+    return _with_probe(Brief(items=[REMOTE, IN_MILAN]))
+
+
+@pytest.fixture
+def pool_state_with_probe_relaxed() -> dict:
+    """The same pool after the user relaxed "in Milan"."""
+    from backend.search.advanced.brief import Brief, relax
+    from tests.search.advanced.samples import IN_MILAN, REMOTE
+
+    return _with_probe(relax(Brief(items=[REMOTE, IN_MILAN]), ["in Milan"]))
