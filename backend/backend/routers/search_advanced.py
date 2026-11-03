@@ -1,48 +1,92 @@
-import uuid
 import logging
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+import time
+import uuid
+from datetime import datetime, timezone
+from typing import Literal
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from langchain_core.language_models import BaseChatModel
+from langgraph.types import Command
+from opensearchpy import AsyncOpenSearch
 from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
-from sqlalchemy.ext.asyncio import AsyncSession
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.cross_encoder import CrossEncoder
-from opensearchpy import AsyncOpenSearch
-from groq import Groq
-from langgraph.types import Command
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from backend.auth.dependencies import get_current_user
 from backend.database import get_session, get_session_factory
 from backend.models import ApplicantProfile, Job, User
-from backend.schemas import JobSearchResponse
-from backend.search.models_lifecycle import get_biencoder, get_reranker
-from backend.search.query_understanding import get_groq_client
 from backend.opensearch_client import get_opensearch
-from backend.auth.dependencies import get_current_user
-from backend.search.advanced.agent import build_graph
+from backend.schemas import JobSearchResponse
+from backend.search.advanced.brief import Brief
+from backend.search.advanced.budget import WALL_CLOCK_SECONDS
+from backend.search.advanced.context import AgentContext
+from backend.search.advanced.finalize import filters_summary
+from backend.search.advanced.llm import get_agent_llm
 from backend.search.advanced.preference_memory import get_memory, update_memory_from_session
+from backend.search.models_lifecycle import get_biencoder, get_reranker
 
 router = APIRouter(prefix="/jobs/search/advanced", tags=["search-advanced"])
 logger = logging.getLogger(__name__)
+
+
+class Question(BaseModel):
+    text: str
+    options: list[str]
+
+
+class SearchLog(BaseModel):
+    query: str
+    filters: dict
+    matches: int
+    probe: str | None = None
+
+
+class AdvancedJobResult(JobSearchResponse):
+    fit_score: int | None
+    fit_rationale: str
+    fit_gaps: str
+    trade_offs: list[str]
+
+
+class AdvancedSearchResponse(BaseModel):
+    status: Literal["done", "question", "partial"]
+    thread_id: str
+    question: Question | None = None
+    brief: dict
+    summary: str = ""
+    searches: list[SearchLog] = []
+    results: list[AdvancedJobResult] = []
+    usage: dict | None = None
 
 
 class AdvancedSearchRequest(BaseModel):
     query: str
 
 
-class AdvancedSearchStart(BaseModel):
-    thread_id: str
-    clarify_questions: list[str]
-
-
 class ResumeRequest(BaseModel):
     thread_id: str
-    clarify_answers: list[str]
+    answer: str
 
 
-class AdvancedJobResult(JobSearchResponse):
-    fit_score: int
-    fit_rationale: str
-    fit_gaps: str
+def get_checkpointer():
+    from backend.main import get_checkpointer as _gc
+    return _gc()
+
+
+def get_agent_graph():
+    from backend.main import get_agent_graph as _gg
+    return _gg()
+
+
+def get_llm() -> BaseChatModel:
+    try:
+        return get_agent_llm()
+    except Exception as e:
+        logger.exception("[advanced] LLM not configured")
+        raise HTTPException(status_code=503, detail="Advanced search is unavailable: the LLM is not configured.") from e
 
 
 async def _load_cv(session: AsyncSession, user: User) -> str:
@@ -55,52 +99,104 @@ async def _load_cv(session: AsyncSession, user: User) -> str:
     return profile.cv_text
 
 
-async def _distill_in_background(user_id: uuid.UUID, query: str, clarify_qa: list[tuple[str, str]]) -> None:
+async def _distill_in_background(user_id: uuid.UUID, query: str, summary: str,
+                                 clarify_qa: list[tuple[str, str]]) -> None:
     factory = get_session_factory()
     async with factory() as session:
         try:
-            await update_memory_from_session(session, user_id, query, "", clarify_qa)
+            await update_memory_from_session(session, user_id, query, summary, clarify_qa)
         except Exception:
             logger.exception("[advanced] memory distill failed")
 
 
-def get_checkpointer():
-    from backend.main import get_checkpointer as _gc
-    return _gc()
+async def _results(session: AsyncSession, shortlist: list[dict]) -> list[AdvancedJobResult]:
+    ids = []
+    for r in shortlist:
+        try:
+            ids.append(uuid.UUID(r["job_id"]))
+        except (ValueError, KeyError):
+            continue
+    if not ids:
+        return []
+    rows = await session.execute(select(Job).options(selectinload(Job.company)).where(Job.id.in_(ids)))
+    jobs = {str(j.id): j for j in rows.scalars()}
+    out = []
+    for r in shortlist:
+        job = jobs.get(str(r["job_id"]))
+        if job is None:
+            continue
+        base = JobSearchResponse.model_validate(job, from_attributes=True)
+        out.append(AdvancedJobResult(
+            **base.model_dump(), fit_score=r.get("fit_score"), fit_rationale=r.get("fits", ""),
+            fit_gaps="; ".join(r.get("gaps") or []), trade_offs=list(r.get("trade_offs") or []),
+        ))
+    return out
 
 
-@router.post("", response_model=AdvancedSearchStart)
+async def run_agent(graph, checkpointer, ctx: AgentContext, payload, thread_id: str, session: AsyncSession,
+                    background: BackgroundTasks) -> AdvancedSearchResponse:
+    config = {"configurable": {"thread_id": thread_id}}
+    await graph.ainvoke(payload, config, context=ctx, durability="exit")
+    snap = await graph.aget_state(config)
+    values = snap.values or {}
+    brief = Brief.model_validate(values["brief"]).to_api() if values.get("brief") else {}
+
+    interrupts = [i for task in snap.tasks for i in task.interrupts]
+    if interrupts:
+        value = interrupts[0].value
+        return AdvancedSearchResponse(
+            status="question", thread_id=thread_id, brief=brief,
+            question=Question(text=value["question"], options=list(value.get("options") or [])),
+        )
+
+    status = values.get("status", "partial")
+    results = await _results(session, values.get("shortlist") or [])
+    searches = [SearchLog(query=s["query"], filters=s.get("filters") or {}, matches=s.get("matches", 0),
+                          probe=s.get("probe")) for s in values.get("searches") or []]
+    response = AdvancedSearchResponse(
+        status=status, thread_id=thread_id, brief=brief, summary=values.get("summary", ""),
+        searches=searches, results=results, usage=values.get("usage"),
+    )
+    await checkpointer.adelete_thread(thread_id)
+    if status == "done":
+        qa = [(q["question"], q["answer"]) for q in values.get("qa") or []]
+        background.add_task(_distill_in_background, uuid.UUID(values["user_id"]), values.get("query", ""),
+                            filters_summary(values), qa)
+    return response
+
+
+async def _context(session: AsyncSession, user: User, llm, biencoder, reranker, os_client) -> AgentContext:
+    cv_text = await _load_cv(session, user)
+    memory = await get_memory(session, user.id)
+    return AgentContext(
+        user_id=user.id, run_id=str(uuid.uuid4()), cv_text=cv_text,
+        preference_memory=memory.memory_text if memory else "", llm=llm, biencoder=biencoder,
+        reranker=reranker, os_client=os_client, session_factory=get_session_factory(),
+        deadline=time.monotonic() + WALL_CLOCK_SECONDS, now=datetime.now(timezone.utc),
+    )
+
+
+@router.post("", response_model=AdvancedSearchResponse)
 async def start_advanced_search(
     body: AdvancedSearchRequest,
+    background: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     biencoder: SentenceTransformer = Depends(get_biencoder),
     reranker: CrossEncoder = Depends(get_reranker),
-    groq_client: Groq = Depends(get_groq_client),
     os_client: AsyncOpenSearch = Depends(get_opensearch),
+    llm: BaseChatModel = Depends(get_llm),
     checkpointer=Depends(get_checkpointer),
-) -> AdvancedSearchStart:
-    cv_text = await _load_cv(session, current_user)
-    memory = await get_memory(session, current_user.id)
-
+    graph=Depends(get_agent_graph),
+) -> AdvancedSearchResponse:
+    ctx = await _context(session, current_user, llm, biencoder, reranker, os_client)
     thread_id = str(uuid.uuid4())
-    config = {"configurable": {"thread_id": thread_id}}
-    graph = build_graph(checkpointer, biencoder=biencoder, reranker=reranker,
-                        os_client=os_client, groq_client=groq_client)
-    init_state = {
-        "query": body.query,
-        "cv_text": cv_text,
-        "preference_memory": memory.memory_text if memory else "",
-        "refined_once": False,
-    }
-    await graph.ainvoke(init_state, config)
-    snap = await graph.aget_state(config)
-    interrupts = [i for task in snap.tasks for i in task.interrupts]
-    questions = interrupts[0].value.get("clarify_questions", []) if interrupts else []
-    return AdvancedSearchStart(thread_id=thread_id, clarify_questions=questions)
+    payload = {"messages": [("human", body.query)], "user_id": str(current_user.id), "query": body.query,
+               "brief": Brief().model_dump()}
+    return await run_agent(graph, checkpointer, ctx, payload, thread_id, session, background)
 
 
-@router.post("/resume", response_model=list[AdvancedJobResult])
+@router.post("/resume", response_model=AdvancedSearchResponse)
 async def resume_advanced_search(
     body: ResumeRequest,
     background: BackgroundTasks,
@@ -108,47 +204,14 @@ async def resume_advanced_search(
     session: AsyncSession = Depends(get_session),
     biencoder: SentenceTransformer = Depends(get_biencoder),
     reranker: CrossEncoder = Depends(get_reranker),
-    groq_client: Groq = Depends(get_groq_client),
     os_client: AsyncOpenSearch = Depends(get_opensearch),
+    llm: BaseChatModel = Depends(get_llm),
     checkpointer=Depends(get_checkpointer),
-) -> list[AdvancedJobResult]:
-    config = {"configurable": {"thread_id": body.thread_id}}
-    graph = build_graph(checkpointer, biencoder=biencoder, reranker=reranker,
-                        os_client=os_client, groq_client=groq_client)
-    await graph.ainvoke(Command(resume=body.clarify_answers), config)
-    snap = await graph.aget_state(config)
+    graph=Depends(get_agent_graph),
+) -> AdvancedSearchResponse:
+    snap = await graph.aget_state({"configurable": {"thread_id": body.thread_id}})
     values = snap.values or {}
-    scored = values.get("results", [])
-    if not scored:
-        return []
-
-    job_ids = [r["job_id"] for r in scored if r.get("job_id")]
-    if not job_ids:
-        return []
-    result = await session.execute(
-        select(Job).options(selectinload(Job.company)).where(Job.id.in_(job_ids))
-    )
-    jobs_by_id = {str(job.id): job for job in result.scalars()}
-
-    response: list[AdvancedJobResult] = []
-    for r in scored:  # already sorted by fit_score desc
-        jid = r.get("job_id")
-        if not jid:
-            continue
-        job = jobs_by_id.get(jid)
-        if job is None:
-            continue
-        base = JobSearchResponse.model_validate(job, from_attributes=True)
-        response.append(AdvancedJobResult(
-            **base.model_dump(),
-            fit_score=int(r.get("fit_score", 0)),
-            fit_rationale=r.get("fit_rationale", ""),
-            fit_gaps=r.get("fit_gaps", ""),
-        ))
-
-    questions = values.get("clarify_questions", []) or []
-    answers = values.get("clarify_answers", []) or []
-    clarify_qa = list(zip(questions, answers))
-    background.add_task(_distill_in_background, current_user.id, values.get("query", ""), clarify_qa)
-
-    return response
+    if not values or values.get("user_id") != str(current_user.id):
+        raise HTTPException(status_code=404, detail="Search not found.")
+    ctx = await _context(session, current_user, llm, biencoder, reranker, os_client)
+    return await run_agent(graph, checkpointer, ctx, Command(resume=body.answer), body.thread_id, session, background)

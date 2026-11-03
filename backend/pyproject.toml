@@ -10,7 +10,6 @@ dependencies = [
     "alembic>=1.14.0",
     "pydantic>=2.13.0",
     "python-dotenv>=1.2.2",
-    "groq>=1.2.0",
     "opensearch-py[async]>=2.7.0",
     "sentence-transformers>=3.0.0",
     "torch>=2.0.0",

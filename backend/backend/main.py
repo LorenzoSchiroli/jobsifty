@@ -14,12 +14,14 @@ from backend.routers.auth import router as auth_router
 from backend.routers.cv import router as cv_router
 from backend.routers.preferences import router as preferences_router
 from backend.routers.search_advanced import router as search_advanced_router
+from backend.search.advanced.agent import build_graph
 from backend.search.models_lifecycle import init_models
 from backend.opensearch_client import init_opensearch
 
 logger = logging.getLogger(__name__)
 
 _checkpointer: AsyncPostgresSaver | None = None
+_agent_graph = None
 
 
 def get_checkpointer() -> AsyncPostgresSaver:
@@ -28,15 +30,22 @@ def get_checkpointer() -> AsyncPostgresSaver:
     return _checkpointer
 
 
+def get_agent_graph():
+    if _agent_graph is None:
+        raise RuntimeError("Agent graph not initialized")
+    return _agent_graph
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _checkpointer
+    global _checkpointer, _agent_graph
     init_models()
     await init_opensearch()
 
     db_url = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
     async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
         _checkpointer = checkpointer
+        _agent_graph = build_graph(checkpointer)
         yield
 
 
