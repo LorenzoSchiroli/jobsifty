@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import ToolNode, ToolRuntime
+from langgraph.prebuilt.tool_node import ToolInvocationError
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
@@ -247,7 +248,20 @@ TOOLS: list[BaseTool] = [update_brief, search_jobs, inspect_job, ask_user, finis
 
 ONE_CALL_REFUSAL = "Refused: one tool call per turn — call it again next turn."
 
-_TOOL_NODE = ToolNode(TOOLS)
+
+def _tool_error(e: Exception) -> str:
+    """The tool result of a tool that raised, so the agent can take another step.
+
+    ToolNode calls it inside its `except`, and re-raises GraphBubbleUp (interrupts) before it,
+    so ask_user still pauses the run.
+    """
+    if isinstance(e, ToolInvocationError):  # arguments that do not validate: the message says what is wrong
+        return e.message
+    logger.exception("advanced agent tool raised")
+    return f"Error: the tool failed ({type(e).__name__}: {e}). Try another step."
+
+
+_TOOL_NODE = ToolNode(TOOLS, handle_tool_errors=_tool_error)
 
 
 async def tools_step(state: AgentState, config: RunnableConfig):

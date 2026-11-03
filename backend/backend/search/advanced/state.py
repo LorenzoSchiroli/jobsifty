@@ -60,17 +60,3 @@ class AgentState(TypedDict, total=False):
     summary: str
     usage: Annotated[dict, add_usage]  # {"llm_calls", "input_tokens", "output_tokens"}
 
-
-class AdvancedSearchState(TypedDict, total=False):
-    """State of the old advanced-search graph (agent.py / nodes.py), until it is removed."""
-
-    query: str
-    cv_text: str
-    preference_memory: str
-    clarify_questions: list[str]
-    clarify_answers: list[str]
-    hits: list[dict]
-    refined_query: str | None
-    refined_once: bool
-    need_refine: bool
-    results: list[dict]

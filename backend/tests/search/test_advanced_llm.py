@@ -1,10 +1,6 @@
-import json
 import uuid
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from backend.models import User
-
-pytestmark = pytest.mark.asyncio
 
 
 def _mock_llm(content: str):
@@ -15,73 +11,31 @@ def _mock_llm(content: str):
     return llm
 
 
-async def test_generate_clarify_questions_parses_list():
+def test_agent_llm_defaults_to_groq(monkeypatch):
     from backend.search.advanced import llm
-    with patch.object(llm, "large_llm", return_value=_mock_llm('["Remote only?", "Which countries?"]')):
-        qs = await llm.generate_clarify_questions("ml engineer", "cv", "")
-    assert qs == ["Remote only?", "Which countries?"]
+    for name in ("ADVANCED_LLM_BASE_URL", "ADVANCED_LLM_MODEL", "ADVANCED_LLM_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GROQ_MODEL_LARGE", "groq-large")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+    model = llm.get_agent_llm()
+    assert (model.model_name, model.openai_api_key.get_secret_value()) == ("groq-large", "gsk-test")
+    assert model.openai_api_base == "https://api.groq.com/openai/v1"
+    assert (model.max_retries, model.request_timeout, model.reasoning_effort) == (3, 60, "low")
 
 
-async def test_critique_results_parses_dict():
+def test_agent_llm_env_overrides_are_read_at_call_time(monkeypatch):
     from backend.search.advanced import llm
-    payload = json.dumps({"need_refine": True, "refined_query": "senior ml engineer pytorch"})
-    with patch.object(llm, "large_llm", return_value=_mock_llm(payload)):
-        out = await llm.critique_results("ml", [{"_source": {"title": "x"}}])
-    assert out == {"need_refine": True, "refined_query": "senior ml engineer pytorch"}
-
-
-async def test_score_fit_parses_scored_list():
-    from backend.search.advanced import llm
-    payload = json.dumps([
-        {"job_id": "j1", "fit_score": 82, "fit_rationale": "strong overlap", "fit_gaps": "no kubernetes"}
-    ])
-    hits = [{"_source": {"job_id": "j1", "title": "ml role"}}]
-    with patch.object(llm, "large_llm", return_value=_mock_llm(payload)):
-        out = await llm.score_fit("cv", "", hits)
-    assert out[0]["job_id"] == "j1"
-    assert out[0]["fit_score"] == 82
-    assert out[0]["fit_gaps"] == "no kubernetes"
-
-
-async def test_score_fit_falls_back_to_unranked_hits_on_parse_failure():
-    from backend.search.advanced import llm
-    hits = [
-        {"_source": {"job_id": "j1", "title": "ml role"}},
-        {"_source": {"job_id": "j2", "title": "data role"}},
-    ]
-    with patch.object(llm, "large_llm", return_value=_mock_llm("not valid json")):
-        out = await llm.score_fit("cv", "", hits)
-    assert [r["job_id"] for r in out] == ["j1", "j2"]
-    assert all(r["fit_score"] == 0 for r in out)
-    assert all(r["fit_rationale"] == "" for r in out)
-    assert all(r["fit_gaps"] == "" for r in out)
-
-
-def test_job_text_uses_title_company_and_cleaned_text():
-    from backend.search.advanced import llm
-    hit = {"_source": {"title": "ML Engineer", "company_name": "acme", "chunks": [
-        {"text": "ML Engineer\nranking, pytorch", "embedding": [0.3], "summary": True},
-        {"text": "ML Engineer\nBuild ranking models in PyTorch.", "embedding": [0.1]},
-        {"text": "ML Engineer\nlater part", "embedding": [0.2]},
-    ]}}
-    assert llm.job_text(hit, 1500) == "ML Engineer at acme\nBuild ranking models in PyTorch."
-    assert llm.job_text(hit, 11) == "ML Engineer"
-    assert llm.job_text({"_source": {"title": "Data Scientist"}}, 1500) == "Data Scientist"
-
-
-async def test_score_fit_sends_only_the_top_jobs():
-    from backend.search.advanced import llm
-    hits = [{"_source": {"job_id": f"j{i}", "title": f"role {i}"}} for i in range(25)]
-    mock = _mock_llm("[]")
-    with patch.object(llm, "large_llm", return_value=mock):
-        await llm.score_fit("cv", "", hits)
-    prompt = mock.ainvoke.call_args.args[0][1].content
-    assert '"j9"' in prompt and '"j10"' not in prompt
+    monkeypatch.setenv("ADVANCED_LLM_BASE_URL", "http://localhost:9000/v1")
+    monkeypatch.setenv("ADVANCED_LLM_MODEL", "other-model")
+    monkeypatch.setenv("ADVANCED_LLM_API_KEY", "other-key")
+    model = llm.get_agent_llm()
+    assert (model.model_name, model.openai_api_key.get_secret_value(), model.openai_api_base) == (
+        "other-model", "other-key", "http://localhost:9000/v1")
 
 
 async def test_distill_memory_returns_text():
     from backend.search.advanced import llm
-    with patch.object(llm, "large_llm", return_value=_mock_llm("prefers remote ml roles in EU")):
+    with patch.object(llm, "get_agent_llm", return_value=_mock_llm("prefers remote ml roles in EU")):
         out = await llm.distill_memory("", False, "ml engineer", "remote=true", [("Remote?", "yes")])
     assert "remote" in out.lower()
 
