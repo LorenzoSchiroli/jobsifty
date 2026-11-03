@@ -21,14 +21,14 @@ RULES = """You write the final shortlist of jobs for one user from the candidate
 
 class ShortlistItem(BaseModel):
     job_id: str = Field(description="the short id in square brackets")
-    fit_score: int = Field(ge=0, le=100)
+    fit_score: int = Field(description="0 to 100")
     fits: str
     trade_offs: list[str]
     gaps: list[str]
 
 
 class FinalShortlist(BaseModel):
-    shortlist: list[ShortlistItem] = Field(max_length=MAX_SHORTLIST)
+    shortlist: list[ShortlistItem]  # up to MAX_SHORTLIST; enforced in run_finalize, not in the schema
     summary: str
 
 
@@ -85,22 +85,23 @@ async def run_finalize(state: AgentState, ctx: AgentContext) -> dict:
     result: FinalShortlist = await structured.ainvoke(finalize_prompt(state, ctx, candidates))
     shortlist = []
     for item in result.shortlist:
-        job_id = short_ids.get(item.job_id)
+        job_id = short_ids.get(item.job_id.strip().strip("[]").strip().lower())
         c = by_job.get(job_id) if job_id else None
-        if c is None or violations(brief, c.fields()):
+        if c is None or violations(brief, c.fields()) or any(r["job_id"] == job_id for r in shortlist):
             continue
-        shortlist.append({**item.model_dump(), "job_id": job_id})
+        shortlist.append({**item.model_dump(), "job_id": job_id, "fit_score": max(0, min(100, item.fit_score))})
         if len(shortlist) == MAX_SHORTLIST:
             break
     return {"status": "done", "shortlist": shortlist, "summary": result.summary}
 
 
 def partial_result(state: AgentState) -> dict:
-    pool = state.get("pool") or {}
-    ranked = sorted((c for c in pool.values() if not c.get("breaks")), key=lambda c: -c["score"])
+    brief = _brief(state)
+    pool = (Candidate.from_dict(c) for c in (state.get("pool") or {}).values())
+    ranked = sorted((c for c in pool if _eligible(c, brief)), key=lambda c: -c.score)
     return {
         "status": "partial",
-        "shortlist": [{"job_id": c["job_id"], "fit_score": None, "fits": "", "trade_offs": [], "gaps": []}
+        "shortlist": [{"job_id": c.job_id, "fit_score": None, "fits": "", "trade_offs": [], "gaps": []}
                       for c in ranked[:MAX_SHORTLIST]],
         "summary": PARTIAL_SUMMARY,
     }

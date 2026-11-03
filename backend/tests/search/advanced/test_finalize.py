@@ -59,3 +59,40 @@ def test_filters_summary_lists_searches_that_found_shortlisted_jobs(pool_state):
     state = {**pool_state, "shortlist": [{"job_id": JOB_A}]}
     assert filters_summary(state) == "location_type=remote, seniority=senior"
     assert filters_summary({**pool_state, "shortlist": []}) == ""
+
+
+async def _run(ctx_factory, state, items):
+    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=items)])
+    return await run_finalize(state, ctx_factory(llm=llm))
+
+
+def _many_state(pool_state, n):
+    ids = [f"{i:08x}-0000-4000-8000-000000000000" for i in range(1, n + 1)]
+    return {**pool_state, "keep": ids[:10],
+            "pool": {j: candidate(j, 0.5).to_dict() for j in ids},
+            "short_ids": {f"{i:04x}": j for i, j in enumerate(ids, 1)}}
+
+
+async def test_finalize_caps_at_ten_in_model_order_without_failing(ctx_factory, pool_state):
+    state = _many_state(pool_state, 12)
+    out = await _run(ctx_factory, state, [item(f"{i:04x}", 50) for i in range(1, 12)])
+    assert [r["job_id"] for r in out["shortlist"]] == [state["short_ids"][f"{i:04x}"] for i in range(1, 11)]
+
+
+async def test_finalize_clamps_fit_score(ctx_factory, pool_state):
+    out = await _run(ctx_factory, pool_state, [item("a1f3", 140)])
+    assert out["shortlist"][0]["fit_score"] == 100
+
+
+async def test_finalize_normalises_ids_and_drops_duplicates(ctx_factory, pool_state):
+    out = await _run(ctx_factory, pool_state, [item(" [A1F3] ", 90), item("a1f3", 80)])
+    assert [(r["job_id"], r["fit_score"]) for r in out["shortlist"]] == [(JOB_A, 90)]
+
+
+def test_partial_result_drops_violating_jobs(pool_state):
+    assert [r["job_id"] for r in partial_result(pool_state)["shortlist"]] == [JOB_A]
+
+
+def test_partial_result_includes_probe_jobs_once_relaxed(pool_state_with_probe_relaxed):
+    ids = [r["job_id"] for r in partial_result(pool_state_with_probe_relaxed)["shortlist"]]
+    assert PROBE_JOB_ID in ids
