@@ -103,3 +103,26 @@ async def test_hybrid_retrieve_uses_pipeline():
     kwargs = mock_os.search.call_args.kwargs
     assert kwargs["params"]["search_pipeline"] == PIPELINE_NAME
     assert result == [{"_source": {"job_id": "abc"}}]
+
+
+def test_hard_filters_go_in_filter_soft_stay_should():
+    q = build_hybrid_query("ml", [0.0] * 384,
+                           SearchFilters(semantic_query="ml", seniority="senior"),
+                           hard=SearchFilters(semantic_query="ml", location_type="remote"))
+    for leg in q["query"]["hybrid"]["queries"]:
+        assert {"term": {"location_type": "remote"}} in leg["bool"]["filter"]
+        assert {"term": {"seniority": {"value": "senior", "boost": 2.0}}} in leg["bool"]["should"]
+    assert "post_filter" not in q
+
+
+def test_hard_filters_raise_knn_k():
+    q = build_hybrid_query("ml", [0.0] * 384, SearchFilters(semantic_query="ml"),
+                           hard=SearchFilters(semantic_query="ml", is_consulting=False))
+    knn = q["query"]["hybrid"]["queries"][1]["bool"]["must"]["nested"]["query"]["knn"]["chunks.embedding"]
+    assert knn["k"] == 300
+
+
+def test_no_hard_filters_is_unchanged():
+    # max_age_hours=None: no wall-clock cutoff to differ between the two calls
+    f = SearchFilters(semantic_query="ml", location_type="remote", max_age_hours=None)
+    assert build_hybrid_query("ml", [0.0] * 384, f) == build_hybrid_query("ml", [0.0] * 384, f, hard=None)

@@ -123,3 +123,16 @@ async def test_search_works_without_cv(engine):
     app.dependency_overrides.clear()
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+async def test_search_runs_cpu_work_in_thread(search_client):
+    ac, mock_os, _ = search_client
+    mock_os.search.return_value = {"hits": {"hits": []}}
+
+    async def passthrough(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    with patch("backend.routers.search.asyncio.to_thread", new=AsyncMock(side_effect=passthrough)) as to_thread:
+        resp = await ac.post("/jobs/search", json={"query": "q"})
+    assert resp.status_code == 200
+    assert to_thread.await_count == 2
