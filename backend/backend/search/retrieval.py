@@ -5,7 +5,7 @@ from backend.search.filters import SearchFilters, age_cutoff, build_clauses
 _STRICT_PREFETCH = 200
 # knn k when hard filters apply: the parent-field filter runs after the nested knn,
 # so a larger k keeps enough candidates once it has cut some.
-HARD_FILTER_KNN_K = 300
+from backend.search.advanced.budget import HARD_FILTER_KNN_K
 
 
 def build_hybrid_query(
