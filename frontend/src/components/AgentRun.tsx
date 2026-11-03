@@ -24,12 +24,14 @@ interface Props {
   run: AdvancedResponse | null
   running: boolean
   onAnswer: (answer: string) => void
+  // 'top' = everything before the result cards, 'searches' = the log after them
+  part: 'top' | 'searches'
 }
 
-export default function AgentRun({ run, running, onAnswer }: Props) {
+export default function AgentRun({ run, running, onAnswer, part }: Props) {
   const [text, setText] = useState('')
-  const stated = run?.brief.stated ?? []
-  const fromYou = [...(run?.brief.inferred ?? []), ...(run?.brief.avoid ?? [])]
+  const stated = run?.brief?.stated ?? []
+  const fromYou = [...(run?.brief?.inferred ?? []), ...(run?.brief?.avoid ?? [])]
   const question = run?.status === 'question' ? run.question : null
 
   function send(answer: string) {
@@ -37,6 +39,20 @@ export default function AgentRun({ run, running, onAnswer }: Props) {
     if (!a) return
     setText('')
     onAnswer(a)
+  }
+
+  if (part === 'searches') {
+    if (!run || question || running || run.searches.length === 0) return null
+    return (
+      <div style={box}>
+        <div style={heading}>How I searched</div>
+        {run.searches.map((s, i) => (
+          <div key={i} style={{ fontSize: '0.78rem', opacity: 0.6, marginBottom: '0.15rem' }}>
+            {s.probe ? `what if ${s.probe}: ` : ''}"{s.query}" — {s.matches} match{s.matches === 1 ? '' : 'es'}
+          </div>
+        ))}
+      </div>
+    )
   }
 
   return (
@@ -75,17 +91,6 @@ export default function AgentRun({ run, running, onAnswer }: Props) {
             </div>
           )}
           <div style={{ fontSize: '0.9rem' }}>{run.summary}</div>
-        </div>
-      )}
-
-      {run && !question && run.searches.length > 0 && (
-        <div style={box}>
-          <div style={heading}>How I searched</div>
-          {run.searches.map((s, i) => (
-            <div key={i} style={{ fontSize: '0.78rem', opacity: 0.6, marginBottom: '0.15rem' }}>
-              {s.probe ? `what if ${s.probe}: ` : ''}"{s.query}" — {s.matches} match{s.matches === 1 ? '' : 'es'}
-            </div>
-          ))}
         </div>
       )}
     </div>

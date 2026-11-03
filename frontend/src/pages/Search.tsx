@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import axios from 'axios'
 import { searchJobs, startAdvancedSearch, resumeAdvancedSearch, Job, AdvancedResponse } from '../api/search'
 import { useSearchMode } from '../hooks/useSearchMode'
@@ -18,17 +18,19 @@ export default function Search() {
 
   const pending = run?.status === 'question'
 
-  // Runs one request; a newer one aborts it and its result and error are dropped.
-  async function track(call: (signal: AbortSignal) => Promise<void>) {
+  // Runs one request; a newer one (or a mode switch) aborts it, and a response
+  // or error from a request that is no longer current is dropped.
+  async function track<T>(fetch: (signal: AbortSignal) => Promise<T>, apply: (data: T) => void) {
     abortRef.current?.abort()
     const ctrl = new AbortController()
     abortRef.current = ctrl
     setError('')
     setLoading(true)
     try {
-      await call(ctrl.signal)
+      const data = await fetch(ctrl.signal)
+      if (abortRef.current === ctrl) apply(data)
     } catch (err: any) {
-      if (ctrl.signal.aborted || axios.isCancel(err)) return
+      if (abortRef.current !== ctrl || ctrl.signal.aborted || axios.isCancel(err)) return
       setError(err.response?.data?.detail || 'Search failed')
     } finally {
       if (abortRef.current === ctrl) setLoading(false)
@@ -40,23 +42,29 @@ export default function Search() {
     setResults(r.results)
   }
 
+  useEffect(() => {
+    abortRef.current?.abort()
+    abortRef.current = null
+    setRun(null)
+    setResults([])
+    setError('')
+    setLoading(false)
+    setSearched(false)
+  }, [mode])
+
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault()
     setResults([])
     setRun(null)
     setSearched(true)
-    await track(async signal => {
-      if (mode === 'basic') setResults(await searchJobs(query))
-      else applyRun(await startAdvancedSearch(query, signal))
-    })
+    if (mode === 'basic') await track(signal => searchJobs(query, signal), setResults)
+    else await track(signal => startAdvancedSearch(query, signal), applyRun)
   }
 
   async function answer(a: string) {
     if (!run) return
     const threadId = run.thread_id
-    await track(async signal => {
-      applyRun(await resumeAdvancedSearch(threadId, a, signal))
-    })
+    await track(signal => resumeAdvancedSearch(threadId, a, signal), applyRun)
   }
 
   return (
@@ -65,14 +73,14 @@ export default function Search() {
 
       <form onSubmit={handleSearch} style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
         <input value={query} onChange={e => setQuery(e.target.value)} placeholder="e.g. machine learning engineer remote" required />
-        <button type="submit" disabled={loading} style={{ whiteSpace: 'nowrap' }}>
-          {loading ? '...' : 'Search'}
+        <button type="submit" style={{ whiteSpace: 'nowrap' }}>
+          Search
         </button>
       </form>
 
       {error && <p style={{ color: '#f87171' }}>{error}</p>}
 
-      {mode === 'advanced' && (run || loading) && <AgentRun run={run} running={loading} onAnswer={answer} />}
+      {mode === 'advanced' && (run || loading) && <AgentRun part="top" run={run} running={loading} onAnswer={answer} />}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
         {results.map(job => <JobCard key={job.id} job={job} />)}
@@ -80,6 +88,8 @@ export default function Search() {
           <p style={{ opacity: 0.4 }}>No results found.</p>
         )}
       </div>
+
+      {mode === 'advanced' && run && <AgentRun part="searches" run={run} running={loading} onAnswer={answer} />}
 
       {!query && results.length === 0 && !loading && !pending && <SearchHelp />}
     </div>

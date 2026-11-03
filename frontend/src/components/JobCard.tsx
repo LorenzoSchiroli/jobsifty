@@ -49,15 +49,17 @@ export default function JobCard({ job }: { job: Job }) {
       }}
     >
       <div style={{ fontWeight: 600 }}>{job.title} — {job.company.name}</div>
-      {typeof job.fit_score === 'number' && (
+      {(typeof job.fit_score === 'number' || job.fit_rationale || job.fit_gaps || (job.trade_offs?.length ?? 0) > 0) && (
         <div style={{ marginTop: '0.4rem' }}>
-          <span style={{
-            fontSize: '0.75rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: 4,
-            background: job.fit_score >= 70 ? '#16653440' : job.fit_score >= 40 ? '#78350f40' : '#7f1d1d40',
-            color: job.fit_score >= 70 ? '#4ade80' : job.fit_score >= 40 ? '#fbbf24' : '#f87171',
-          }}>
-            Fit {job.fit_score}
-          </span>
+          {typeof job.fit_score === 'number' && (
+            <span style={{
+              fontSize: '0.75rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: 4,
+              background: job.fit_score >= 70 ? '#16653440' : job.fit_score >= 40 ? '#78350f40' : '#7f1d1d40',
+              color: job.fit_score >= 70 ? '#4ade80' : job.fit_score >= 40 ? '#fbbf24' : '#f87171',
+            }}>
+              Fit {job.fit_score}
+            </span>
+          )}
           {job.fit_rationale && (
             <div style={{ fontSize: '0.8rem', opacity: 0.75, marginTop: '0.3rem' }}>{job.fit_rationale}</div>
           )}

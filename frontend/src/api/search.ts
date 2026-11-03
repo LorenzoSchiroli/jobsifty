@@ -26,8 +26,8 @@ export interface Job {
   trade_offs?: string[]
 }
 
-export const searchJobs = (query: string) =>
-  client.post<Job[]>('/jobs/search', { query }).then(r => r.data)
+export const searchJobs = (query: string, signal?: AbortSignal) =>
+  client.post<Job[]>('/jobs/search', { query }, { signal }).then(r => r.data)
 
 export interface BriefItem {
   text: string
