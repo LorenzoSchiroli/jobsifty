@@ -78,7 +78,9 @@ class Brief(BaseModel):
 
 
 class LockedRequirementError(ValueError):
-    pass
+    def __init__(self, item: BriefItem):
+        super().__init__(f"locked requirement changed or dropped: {item.text}")
+        self.item = item
 
 
 def _norm(value):
@@ -98,7 +100,7 @@ def merge_brief(current: Brief, proposed: Brief, *, unlock_allowed: bool) -> Bri
     if not unlock_allowed:
         for locked in current.locked():
             if not any(_same(locked, p) for p in proposed.items):
-                raise LockedRequirementError(f"locked requirement changed or dropped: {locked.text}")
+                raise LockedRequirementError(locked)
     return proposed
 
 

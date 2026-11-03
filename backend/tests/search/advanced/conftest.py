@@ -1,0 +1,112 @@
+"""Shared fixtures for the advanced-search agent: a run context of mocks and one-tool graph runs."""
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from langchain_core.messages import AnyMessage, HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, StateGraph
+from langgraph.prebuilt import ToolNode
+from langgraph.types import Command
+
+from backend.search.advanced.context import AgentContext
+from backend.search.advanced.state import AgentState
+from backend.search.advanced.tools import TOOLS
+from tests.search.advanced.fakes import ScriptedChatModel, tool_call
+from tests.search.advanced.samples import candidate
+
+NOW = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
+JOB_A = "a1f30000-0000-4000-8000-000000000001"
+JOB_B = "9c020000-0000-4000-8000-000000000002"
+
+
+@pytest.fixture
+def ctx_factory():
+    """Builds an AgentContext of mocks; keyword arguments override any field."""
+
+    def build(**overrides) -> AgentContext:
+        values = dict(
+            user_id=uuid.uuid4(), run_id="run-1", cv_text="ML engineer, 5 years of PyTorch.",
+            preference_memory="", llm=ScriptedChatModel(), biencoder=MagicMock(), reranker=MagicMock(),
+            os_client=MagicMock(), session_factory=MagicMock(), deadline=time.monotonic() + 240, now=NOW,
+        ) | overrides
+        return AgentContext(**values)
+
+    return build
+
+
+@dataclass
+class ToolRun:
+    messages: list[AnyMessage]
+    state: dict
+    interrupt_value: object | None
+    events: list[dict] = field(default_factory=list)
+
+
+def _graph():
+    builder = StateGraph(AgentState, context_schema=AgentContext)
+    builder.add_node("tools", ToolNode(TOOLS))
+    builder.set_entry_point("tools")
+    builder.add_edge("tools", END)
+    return builder.compile(checkpointer=MemorySaver())
+
+
+async def _stream(graph, payload, config, context, events) -> None:
+    async for mode, chunk in graph.astream(payload, config, context=context, stream_mode=["custom", "values"]):
+        if mode == "custom":
+            events.append(chunk)
+
+
+async def _result(graph, config, events, interrupt_value=None) -> ToolRun:
+    snap = await graph.aget_state(config)
+    if interrupt_value is None and snap.interrupts:
+        interrupt_value = snap.interrupts[0].value
+    return ToolRun(messages=snap.values.get("messages", []), state=snap.values,
+                   interrupt_value=interrupt_value, events=events)
+
+
+def _start(name: str, args: dict, state: dict | None) -> dict:
+    return {**(state or {}), "messages": [HumanMessage("find me ML jobs"), tool_call(name, args, id="call-1")]}
+
+
+@pytest.fixture
+def run_tool(ctx_factory):
+    """Runs one tool call through a one-node ToolNode graph: messages, state, interrupt value, stream events."""
+
+    async def run(name: str, args: dict, state: dict | None = None, context: AgentContext | None = None) -> ToolRun:
+        graph, config, events = _graph(), {"configurable": {"thread_id": str(uuid.uuid4())}}, []
+        await _stream(graph, _start(name, args, state), config, context or ctx_factory(), events)
+        return await _result(graph, config, events)
+
+    return run
+
+
+@pytest.fixture
+def run_tool_with_resume(ctx_factory):
+    """Like run_tool, then resumes the pause with `answer`; interrupt_value is the first pause's value."""
+
+    async def run(name: str, args: dict, *, answer, state: dict | None = None,
+                  context: AgentContext | None = None) -> ToolRun:
+        graph, config, events = _graph(), {"configurable": {"thread_id": str(uuid.uuid4())}}, []
+        ctx = context or ctx_factory()
+        await _stream(graph, _start(name, args, state), config, ctx, events)
+        paused = await graph.aget_state(config)
+        value = paused.interrupts[0].value if paused.interrupts else None
+        await _stream(graph, Command(resume=answer), config, ctx, events)
+        return await _result(graph, config, events, interrupt_value=value)
+
+    return run
+
+
+@pytest.fixture
+def patched_run_variant():
+    """tools.run_variant returns the same two candidates (JOB_A remote, JOB_B hybrid) for every variant."""
+    mock = AsyncMock(side_effect=lambda **kw: [
+        candidate(JOB_A, 0.91, search_index=kw["search_index"]),
+        candidate(JOB_B, 0.88, search_index=kw["search_index"], location_type="hybrid"),
+    ])
+    with patch("backend.search.advanced.tools.run_variant", mock):
+        yield mock
