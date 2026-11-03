@@ -35,9 +35,30 @@ class BriefItem(BaseModel):
     def _check(self):
         if (self.field is None) != (self.value is None):
             raise ValueError("field and value must be set together")
+        self._check_value_type()
         if self.kind == "avoid" and self.field is not None and self.field not in _BOOL_FIELDS:
             raise ValueError("avoid with a field is only allowed for is_consulting / is_startup")
         return self
+
+
+    def _check_value_type(self) -> None:
+        if self.field is None:
+            return
+        v = self.value
+        if self.field == "languages_required":
+            if isinstance(v, str):
+                self.value = [v]
+            elif not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+                raise ValueError("languages_required needs a list of strings")
+        elif self.field in _BOOL_FIELDS:
+            if not isinstance(v, bool):
+                raise ValueError(f"{self.field} needs a bool")
+        elif self.field == "min_review_score":
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                raise ValueError("min_review_score needs a number")
+            self.value = float(v)
+        elif not isinstance(v, str):
+            raise ValueError(f"{self.field} needs a string")
 
 
 class Brief(BaseModel):
@@ -60,9 +81,16 @@ class LockedRequirementError(ValueError):
     pass
 
 
+def _norm(value):
+    return sorted(value) if isinstance(value, list) else value
+
+
 def _same(a: BriefItem, b: BriefItem) -> bool:
+    """b keeps the locked item a: still stated, same kind, same meaning."""
+    if b.source != "stated" or a.kind != b.kind:
+        return False
     if a.field is not None:
-        return a.field == b.field and a.value == b.value
+        return a.field == b.field and _norm(a.value) == _norm(b.value)
     return b.field is None and a.text.casefold() == b.text.casefold()
 
 
@@ -96,7 +124,8 @@ def _wanted(item: BriefItem) -> tuple[str, object]:
 
 
 def _stated_mapped(brief: Brief) -> list[BriefItem]:
-    return [i for i in brief.locked() if i.field is not None]
+    # A stated "prefer" stays locked in the brief but is neither a hard filter nor a violation.
+    return [i for i in brief.locked() if i.field is not None and i.kind != "prefer"]
 
 
 def hard_filters(brief: Brief, *, lifted: str | None = None) -> SearchFilters | None:

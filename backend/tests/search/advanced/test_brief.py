@@ -90,3 +90,44 @@ def test_to_api_groups_items():
     assert [i["text"] for i in api["stated"]] == ["remote only"]
     assert [i["text"] for i in api["inferred"]] == ["startup"]
     assert [i["text"] for i in api["avoid"]] == ["no consulting"]
+
+
+def test_locked_item_flipped_to_inferred_is_refused():
+    soft = REMOTE.model_copy(update={"source": "inferred"})
+    with pytest.raises(LockedRequirementError):
+        merge_brief(Brief(items=[REMOTE]), Brief(items=[soft]), unlock_allowed=False)
+
+
+def test_locked_item_with_changed_kind_is_refused():
+    inverted = NO_CONSULTING.model_copy(update={"kind": "require"})
+    with pytest.raises(LockedRequirementError):
+        merge_brief(Brief(items=[NO_CONSULTING]), Brief(items=[inverted]), unlock_allowed=False)
+
+
+def test_reordered_list_value_is_not_a_change():
+    a = BriefItem(text="langs", kind="require", source="stated", field="languages_required", value=["en", "de"])
+    b = a.model_copy(update={"value": ["de", "en"]})
+    assert merge_brief(Brief(items=[a]), Brief(items=[b]), unlock_allowed=False).items == [b]
+
+
+def test_value_types_are_checked_per_field():
+    for field, value in [("location_type", True), ("is_startup", "yes"), ("min_review_score", "high"),
+                         ("languages_required", [1]), ("seniority", ["senior"])]:
+        with pytest.raises(ValidationError):
+            BriefItem(text="x", kind="require", source="stated", field=field, value=value)
+
+
+def test_lone_language_string_is_wrapped_and_score_is_float():
+    lang = BriefItem(text="en", kind="require", source="stated", field="languages_required", value="en")
+    assert lang.value == ["en"]
+    score = BriefItem(text="s", kind="require", source="stated", field="min_review_score", value=4)
+    assert score.value == 4.0 and isinstance(score.value, float)
+
+
+def test_stated_prefer_is_locked_but_not_hard_nor_a_violation():
+    pref = REMOTE.model_copy(update={"kind": "prefer"})
+    b = Brief(items=[pref])
+    assert hard_filters(b) is None
+    assert violations(b, {"location_type": "on-site"}) == []
+    with pytest.raises(LockedRequirementError):
+        merge_brief(b, Brief(items=[]), unlock_allowed=False)

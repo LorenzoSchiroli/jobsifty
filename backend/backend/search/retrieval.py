@@ -1,11 +1,11 @@
 from opensearchpy import AsyncOpenSearch
 from backend.opensearch_client import INDEX_NAME, PIPELINE_NAME
+from backend.search.advanced.budget import HARD_FILTER_KNN_K
 from backend.search.filters import SearchFilters, age_cutoff, build_clauses
 
 _STRICT_PREFETCH = 200
 # knn k when hard filters apply: the parent-field filter runs after the nested knn,
 # so a larger k keeps enough candidates once it has cut some.
-from backend.search.advanced.budget import HARD_FILTER_KNN_K
 
 
 def build_hybrid_query(
