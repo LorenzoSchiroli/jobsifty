@@ -42,9 +42,10 @@ class SearchFilters(BaseModel):
     employee_count: str | None = None
     min_review_score: float | None = None
     min_financial_health_score: int | None = None
-    employment_type: str | None = None
-    location_type: str | None = None
-    seniority: str | None = None
+    # A list means any of its values (only the advanced agent sets one)
+    employment_type: str | list[str] | None = None
+    location_type: str | list[str] | None = None
+    seniority: str | list[str] | None = None
     languages_required: list[str] | None = None
     # Jobs posted within this many hours, a hard limit; the query can widen it ("last 2 weeks")
     max_age_hours: int | None = 72
@@ -58,6 +59,9 @@ def build_clauses(filters: SearchFilters) -> list[dict]:
     def term(field: str, value: object) -> dict:
         return {"term": {field: value if strict else {"value": value, "boost": _BOOST}}}
 
+    def terms(field: str, values: list) -> dict:
+        return {"terms": {field: values} if strict else {field: values, "boost": _BOOST}}
+
     def rng(field: str, gte: object) -> dict:
         return {"range": {field: {"gte": gte} if strict else {"gte": gte, "boost": _BOOST}}}
 
@@ -69,7 +73,10 @@ def build_clauses(filters: SearchFilters) -> list[dict]:
         "location_type": filters.location_type,
         "seniority": filters.seniority,
     }.items():
-        if value is not None and (not isinstance(value, str) or "|" not in value):
+        if isinstance(value, list):
+            if value:
+                clauses.append(terms(field, value))
+        elif value is not None and (not isinstance(value, str) or "|" not in value):
             clauses.append(term(field, value))
     if filters.country is not None and "|" not in filters.country:
         values = _country_values(filters.country)

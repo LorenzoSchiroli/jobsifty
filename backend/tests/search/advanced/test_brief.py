@@ -69,11 +69,13 @@ def test_violations_ignore_unknown_and_catch_contradictions():
 
 
 def test_violations_languages_and_review_score():
-    langs = BriefItem(text="english only", kind="require", source="stated", field="languages_required", value=["en"])
+    langs = BriefItem(text="english only", kind="require", source="stated", field="languages_required",
+                      value=["english"])
     score = BriefItem(text="good reviews", kind="require", source="stated", field="min_review_score", value=4.0)
     b = Brief(items=[langs, score])
-    assert violations(b, {"languages_required": ["en"], "min_review_score": 4.2}) == []
-    assert violations(b, {"languages_required": ["en", "de"], "min_review_score": 3.1}) == ["english only", "good reviews"]
+    assert violations(b, {"languages_required": ["english"], "min_review_score": 4.2}) == []
+    assert violations(b, {"languages_required": ["english", "german"], "min_review_score": 3.1}) == [
+        "english only", "good reviews"]
 
 
 def test_avoid_with_non_bool_field_is_invalid():
@@ -106,21 +108,24 @@ def test_locked_item_with_changed_kind_is_refused():
 
 
 def test_reordered_list_value_is_not_a_change():
-    a = BriefItem(text="langs", kind="require", source="stated", field="languages_required", value=["en", "de"])
-    b = a.model_copy(update={"value": ["de", "en"]})
+    a = BriefItem(text="langs", kind="require", source="stated", field="languages_required",
+                  value=["english", "german"])
+    b = a.model_copy(update={"value": ["german", "english"]})
     assert merge_brief(Brief(items=[a]), Brief(items=[b]), unlock_allowed=False).items == [b]
 
 
 def test_value_types_are_checked_per_field():
     for field, value in [("location_type", True), ("is_startup", "yes"), ("min_review_score", "high"),
-                         ("languages_required", [1]), ("seniority", ["senior"])]:
+                         ("languages_required", [1]), ("seniority", ["senior", 3]), ("seniority", "boss"),
+                         ("location_type", "senior"), ("languages_required", ["klingon"]),
+                         ("employment_type", "gig")]:
         with pytest.raises(ValidationError):
             BriefItem(text="x", kind="require", source="stated", field=field, value=value)
 
 
 def test_lone_language_string_is_wrapped_and_score_is_float():
-    lang = BriefItem(text="en", kind="require", source="stated", field="languages_required", value="en")
-    assert lang.value == ["en"]
+    lang = BriefItem(text="en", kind="require", source="stated", field="languages_required", value="english")
+    assert lang.value == ["english"]
     score = BriefItem(text="s", kind="require", source="stated", field="min_review_score", value=4)
     assert score.value == 4.0 and isinstance(score.value, float)
 

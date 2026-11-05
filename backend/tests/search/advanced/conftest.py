@@ -139,7 +139,7 @@ def pool_state() -> dict:
         "brief": Brief(items=[REMOTE]).model_dump(),
         "pool": {
             JOB_A: candidate(JOB_A, 0.91).to_dict(),
-            JOB_C: candidate(JOB_C, 0.95, location_type="onsite").to_dict(),
+            JOB_C: candidate(JOB_C, 0.95, location_type="on-site").to_dict(),
         },
         "short_ids": {"a1f3": JOB_A, "b2c4": JOB_C},
         "searches": [{"index": 1, "header": 'search 1 "ml"',

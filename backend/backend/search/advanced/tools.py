@@ -15,7 +15,7 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import ToolNode, ToolRuntime
 from langgraph.prebuilt.tool_node import ToolInvocationError
 from langgraph.types import Command, interrupt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from backend.search.advanced.brief import Brief, BriefItem, LockedRequirementError, hard_filters, merge_brief, relax
 from backend.search.advanced.budget import (
@@ -25,11 +25,12 @@ from backend.search.advanced.budget import (
     MAX_PROBES,
     MAX_QUESTIONS,
     MAX_SEARCHES,
+    MAX_TURNS,
     MAX_VARIANTS,
 )
 from backend.search.advanced.context import AgentContext
 from backend.search.advanced.observation import assign_short_ids, header_line, render_observation
-from backend.search.advanced.search import SearchVariant, matches_soft, run_variant
+from backend.search.advanced.search import SearchVariant, run_variant, soft_matches
 from backend.search.advanced.state import AgentState, merge_pool
 from backend.search.filters import SearchFilters
 
@@ -62,18 +63,24 @@ def update_brief(items: list[BriefItem], runtime: Runtime, notes: str = "") -> C
     Each item is a short phrase (`text`), `kind` require / prefer / avoid, and `source`: "stated"
     when the user said it (in the request or an answer), "inferred" when you read it into the CV,
     the preference memory or the request. When unsure, it is stated. Give `field` and `value`
-    when the item maps to an index field. Stated items are locked: you cannot drop or change
-    them; only the user can, through ask_user.
+    when the item maps to an index field, with a value from the schema's vocabulary; "remote or
+    hybrid" is one item whose value is ["remote", "hybrid"], never two items on one field.
+    Stated items are locked: you cannot drop or change them; only the user can, through ask_user.
+    Call it before the first search_jobs.
     """
     state = runtime.state
-    current, proposed = _brief(state), Brief(items=items, notes=notes)
+    try:
+        proposed = Brief(items=items, notes=notes)
+    except ValidationError as e:
+        return "Refused: " + "; ".join(err["msg"].removeprefix("Value error, ") for err in e.errors())
+    current = _brief(state)
     unlock_allowed = state.get("unlock_turn") == state.get("turns", 0) - 1
     try:
         brief = merge_brief(current, proposed, unlock_allowed=unlock_allowed)
     except LockedRequirementError as e:
         return f"Refused: '{e.item.text}' was stated by the user; only the user can relax it (ask_user)."
     runtime.stream_writer({"type": "brief", "brief": brief.to_api()})
-    return _reply(runtime, "ok", brief=brief.model_dump())
+    return _reply(runtime, "ok", brief=brief.model_dump(), brief_written=True)
 
 
 def _refusal(variant: SearchVariant, brief: Brief, searches: int, probes: int) -> str | None:
@@ -106,9 +113,12 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
     jobs are flagged with what they break. `company_country` is where the company is based, not
     the job: check job locations in the lines.
     """
+    ctx, state = runtime.context, runtime.state
+    if not state.get("brief_written"):
+        return ("Refused: call update_brief first, to write down what the user stated and what you infer; "
+                "the stated requirements become the hard filters of every search.")
     if not 1 <= len(variants) <= MAX_VARIANTS:
         return f"Refused: give 1 to {MAX_VARIANTS} variants (at most {MAX_VARIANTS} per call)."
-    ctx, state = runtime.context, runtime.state
     brief = _brief(state)
     searches_run, probes_run = state.get("searches_run", 0), state.get("probes_run", 0)
     index = len(state.get("searches", []))
@@ -150,7 +160,8 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
             "filters": variant.filters.model_dump(exclude_none=True) | {"locked": _locked_dict(locked)},
             "max_age_hours": variant.max_age_hours,
             "probe": variant.probe,
-            "matches": sum(matches_soft(c, variant) for c in candidates[:CANDIDATE_WINDOW]),
+            # jobs meeting every soft filter; with no soft filters, the number of jobs returned
+            "matches": soft_matches(variant, candidates[:CANDIDATE_WINDOW]),
             "header": header,
         })
         runtime.stream_writer({"type": "search", "line": header})
@@ -209,8 +220,14 @@ def ask_user(question: str, options: list[QuestionOption], runtime: Runtime) -> 
     state = runtime.state
     if state.get("questions_asked", 0) >= MAX_QUESTIONS:
         return "No more questions; decide with what you have."
+    if state.get("turns", 0) >= MAX_TURNS:
+        return "No turns left to act on an answer; finish with what you have."
+    if not state.get("searches_run", 0):
+        return "Refused: never ask at the start; search first, so the question can rest on what the results show."
     if not options:
         return "Refused: a question needs options, including one that keeps things as they are."
+    if any(o.relax for o in options) and all(o.relax for o in options):
+        return "Refused: a question that relaxes a requirement needs an option with no relax, to keep it as it is."
     brief = _brief(state)
     stated = {i.text.casefold() for i in brief.locked()}
     for o in options:

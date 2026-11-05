@@ -14,7 +14,7 @@ def _hit(job_id, location_type="remote", **kw):
         "job_id": str(job_id), "company_name": "Acme", "title": "ML Engineer",
         "chunks": [{"text": "first chunk"}, {"text": "the summary", "summary": True}],
         "employment_type": "full-time", "location_type": location_type, "seniority": "senior",
-        "languages_required": ["en"], "is_consulting": False, "is_startup": True,
+        "languages_required": ["english"], "is_consulting": False, "is_startup": True,
         "country": "DE", "posted_at": "2026-11-02T10:00:00+00:00",
     } | kw
     return {"_source": src}
@@ -109,3 +109,25 @@ async def test_probe_matching_no_locked_item_is_refused(engine):
         await run_variant(variant=SearchVariant(query="ml", probe="no such thing"),
                           brief=Brief(items=[REMOTE]), search_index=2,
                           **_deps(engine, _os([_hit(job.id)])))
+
+
+async def test_probe_breaks_store_the_brief_items_own_text(engine):
+    job = await _seed(engine)
+    [c] = await run_variant(variant=SearchVariant(query="ml", probe="Remote Only"),
+                            brief=Brief(items=[REMOTE]), search_index=2,
+                            **_deps(engine, _os([_hit(job.id, location_type=None)])))
+    assert c.breaks == ["remote only"]
+
+
+async def test_list_valued_stated_item_is_a_hard_terms_clause(engine):
+    from backend.search.advanced.brief import BriefItem
+
+    job = await _seed(engine)
+    os_client = _os([_hit(job.id, review_score=4.1)])
+    item = BriefItem(text="remote or hybrid", kind="require", source="stated", field="location_type",
+                     value="remote or hybrid")
+    [c] = await run_variant(variant=SearchVariant(query="ml"), brief=Brief(items=[item]),
+                            search_index=1, **_deps(engine, os_client))
+    leg = os_client.search.call_args.kwargs["body"]["query"]["hybrid"]["queries"][0]["bool"]
+    assert {"terms": {"location_type": ["remote", "hybrid"]}} in leg["filter"]
+    assert c.review_score == 4.1

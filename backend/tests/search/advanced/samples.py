@@ -12,7 +12,7 @@ def candidate(job_id: str, score: float = 0.9, **kw) -> Candidate:
     values = dict(
         job_id=job_id, score=score, title="ML Engineer", company="Acme", location="Berlin, Germany",
         job_country="Germany", company_country="DE", location_type="remote", seniority="senior",
-        employment_type="full-time", languages=["en"], salary=None, is_startup=True, is_consulting=False,
+        employment_type="full-time", languages=["english"], salary=None, is_startup=True, is_consulting=False,
         posted_at="2026-11-02T10:00:00+00:00", text="Build ranking models in PyTorch.", search_index=1,
     ) | kw
     return Candidate(**values)

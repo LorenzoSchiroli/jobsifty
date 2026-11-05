@@ -30,9 +30,9 @@ BRIEF = tool_call("update_brief", {"items": [REMOTE.model_dump()]})
 ASK = tool_call("ask_user", {"question": "Allow hybrid?",
                              "options": [{"label": "Allow hybrid"}, {"label": "Keep remote only"}]})
 
-SEARCH_THEN_FINISH = [SEARCH, FINISH]
-ASK_THEN_FINISH = [ASK, FINISH]
-ASK_THEN_SEARCH_THEN_FINISH = [BRIEF, ASK, SEARCH, FINISH]
+SEARCH_THEN_FINISH = [BRIEF, SEARCH, FINISH]
+ASK_THEN_FINISH = [BRIEF, SEARCH, ASK, FINISH]  # a question only after a search
+ASK_THEN_SEARCH_THEN_FINISH = [BRIEF, SEARCH, ASK, tool_call("search_jobs", {"variants": [{"query": "ml"}]}), FINISH]
 
 
 def shortlist_of(score: int) -> FinalShortlist:
@@ -154,7 +154,7 @@ async def test_resume_finished_thread_is_404(adv_client):
 
 
 async def test_llm_failure_returns_partial_not_500(adv_client, distill_mock):
-    ac, _ = adv_client([SEARCH, RuntimeError("429")], [])
+    ac, _ = adv_client([BRIEF, SEARCH, RuntimeError("429")], [])
     r = await ac.post("/jobs/search/advanced", json={"query": "x"})
     body = r.json()
     assert r.status_code == 200 and body["status"] == "partial" and body["results"][0]["fit_score"] is None

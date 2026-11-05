@@ -10,6 +10,9 @@ from tests.search.advanced.conftest import JOB_A, JOB_B
 from tests.search.advanced.fakes import ScriptedChatModel, tool_call
 from tests.search.advanced.samples import IN_MILAN, REMOTE, STARTUP, candidate
 
+WROTE = {"brief_written": True}  # update_brief has run, so search_jobs may
+SEARCHED = {"searches_run": 1}  # a search has run, so ask_user may
+
 
 # --- update_brief -----------------------------------------------------------------------------
 
@@ -45,13 +48,24 @@ async def test_update_brief_invalid_item_comes_back_as_readable_error(run_tool):
 
 # --- search_jobs ------------------------------------------------------------------------------
 
+async def test_search_before_update_brief_is_refused(run_tool, patched_run_variant):
+    out = await run_tool("search_jobs", {"variants": [{"query": "ml"}]})
+    assert out.messages[-1].content.startswith("Refused: call update_brief first")
+    assert patched_run_variant.await_count == 0 and out.state.get("searches_run", 0) == 0
+
+
+async def test_update_brief_marks_the_brief_written(run_tool):
+    out = await run_tool("update_brief", {"items": []})
+    assert out.state["brief_written"] is True
+
+
 async def test_search_rejects_too_many_variants(run_tool):
-    out = await run_tool("search_jobs", {"variants": [{"query": "a"}] * 4})
+    out = await run_tool("search_jobs", {"variants": [{"query": "a"}] * 4}, state=WROTE)
     assert "at most 3" in out.messages[-1].content
 
 
 async def test_search_adds_to_pool_and_logs(run_tool, patched_run_variant):
-    out = await run_tool("search_jobs", {"variants": [{"query": "ml"}]})
+    out = await run_tool("search_jobs", {"variants": [{"query": "ml"}]}, state=WROTE)
     assert len(out.state["pool"]) == 2 and out.state["searches_run"] == 1
     assert out.state["searches"][0]["query"] == "ml"
 
@@ -60,7 +74,7 @@ async def test_search_log_entry_short_ids_and_stream(run_tool, patched_run_varia
     out = await run_tool(
         "search_jobs",
         {"variants": [{"query": "ml", "filters": {"location_type": "remote"}, "max_age_hours": 168}]},
-        state={"brief": Brief(items=[REMOTE]).model_dump(), "searches": [{"index": 1}], "searches_run": 1},
+        state={"brief": Brief(items=[REMOTE]).model_dump(), "searches": [{"index": 1}], "searches_run": 1, **WROTE},
     )
     [_, entry] = out.state["searches"]
     assert entry["index"] == 2 and entry["probe"] is None and entry["max_age_hours"] == 168
@@ -76,7 +90,7 @@ async def test_search_log_entry_short_ids_and_stream(run_tool, patched_run_varia
 
 async def test_search_runs_variants_up_to_budget_and_refuses_the_rest(run_tool, patched_run_variant):
     out = await run_tool("search_jobs", {"variants": [{"query": "a"}, {"query": "b"}]},
-                         state={"searches_run": MAX_SEARCHES - 1})
+                         state={"searches_run": MAX_SEARCHES - 1, **WROTE})
     assert patched_run_variant.await_count == 1
     assert out.state["searches_run"] == MAX_SEARCHES
     assert [s["query"] for s in out.state["searches"]] == ["a"]
@@ -86,23 +100,23 @@ async def test_search_runs_variants_up_to_budget_and_refuses_the_rest(run_tool, 
 async def test_probe_counts_and_is_refused_past_probe_budget(run_tool, patched_run_variant):
     brief = Brief(items=[REMOTE]).model_dump()
     out = await run_tool("search_jobs", {"variants": [{"query": "ml", "probe": "remote only"}]},
-                         state={"brief": brief, "probes_run": MAX_PROBES - 1})
+                         state={"brief": brief, "probes_run": MAX_PROBES - 1, **WROTE})
     assert out.state["probes_run"] == MAX_PROBES and out.state["searches"][0]["probe"] == "remote only"
     out = await run_tool("search_jobs", {"variants": [{"query": "ml", "probe": "remote only"}]},
-                         state={"brief": brief, "probes_run": MAX_PROBES})
+                         state={"brief": brief, "probes_run": MAX_PROBES, **WROTE})
     assert patched_run_variant.await_count == 1
     assert "probe budget" in out.messages[-1].content and out.state["probes_run"] == MAX_PROBES
 
 
 async def test_probe_of_inferred_item_is_refused(run_tool):
     out = await run_tool("search_jobs", {"variants": [{"query": "ml", "probe": "startup"}]},
-                         state={"brief": Brief(items=[STARTUP]).model_dump()})
+                         state={"brief": Brief(items=[STARTUP]).model_dump(), **WROTE})
     assert "not a stated requirement" in out.messages[-1].content
 
 
 async def test_probe_of_unmapped_stated_item_is_refused(run_tool, patched_run_variant):
     out = await run_tool("search_jobs", {"variants": [{"query": "ml", "probe": "in Milan"}]},
-                         state={"brief": Brief(items=[IN_MILAN]).model_dump()})
+                         state={"brief": Brief(items=[IN_MILAN]).model_dump(), **WROTE})
     assert "maps to no index field" in out.messages[-1].content
     assert patched_run_variant.await_count == 0
     assert out.state.get("searches_run", 0) == 0 and out.state.get("probes_run", 0) == 0
@@ -110,19 +124,19 @@ async def test_probe_of_unmapped_stated_item_is_refused(run_tool, patched_run_va
 
 async def test_probe_of_stated_preference_is_refused(run_tool, patched_run_variant):
     out = await run_tool("search_jobs", {"variants": [{"query": "ml", "probe": "startup"}]},
-                         state={"brief": Brief(items=[STARTUP.model_copy(update={"source": "stated"})]).model_dump()})
+                         state={"brief": Brief(items=[STARTUP.model_copy(update={"source": "stated"})]).model_dump(), **WROTE})
     assert "a stated preference, not a hard filter" in out.messages[-1].content
     assert patched_run_variant.await_count == 0
 
 
 async def test_search_refuses_empty_variants(run_tool):
-    out = await run_tool("search_jobs", {"variants": []})
+    out = await run_tool("search_jobs", {"variants": []}, state=WROTE)
     assert "give 1 to 3 variants" in out.messages[-1].content
 
 
 async def test_value_error_inside_a_search_is_logged_as_a_failure(run_tool, patched_run_variant, caplog):
     patched_run_variant.side_effect = ValueError("bad vector")
-    out = await run_tool("search_jobs", {"variants": [{"query": "ml"}]})
+    out = await run_tool("search_jobs", {"variants": [{"query": "ml"}]}, state=WROTE)
     assert 'Search "ml" failed: ValueError: bad vector' in out.messages[-1].content
     assert "advanced search variant failed" in caplog.text
 
@@ -136,7 +150,7 @@ async def test_failed_variant_is_reported_and_the_others_still_run(run_tool, pat
         return ok(**kw)
 
     patched_run_variant.side_effect = first_fails
-    out = await run_tool("search_jobs", {"variants": [{"query": "a"}, {"query": "b"}]})
+    out = await run_tool("search_jobs", {"variants": [{"query": "a"}, {"query": "b"}]}, state=WROTE)
     assert 'Search "a" failed: RuntimeError: opensearch down' in out.messages[-1].content
     assert [s["query"] for s in out.state["searches"]] == ["b"] and out.state["searches"][0]["index"] == 1
     assert out.state["searches_run"] == 1
@@ -198,7 +212,7 @@ async def test_ask_user_pauses_then_applies_chosen_option(run_tool_with_resume):
     out = await run_tool_with_resume(
         "ask_user", {"question": "Allow hybrid?", "options": [{"label": "Allow hybrid", "relax": ["remote only"]},
                                                               {"label": "Keep remote only"}]},
-        state={"brief": Brief(items=[REMOTE]).model_dump(), "turns": 2}, answer="Allow hybrid")
+        state={"brief": Brief(items=[REMOTE]).model_dump(), "turns": 2, **SEARCHED}, answer="Allow hybrid")
     assert out.interrupt_value == {"question": "Allow hybrid?", "options": ["Allow hybrid", "Keep remote only"]}
     assert Brief(**out.state["brief"]).items[0].source == "inferred"
     assert out.state["questions_asked"] == 1
@@ -211,7 +225,7 @@ async def test_ask_user_pauses_then_applies_chosen_option(run_tool_with_resume):
 
 async def test_ask_user_free_text_sets_unlock_turn(run_tool_with_resume):
     out = await run_tool_with_resume("ask_user", {"question": "Q?", "options": [{"label": "A"}]},
-                                     state={"turns": 4}, answer="hybrid is fine if in Milan")
+                                     state={"turns": 4, **SEARCHED}, answer="hybrid is fine if in Milan")
     assert out.state["unlock_turn"] == 4
     assert out.messages[-1].content == "User answered: hybrid is fine if in Milan"
     assert out.state["qa"][0]["chosen"] is None
@@ -223,29 +237,49 @@ async def test_ask_user_past_budget_does_not_interrupt(run_tool):
 
 
 async def test_ask_user_without_options_is_refused_without_interrupting(run_tool):
-    out = await run_tool("ask_user", {"question": "Q?", "options": []})
+    out = await run_tool("ask_user", {"question": "Q?", "options": []}, state=SEARCHED)
     assert out.interrupt_value is None and "needs options" in out.messages[-1].content
 
 
 async def test_ask_user_relaxing_an_unknown_item_is_refused_without_interrupting(run_tool):
     out = await run_tool("ask_user", {"question": "Allow hybrid?",
                                       "options": [{"label": "Allow hybrid", "relax": ["remote"]}, {"label": "Keep"}]},
-                         state={"brief": Brief(items=[REMOTE]).model_dump()})
+                         state={"brief": Brief(items=[REMOTE]).model_dump(), **SEARCHED})
     assert out.interrupt_value is None
     assert "'remote'" in out.messages[-1].content and "not a stated item" in out.messages[-1].content
 
 
 async def test_ask_user_dict_resume_value_uses_its_answer(run_tool_with_resume):
     out = await run_tool_with_resume("ask_user", {"question": "Q?", "options": [{"label": "A"}]},
-                                     answer={"answer": "A"})
+                                     answer={"answer": "A"}, state=SEARCHED)
     assert out.messages[-1].content == "User chose: A"
 
 
 async def test_ask_user_has_no_side_effects_before_the_answer(run_tool):
-    out = await run_tool("ask_user", {"question": "Q?", "options": [{"label": "A"}]}, state={"turns": 1})
+    out = await run_tool("ask_user", {"question": "Q?", "options": [{"label": "A"}]}, state={"turns": 1, **SEARCHED})
     assert out.interrupt_value == {"question": "Q?", "options": ["A"]}
     assert out.state.get("questions_asked", 0) == 0 and out.state.get("qa", []) == []
     assert isinstance(out.messages[-1], AIMessage)
+
+
+async def test_ask_user_before_any_search_is_refused(run_tool):
+    out = await run_tool("ask_user", {"question": "Q?", "options": [{"label": "A"}]}, state={"turns": 1})
+    assert out.interrupt_value is None and "never ask at the start" in out.messages[-1].content
+
+
+async def test_ask_user_with_no_turn_left_is_refused(run_tool):
+    from backend.search.advanced.budget import MAX_TURNS
+
+    out = await run_tool("ask_user", {"question": "Q?", "options": [{"label": "A"}]},
+                         state={"turns": MAX_TURNS, **SEARCHED})
+    assert out.interrupt_value is None and "No turns left" in out.messages[-1].content
+
+
+async def test_ask_user_relaxing_without_a_keep_option_is_refused(run_tool):
+    out = await run_tool("ask_user", {"question": "Allow hybrid?",
+                                      "options": [{"label": "Allow hybrid", "relax": ["remote only"]}]},
+                         state={"brief": Brief(items=[REMOTE]).model_dump(), **SEARCHED})
+    assert out.interrupt_value is None and "an option with no relax" in out.messages[-1].content
 
 
 # --- finish -----------------------------------------------------------------------------------
@@ -281,7 +315,7 @@ async def test_extra_call_is_refused_when_the_first_returns_plain_text(run_tool)
 async def test_two_probe_searches_in_one_turn_stay_within_probe_budget(run_tool, patched_run_variant):
     probe = {"variants": [{"query": "ml", "probe": "remote only"}]}
     out = await run_tool(calls=[("search_jobs", probe), ("search_jobs", probe)],
-                         state={"brief": Brief(items=[REMOTE]).model_dump(), "probes_run": MAX_PROBES - 1})
+                         state={"brief": Brief(items=[REMOTE]).model_dump(), "probes_run": MAX_PROBES - 1, **WROTE})
     assert out.state["probes_run"] == MAX_PROBES and patched_run_variant.await_count == 1
     assert [m.content for m in out.messages if isinstance(m, ToolMessage)].count(ONE_CALL_REFUSAL) == 1
 

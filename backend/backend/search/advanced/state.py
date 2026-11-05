@@ -43,6 +43,7 @@ class AgentState(TypedDict, total=False):
     user_id: str
     query: str
     brief: dict  # a Brief dump
+    brief_written: bool  # update_brief has run: search_jobs is refused before
     pool: Annotated[dict[str, dict], merge_pool]  # job_id -> Candidate.to_dict()
     short_ids: Annotated[dict[str, str], merge_dicts]  # short id -> job_id
     searches: Annotated[list[dict], operator.add]

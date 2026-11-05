@@ -2,13 +2,28 @@
 
 Stated requirements are locked: only the user may relax them. Inferred ones the
 agent may trade. Pure data and rules, no I/O.
+
+A mapped item's value is in the index vocabulary (`vocabulary.py`): it is normalised when the item
+is built, so a value the index does not hold can never become a locked requirement.
 """
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from backend.search.advanced.vocabulary import (
+    CHOICE_FIELDS,
+    EmploymentType,
+    Language,
+    LocationType,
+    Seniority,
+    normalise_choice,
+    normalise_country,
+    normalise_languages,
+    same_country,
+)
 from backend.search.filters import SearchFilters
 
+# A company-size requirement stays possible as a text-only item: employee_count is not in the index.
 BriefField = Literal[
     "location_type",
     "seniority",
@@ -17,11 +32,35 @@ BriefField = Literal[
     "is_consulting",
     "is_startup",
     "company_country",
-    "employee_count",
     "min_review_score",
 ]
 
 _BOOL_FIELDS = ("is_consulting", "is_startup")
+
+_VALUE_HELP = (
+    "With `field` only. location_type / seniority / employment_type: one value, or a list meaning any of "
+    "them (\"remote or hybrid\" is [\"remote\", \"hybrid\"]); languages_required: a list of language names; "
+    "is_consulting / is_startup: true or false; company_country: a country name; min_review_score: 1-5."
+)
+
+
+def normalise_value(field: str, value):
+    """The value of `field` in the index vocabulary; ValueError when the field cannot take it."""
+    if field in CHOICE_FIELDS:
+        return normalise_choice(field, value)
+    if field == "languages_required":
+        return normalise_languages(value)
+    if field in _BOOL_FIELDS:
+        if not isinstance(value, bool):
+            raise ValueError(f"{field} needs true or false")
+        return value
+    if field == "min_review_score":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("min_review_score needs a number")
+        return float(value)
+    if field == "company_country":
+        return normalise_country(value)
+    return value  # an unknown field: the Literal on `field` refuses it
 
 
 class BriefItem(BaseModel):
@@ -29,41 +68,42 @@ class BriefItem(BaseModel):
     kind: Literal["require", "prefer", "avoid"]
     source: Literal["stated", "inferred"]
     field: BriefField | None = None
-    value: str | bool | float | list[str] | None = None
+    value: (
+        LocationType | list[LocationType] | Seniority | list[Seniority] | EmploymentType | list[EmploymentType]
+        | list[Language] | bool | float | str | None
+    ) = Field(default=None, description=_VALUE_HELP)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalise(cls, data):
+        if isinstance(data, dict) and data.get("field") is not None and data.get("value") is not None:
+            data = {**data, "value": normalise_value(data["field"], data["value"])}
+        return data
 
     @model_validator(mode="after")
     def _check(self):
         if (self.field is None) != (self.value is None):
             raise ValueError("field and value must be set together")
-        self._check_value_type()
         if self.kind == "avoid" and self.field is not None and self.field not in _BOOL_FIELDS:
             raise ValueError("avoid with a field is only allowed for is_consulting / is_startup")
         return self
 
 
-    def _check_value_type(self) -> None:
-        if self.field is None:
-            return
-        v = self.value
-        if self.field == "languages_required":
-            if isinstance(v, str):
-                self.value = [v]
-            elif not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
-                raise ValueError("languages_required needs a list of strings")
-        elif self.field in _BOOL_FIELDS:
-            if not isinstance(v, bool):
-                raise ValueError(f"{self.field} needs a bool")
-        elif self.field == "min_review_score":
-            if isinstance(v, bool) or not isinstance(v, (int, float)):
-                raise ValueError("min_review_score needs a number")
-            self.value = float(v)
-        elif not isinstance(v, str):
-            raise ValueError(f"{self.field} needs a string")
-
-
 class Brief(BaseModel):
     items: list[BriefItem] = []
     notes: str = ""
+
+    @model_validator(mode="after")
+    def _one_stated_item_per_field(self):
+        seen: set[str] = set()
+        for i in self.items:
+            if i.source != "stated" or i.field is None:
+                continue
+            if i.field in seen:
+                raise ValueError(f"two stated items set {i.field}; give one item whose value is a list "
+                                 "of every value the user accepts")
+            seen.add(i.field)
+        return self
 
     def locked(self) -> list[BriefItem]:
         return [i for i in self.items if i.source == "stated"]
@@ -84,6 +124,8 @@ class LockedRequirementError(ValueError):
 
 
 def _norm(value):
+    if isinstance(value, str) and value:
+        return [value]
     return sorted(value) if isinstance(value, list) else value
 
 
@@ -145,26 +187,39 @@ def hard_filters(brief: Brief, *, lifted: str | None = None) -> SearchFilters | 
 
 
 def satisfies(item: BriefItem, fields: dict) -> bool | None:
-    """Whether the job's fields positively meet the item; None when the value is unknown."""
+    """Whether the job's fields positively meet the item; None when the value is unknown.
+
+    A list value means any of its values. An empty language list is unknown, as the hard filter
+    treats it (it matches no `terms`).
+    """
     attr, wanted = _wanted(item)
     actual = fields.get(item.field)
     if actual is None and item.field == "company_country":
         actual = fields.get("country")
-    if actual is None or wanted is None:
+    if actual is None or wanted is None or actual == []:
         return None
     if attr == "languages_required":
-        allowed = {str(w).casefold() for w in ([wanted] if isinstance(wanted, str) else wanted)}
+        allowed = {str(w).casefold() for w in wanted}
         return all(str(a).casefold() in allowed for a in actual)
     if attr == "min_review_score":
         return float(actual) >= float(wanted)
-    if isinstance(wanted, str) and isinstance(actual, str):
-        return actual.casefold() == wanted.casefold()
+    if attr == "country":
+        return same_country(str(actual), str(wanted))
+    if isinstance(wanted, (str, list)) and isinstance(actual, str):
+        options = [wanted] if isinstance(wanted, str) else wanted
+        return actual.casefold() in {o.casefold() for o in options}
     return actual == wanted
 
 
-def _contradicts(item: BriefItem, fields: dict) -> bool:
-    return satisfies(item, fields) is False
-
-
 def violations(brief: Brief, fields: dict) -> list[str]:
-    return [i.text for i in _stated_mapped(brief) if _contradicts(i, fields)]
+    """Stated hard items the job's fields contradict (unknown values are not counted)."""
+    return [i.text for i in _stated_mapped(brief) if satisfies(i, fields) is False]
+
+
+def unmet(brief: Brief, fields: dict) -> list[str]:
+    """Stated hard items the job does not positively meet, among the fields `fields` carries.
+
+    Unknown counts as unmet, as the hard filter does: a job found before an item was stated is
+    held to it like every job found after.
+    """
+    return [i.text for i in _stated_mapped(brief) if i.field in fields and satisfies(i, fields) is not True]

@@ -2,8 +2,14 @@
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from backend.search.advanced.brief import Brief, violations
-from backend.search.advanced.budget import CV_CHARS, FINALIZE_CANDIDATES, FINALIZE_TEXT_CHARS, MAX_SHORTLIST
+from backend.search.advanced.brief import Brief, unmet
+from backend.search.advanced.budget import (
+    CV_CHARS,
+    FINALIZE_CANDIDATES,
+    FINALIZE_MAX_TOKENS,
+    FINALIZE_TEXT_CHARS,
+    MAX_SHORTLIST,
+)
 from backend.search.advanced.context import AgentContext
 from backend.search.advanced.observation import Candidate, job_line
 from backend.search.advanced.state import AgentState
@@ -37,10 +43,12 @@ def _brief(state: AgentState) -> Brief:
 
 
 def _eligible(c: Candidate, brief: Brief) -> bool:
-    stated = {i.text for i in brief.locked()}
-    if any(b in stated for b in c.breaks):
+    """A job may be shortlisted (or returned as partial) only if it positively meets every stated
+    hard item whose field it carries, and breaks no still-stated item (probe jobs)."""
+    stated = {i.text.casefold() for i in brief.locked()}
+    if any(b.casefold() in stated for b in c.breaks):
         return False
-    return not violations(brief, c.fields())
+    return not unmet(brief, c.fields())
 
 
 def finalize_candidates(state: AgentState) -> list[Candidate]:
@@ -72,6 +80,9 @@ def finalize_prompt(state: AgentState, ctx: AgentContext, candidates: list[Candi
             f"{job_line(c, by_job.get(c.job_id, c.job_id[:4]), ctx.now)}\n    {c.text[:FINALIZE_TEXT_CHARS]}"
             for c in candidates),
         "Searches:\n" + ("\n".join(s["header"] for s in state.get("searches") or []) or "—"),
+        # A free-text answer the agent did not write into the brief still counts.
+        "Questions and the user's answers:\n" + (
+            "\n".join(f"- Q: {q['question']} A: {q['answer']}" for q in state.get("qa") or []) or "—"),
     ]
     return [SystemMessage(RULES), HumanMessage("\n\n".join(blocks))]
 
@@ -81,13 +92,14 @@ async def run_finalize(state: AgentState, ctx: AgentContext) -> dict:
     candidates = finalize_candidates(state)
     by_job = {c.job_id: c for c in candidates}
     short_ids = state.get("short_ids") or {}
-    structured = ctx.llm.with_structured_output(FinalShortlist, method="json_schema", strict=True)
+    structured = ctx.llm.with_structured_output(FinalShortlist, method="json_schema", strict=True,
+                                                max_tokens=FINALIZE_MAX_TOKENS)
     result: FinalShortlist = await structured.ainvoke(finalize_prompt(state, ctx, candidates))
     shortlist = []
     for item in result.shortlist:
         job_id = short_ids.get(item.job_id.strip().strip("[]").strip().lower())
         c = by_job.get(job_id) if job_id else None
-        if c is None or violations(brief, c.fields()) or any(r["job_id"] == job_id for r in shortlist):
+        if c is None or not _eligible(c, brief) or any(r["job_id"] == job_id for r in shortlist):
             continue
         shortlist.append({**item.model_dump(), "job_id": job_id, "fit_score": max(0, min(100, item.fit_score))})
         if len(shortlist) == MAX_SHORTLIST:

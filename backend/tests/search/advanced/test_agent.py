@@ -17,6 +17,15 @@ from tests.search.advanced.samples import REMOTE
 FIRST_SHORT_ID = JOB_A[:4]  # the short id of the first candidate the patched search returns
 
 
+def brief() -> AIMessage:
+    """An empty update_brief: search_jobs is refused before one."""
+    return tool_call("update_brief", {"items": []})
+
+
+def search(query: str = "x") -> AIMessage:
+    return tool_call("search_jobs", {"variants": [{"query": query}]})
+
+
 @pytest.fixture
 def graph(patched_run_variant):
     return build_graph(MemorySaver())
@@ -79,7 +88,7 @@ async def test_unparsed_tool_call_ends_partial(graph, ctx_factory):
 
 
 async def test_no_hits_ends_done_with_empty_results(graph, ctx_factory, run_variant_empty):
-    llm = ScriptedChatModel(script=[tool_call("search_jobs", {"variants": [{"query": "x"}]}),
+    llm = ScriptedChatModel(script=[brief(), search(),
                                     tool_call("finish", {"keep": [], "notes": "nothing"})],
                             structured=[FinalShortlist(summary="Nothing matches this week.", shortlist=[])])
     out = await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=llm), durability="exit")
@@ -87,14 +96,14 @@ async def test_no_hits_ends_done_with_empty_results(graph, ctx_factory, run_vari
 
 
 async def test_llm_error_ends_partial(graph, ctx_factory):
-    llm = ScriptedChatModel(script=[tool_call("search_jobs", {"variants": [{"query": "x"}]}), RuntimeError("429")],
+    llm = ScriptedChatModel(script=[brief(), search(), RuntimeError("429")],
                             structured=[])
     out = await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=llm), durability="exit")
     assert out["status"] == "partial" and out["shortlist"]
 
 
 async def test_finalize_error_ends_partial(graph, ctx_factory):
-    llm = ScriptedChatModel(script=[tool_call("search_jobs", {"variants": [{"query": "x"}]}),
+    llm = ScriptedChatModel(script=[brief(), search(),
                                     tool_call("finish", {"keep": [], "notes": ""})],
                             structured=[RuntimeError("timeout")])
     out = await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=llm), durability="exit")
@@ -102,7 +111,7 @@ async def test_finalize_error_ends_partial(graph, ctx_factory):
 
 
 async def test_tool_raising_runtime_error_is_reported_to_the_agent(graph, ctx_factory):
-    llm = ScriptedChatModel(script=[tool_call("search_jobs", {"variants": [{"query": "x"}]}),
+    llm = ScriptedChatModel(script=[brief(), search(),
                                     tool_call("finish", {"keep": [], "notes": ""})],
                             structured=[FinalShortlist(summary="s", shortlist=[])])
     with patch("backend.search.advanced.tools.render_observation", side_effect=RuntimeError("boom")):
@@ -131,7 +140,8 @@ async def test_agent_sees_system_prompt_with_cv_then_history(graph, ctx_factory)
 
 async def test_ask_user_pauses_and_resumes(graph, ctx_factory):
     llm = ScriptedChatModel(
-        script=[tool_call("ask_user", {"question": "Hybrid ok?", "options": [{"label": "Yes"}, {"label": "No"}]}),
+        script=[brief(), search(),
+                tool_call("ask_user", {"question": "Hybrid ok?", "options": [{"label": "Yes"}, {"label": "No"}]}),
                 tool_call("finish", {"keep": [], "notes": ""})],
         structured=[FinalShortlist(summary="s", shortlist=[])])
     ctx = ctx_factory(llm=llm)
@@ -145,7 +155,9 @@ async def test_ask_user_pauses_and_resumes(graph, ctx_factory):
 
 async def test_cv_is_not_in_checkpointed_state(graph, ctx_factory):
     ctx = ctx_factory(cv_text="SECRET-CV-MARKER", llm=ScriptedChatModel(
-        script=[tool_call("ask_user", {"question": "Q?", "options": [{"label": "A"}]})], structured=[]))
+        script=[brief(), search(), tool_call("ask_user", {"question": "Q?", "options": [{"label": "A"}]})],
+        structured=[]))
     await graph.ainvoke(initial("x"), config("t2"), context=ctx, durability="exit")
     snap = await graph.aget_state(config("t2"))
+    assert snap.interrupts  # paused at the question, so the state is checkpointed
     assert "SECRET-CV-MARKER" not in repr(snap.values)

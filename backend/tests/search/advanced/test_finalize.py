@@ -2,7 +2,7 @@ from backend.search.advanced.budget import FINALIZE_CANDIDATES
 from backend.search.advanced.finalize import (
     FinalShortlist, filters_summary, finalize_candidates, partial_result, run_finalize,
 )
-from tests.search.advanced.conftest import JOB_A, JOB_C, PROBE_JOB_ID, item
+from tests.search.advanced.conftest import JOB_A, JOB_B, JOB_C, PROBE_JOB_ID, item
 from tests.search.advanced.fakes import ScriptedChatModel
 from tests.search.advanced.samples import candidate
 
@@ -96,3 +96,42 @@ def test_partial_result_drops_violating_jobs(pool_state):
 def test_partial_result_includes_probe_jobs_once_relaxed(pool_state_with_probe_relaxed):
     ids = [r["job_id"] for r in partial_result(pool_state_with_probe_relaxed)["shortlist"]]
     assert PROBE_JOB_ID in ids
+
+
+def test_probe_break_in_other_casing_still_blocks_the_job(pool_state_with_probe):
+    pool = dict(pool_state_with_probe["pool"])
+    pool[PROBE_JOB_ID] = {**pool[PROBE_JOB_ID], "breaks": ["IN MILAN"]}  # remote: meets the other item
+    state = {**pool_state_with_probe, "pool": pool}
+    assert PROBE_JOB_ID not in [c.job_id for c in finalize_candidates(state)]
+    assert PROBE_JOB_ID not in [r["job_id"] for r in partial_result(state)["shortlist"]]
+
+
+def test_pool_job_with_unknown_field_is_not_eligible_once_the_item_is_stated(pool_state):
+    # JOB_B was found before "remote only" was stated: its location type is unknown
+    pool = {**pool_state["pool"], JOB_B: candidate(JOB_B, 0.99, location_type=None).to_dict()}
+    state = {**pool_state, "pool": pool, "keep": [JOB_B]}
+    assert JOB_B not in [c.job_id for c in finalize_candidates(state)]
+    assert JOB_B not in [r["job_id"] for r in partial_result(state)["shortlist"]]
+
+
+async def test_finalize_drops_a_returned_job_that_does_not_meet_a_stated_item(ctx_factory, pool_state):
+    pool = {**pool_state["pool"], JOB_B: candidate(JOB_B, 0.5, location_type=None).to_dict()}
+    state = {**pool_state, "pool": pool, "short_ids": {**pool_state["short_ids"], "9c02": JOB_B}}
+    out = await _run(ctx_factory, state, [item("9c02", 90), item("a1f3", 80)])
+    assert [r["job_id"] for r in out["shortlist"]] == [JOB_A]
+
+
+async def test_finalize_prompt_carries_the_questions_and_answers(ctx_factory, pool_state):
+    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[])])
+    qa = [{"question": "Allow hybrid?", "options": ["Yes", "No"], "answer": "only if in Milan", "chosen": None}]
+    await run_finalize({**pool_state, "qa": qa}, ctx_factory(llm=llm))
+    text = "\n".join(str(m.content) for m in llm.calls[0])
+    assert "- Q: Allow hybrid? A: only if in Milan" in text
+
+
+async def test_finalize_caps_output_tokens(ctx_factory, pool_state):
+    from backend.search.advanced.budget import FINALIZE_MAX_TOKENS
+
+    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[])])
+    await run_finalize(pool_state, ctx_factory(llm=llm))
+    assert llm.structured_kwargs["max_tokens"] == FINALIZE_MAX_TOKENS

@@ -115,4 +115,4 @@ def test_soft_country_is_described_as_company_country():
     from backend.search.advanced.search import VariantFilters
     v = SearchVariant(query="ml", filters=VariantFilters(company_country="DE"))
     obs = render_observation(1, v, None, [], {}, pool_size=0, now=NOW)
-    assert "company_country=DE" in obs.splitlines()[0]
+    assert "company_country=Germany" in obs.splitlines()[0]  # an ISO code is normalised to the name

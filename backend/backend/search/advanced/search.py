@@ -2,13 +2,24 @@
 import asyncio
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy import select
 
 from backend.models import Job
 from backend.search.advanced.brief import Brief, BriefItem, hard_filters, satisfies
 from backend.search.advanced.budget import CANDIDATE_WINDOW
-from backend.search.advanced.observation import Candidate, canonical_country, job_country
+from backend.search.advanced.observation import Candidate, job_country
+from backend.search.advanced.vocabulary import (
+    CHOICE_FIELDS,
+    EmploymentType,
+    Language,
+    LocationType,
+    Seniority,
+    normalise_choice,
+    normalise_country,
+    normalise_languages,
+    same_country,
+)
 from backend.search.filters import SearchFilters
 from backend.search.models_lifecycle import encode_query
 from backend.search.retrieval import hybrid_retrieve
@@ -16,16 +27,31 @@ from backend.search.reranker import rerank_scored
 
 
 class VariantFilters(BaseModel):
+    """Soft filters of one variant: they rank matches higher but exclude nothing. Values as in the brief."""
+
     company_country: str | None = None
-    location_type: str | None = None
-    seniority: str | None = None
-    employment_type: str | None = None
-    languages_required: list[str] | None = None
+    location_type: LocationType | list[LocationType] | None = None
+    seniority: Seniority | list[Seniority] | None = None
+    employment_type: EmploymentType | list[EmploymentType] | None = None
+    languages_required: list[Language] | None = None
     is_consulting: bool | None = None
     is_startup: bool | None = None
-    employee_count: str | None = None
     min_review_score: float | None = None
-    industry: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalise(cls, data):
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        for name in CHOICE_FIELDS:
+            if data.get(name) is not None:
+                data[name] = normalise_choice(name, data[name])
+        if data.get("languages_required") is not None:
+            data["languages_required"] = normalise_languages(data["languages_required"])
+        if data.get("company_country") is not None:
+            data["company_country"] = normalise_country(data["company_country"])
+        return data
 
     def to_search_filters(self, query: str, max_age_hours: int | None) -> SearchFilters:
         values = self.model_dump(exclude_none=True)
@@ -41,27 +67,42 @@ class SearchVariant(BaseModel):
     probe: str | None = None  # text of the stated item this search lifts
 
 
-def _same_country(a: str | None, b: str | None) -> bool:
-    return (canonical_country(a) or a or "").casefold() == (canonical_country(b) or b or "").casefold()
+def _any_of(actual: str | None, wanted: str | list[str]) -> bool:
+    options = [wanted] if isinstance(wanted, str) else wanted
+    return actual is not None and actual.casefold() in {o.casefold() for o in options}
+
+
+def has_soft_filters(variant: SearchVariant) -> bool:
+    return bool(variant.filters.model_dump(exclude_none=True))
 
 
 def matches_soft(c: Candidate, variant: SearchVariant) -> bool:
-    """Whether the candidate equals every soft filter the variant set.
-
-    employee_count, min_review_score and industry are not kept on candidates and are not checked.
-    """
+    """Whether the candidate meets every soft filter the variant set (a list: any of its values)."""
     f = variant.filters
-    for name in ("location_type", "seniority", "employment_type", "is_consulting", "is_startup"):
+    for name in CHOICE_FIELDS:
+        wanted = getattr(f, name)
+        if wanted is not None and not _any_of(getattr(c, name), wanted):
+            return False
+    for name in ("is_consulting", "is_startup"):
         wanted = getattr(f, name)
         if wanted is not None and getattr(c, name) != wanted:
             return False
-    if f.company_country is not None and not _same_country(c.company_country, f.company_country):
+    if f.company_country is not None and not same_country(c.company_country, f.company_country):
+        return False
+    if f.min_review_score is not None and (c.review_score is None or c.review_score < f.min_review_score):
         return False
     if f.languages_required:
         wanted_langs = {l.casefold() for l in f.languages_required}
         if not wanted_langs & {l.casefold() for l in c.languages}:
             return False
     return True
+
+
+def soft_matches(variant: SearchVariant, candidates: list[Candidate]) -> int:
+    """How many candidates meet every soft filter; with no soft filters, how many were returned."""
+    if not has_soft_filters(variant):
+        return len(candidates)
+    return sum(matches_soft(c, variant) for c in candidates)
 
 
 def _probed_item(brief: Brief, probe: str) -> BriefItem | None:
@@ -118,11 +159,12 @@ async def run_variant(
             salary=row.salary_range if row else None,
             is_startup=src.get("is_startup"),
             is_consulting=src.get("is_consulting"),
+            review_score=src.get("review_score"),
             posted_at=src.get("posted_at") or "",  # may be empty; rendering treats it as unknown age
             text=text,
             search_index=search_index,
         )
         if item is not None and satisfies(item, c.fields()) is not True:
-            c.breaks = [variant.probe]
+            c.breaks = [item.text]  # the brief's own text, not the probe as the agent typed it
         candidates.append(c)
     return candidates
