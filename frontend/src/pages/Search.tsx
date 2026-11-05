@@ -73,8 +73,9 @@ export default function Search() {
 
       <form onSubmit={handleSearch} style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
         <input value={query} onChange={e => setQuery(e.target.value)} placeholder="e.g. machine learning engineer remote" required />
-        <button type="submit" style={{ whiteSpace: 'nowrap' }}>
-          Search
+        {/* Busy while a request runs, but still clickable: a new submit replaces the running one */}
+        <button type="submit" aria-busy={loading} style={{ whiteSpace: 'nowrap', opacity: loading ? 0.6 : 1 }}>
+          {loading ? '...' : 'Search'}
         </button>
       </form>
 

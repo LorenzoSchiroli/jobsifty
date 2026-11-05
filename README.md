@@ -6,8 +6,8 @@ Jobsifty continuously scrapes job offers from several sources, has an LLM
 distil each posting into structured metadata, embeds it, and serves a hybrid
 **BM25 + k-NN** search endpoint with **cross-encoder reranking**. On top of that
 sits a LangGraph agent: an **advanced search** that searches in a loop, asks
-questions when a requirement is ambiguous, and fit-scores every result against
-your CV.
+before relaxing anything you stated or to settle a trade-off the results show,
+and fit-scores every result against your CV.
 
 It is a full vertical slice, deliberately: scraping and LLM enrichment →
 retrieval and ranking → REST API and SPA → and the same stack deployed two
@@ -155,8 +155,8 @@ flowchart TB
 | Choice | Motivation |
 |--------|------------|
 | **A tool loop, one call per turn** | The model decides what to do next (update what it understood, search with 1–3 query variants, read a job, ask, finish) instead of following a fixed graph. One call per turn keeps every step observable and the budget countable. |
-| **Stated vs inferred requirements** | What you typed is locked in the brief and every result must satisfy it; only you can relax it, by answering a question. What the agent inferred from your CV and past searches it may trade. Probes ("what if …" searches) measure what a stated requirement costs, so a question can say so. |
-| **A hard budget: 6 turns, 9 searches (2 probes), 2 questions, 4 minutes** | An agent loop is how a 3-second search becomes a 40-second one with an unbounded LLM bill. When the budget runs out the answer is marked `partial` and still returns the best jobs found. |
+| **Stated vs inferred requirements** | What you typed is locked in the brief and every result must satisfy it; only you can relax it, by answering a question. A requirement that maps to an index field uses the index's own values (the tool schema lists them), so "on-site" or "English" filters what ingestion wrote rather than matching nothing. What the agent inferred from your CV and past searches it may trade. Probes ("what if …" searches) measure what a stated requirement costs, so a question can say so. |
+| **A hard budget: 6 turns, 9 searches (2 probes), 2 questions, 4 minutes** | An agent loop is how a 3-second search becomes a 40-second one with an unbounded LLM bill. A spent budget goes straight to `finalize` and ends with a normal shortlist; every LLM call is cut at the deadline (45 s kept for finalize) and capped in output tokens. The answer is `partial` only when the assistant could not finish (an LLM error, an unparsed answer, a failed or timed-out finalize): the most relevant jobs found, without fit scores. |
 | **`finalize` scores the whole pool** | Fit score, rationale, gaps and trade-offs are written once over every job found, not only the last search, so an early good hit is not lost. |
 | **State in Postgres only while a question is open** | The agent interrupts to ask, so the run survives an HTTP round trip: checkpointed by `thread_id` (`durability="exit"`), `/resume` can land on any API replica. The thread is deleted when a run ends. The CV stays in the run context and out of the checkpoint. |
 | **Any OpenAI-compatible LLM** | Groq by default (the only private provider: it sees the CV); `ADVANCED_LLM_BASE_URL` / `_MODEL` / `_API_KEY` point it elsewhere. |
@@ -343,7 +343,8 @@ cp .env.example .env      # then fill in the keys below
 | `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | `.env` | Optional job source |
 | `BACKUP_SBOX_HOST` / `_USER` / `_RCLONE_PASS` | `.env` | Optional nightly Postgres backup |
 | `GROQ_MODEL_LARGE` / `GROQ_MODEL_BASE` | `.env.public` | Model IDs for agents / company enrichment |
-| `ADVANCED_LLM_BASE_URL` / `_MODEL` / `_API_KEY` | `.env.public` / `.env` | Optional: advanced search on another OpenAI-compatible endpoint (default: Groq settings) |
+| `ADVANCED_LLM_BASE_URL` / `_MODEL` | `.env.public` | Optional: advanced search on another OpenAI-compatible endpoint (default: Groq settings) |
+| `ADVANCED_LLM_API_KEY` | `.env` | Optional: that endpoint's key (default: `GROQ_API_KEY`) |
 | `NVIDIA_MODEL` / `GEMINI_MODEL` / `LLM_PROVIDERS` | `.env.public` | Company enrichment LLM pool: models (comma-separated fallbacks) and order (default `nvidia,gemini,groq`) |
 | `OFFER_LLM_PROVIDERS` | `.env.public` | Offer summary LLM pool order (default `nvidia,gemini`, Groq left out) |
 | `JOB_LIVE_DAYS` | `.env.public` | Days a job stays live, from its posting time: search retention, reconcile, company enrichment (default 14) |

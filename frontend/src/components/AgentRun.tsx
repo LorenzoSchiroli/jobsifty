@@ -12,7 +12,7 @@ function Items({ title, items }: { title: string; items: BriefItem[] }) {
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
         {items.map((it, i) => (
           <span key={i} style={{ fontSize: '0.75rem', background: '#2a2a2a', padding: '0.15rem 0.5rem', borderRadius: 4 }}>
-            {it.kind === 'avoid' ? 'avoid: ' : it.kind === 'prefer' ? 'prefer: ' : ''}{it.text}
+            {it.kind === 'avoid' ? 'avoid: ' : it.kind === 'prefer' ? 'preferred: ' : ''}{it.text}
           </span>
         ))}
       </div>
@@ -30,8 +30,13 @@ interface Props {
 
 export default function AgentRun({ run, running, onAnswer, part }: Props) {
   const [text, setText] = useState('')
-  const stated = run?.brief?.stated ?? []
-  const fromYou = [...(run?.brief?.inferred ?? []), ...(run?.brief?.avoid ?? [])]
+  const avoid = run?.brief?.avoid ?? []
+  // Stated requires and avoids are kept in every result; a stated preference is not.
+  const statedAll = [...(run?.brief?.stated ?? []), ...avoid.filter(i => i.source === 'stated')]
+  const kept = statedAll.filter(i => i.kind !== 'prefer')
+  const preferred = statedAll.filter(i => i.kind === 'prefer')
+  const fromYou = [...(run?.brief?.inferred ?? []), ...avoid.filter(i => i.source === 'inferred')]
+  const hasBrief = statedAll.length > 0 || fromYou.length > 0
   const question = run?.status === 'question' ? run.question : null
 
   function send(answer: string) {
@@ -46,11 +51,18 @@ export default function AgentRun({ run, running, onAnswer, part }: Props) {
     return (
       <div style={box}>
         <div style={heading}>How I searched</div>
-        {run.searches.map((s, i) => (
-          <div key={i} style={{ fontSize: '0.78rem', opacity: 0.6, marginBottom: '0.15rem' }}>
-            {s.probe ? `what if ${s.probe}: ` : ''}"{s.query}" — {s.matches} match{s.matches === 1 ? '' : 'es'}
-          </div>
-        ))}
+        {run.searches.map((s, i) => {
+          // matches: jobs meeting every soft filter, or the jobs returned when the search set none
+          const soft = Object.keys(s.filters).some(k => k !== 'locked')
+          const count = soft
+            ? `${s.matches} matching its filters`
+            : `${s.matches} job${s.matches === 1 ? '' : 's'} found`
+          return (
+            <div key={i} style={{ fontSize: '0.78rem', opacity: 0.6, marginBottom: '0.15rem' }}>
+              {s.probe ? `what if ${s.probe}: ` : ''}"{s.query}" — {count}
+            </div>
+          )
+        })}
       </div>
     )
   }
@@ -59,10 +71,11 @@ export default function AgentRun({ run, running, onAnswer, part }: Props) {
     <div>
       {running && <p style={{ opacity: 0.6 }}>Searching… this can take a couple of minutes</p>}
 
-      {run && (stated.length > 0 || fromYou.length > 0) && (
+      {run && hasBrief && (
         <div style={box}>
           <div style={heading}>What I understood</div>
-          <Items title="You asked for (kept in every result)" items={stated} />
+          <Items title="You asked for (kept in every result)" items={kept} />
+          <Items title="You asked for (preferred, not required)" items={preferred} />
           <Items title="From your CV and past searches" items={fromYou} />
         </div>
       )}
@@ -87,7 +100,7 @@ export default function AgentRun({ run, running, onAnswer, part }: Props) {
           <div style={heading}>Summary</div>
           {run.status === 'partial' && (
             <div style={{ fontSize: '0.8rem', color: '#fbbf24', marginBottom: '0.4rem' }}>
-              The search ran out of budget before it finished: these are the best results found so far.
+              The assistant could not finish (an LLM error or timeout): these are the most relevant jobs found so far, without fit scores.
             </div>
           )}
           <div style={{ fontSize: '0.9rem' }}>{run.summary}</div>
