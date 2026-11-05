@@ -30,7 +30,7 @@ class ChatProvider(Provider):
     base_url: str
     model_env: str
     default_model: str
-    # an unknown or retired model will not come back this run either
+    # an unknown or retired model will not come back within the hour the provider is paused
     unusable_statuses = frozenset({401, 402, 403, 404})
     # provider-specific request fields
     extra_body: dict = {}

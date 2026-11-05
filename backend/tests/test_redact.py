@@ -82,6 +82,13 @@ def test_numbers_that_are_not_phones_are_left_alone():
         assert redact(cv) == (cv, {})
 
 
+def test_labelled_year_ranges_are_not_phones():
+    for cv in ("Mobile 2018-2020: built apps", "Phone 2019 2022"):
+        assert redact(cv) == (cv, {})
+    out, found = redact("Tel 06 1234 5678")
+    assert found == {"phone": 1}
+
+
 def test_phone_forms():
     for cv in ("Tel 06 1234 5678", "+39 333 1234567", "cell: 333 1234567", "333 123 4567"):
         out, found = redact(cv)

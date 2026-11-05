@@ -414,7 +414,7 @@ Offer sources: `jobspy`, `adzuna`, `arbeitnow`, `freehire` (default: all); what 
 | Path | What it is |
 |------|------------|
 | `backend/` | FastAPI service — REST API, Postgres (SQLAlchemy async), OpenSearch hybrid search, outbox worker, LangGraph agents |
-| `llmpool/` | Shared LLM / web-search provider pool used by both packages |
+| `llmpool/` | Shared provider pool and LLM chat providers used by both packages |
 | `ingestion/` | Pipeline — job scraping, rule-based offer parsing, company enrichment, chunked embedding, POST to the backend |
 | `frontend/` | React (Vite) SPA, served by nginx in Docker/k8s |
 | `deploy/helm/` | Helm chart for the whole stack + `values-local` / `values-cloud` / `values-hetzner` |

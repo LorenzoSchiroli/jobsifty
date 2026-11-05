@@ -99,13 +99,26 @@ async def critique_results(query: str, hits: list[dict]) -> dict:
 
 
 async def score_fit(cv_text: str, preference_memory: str, hits: list[dict]) -> list[dict]:
+    hits = hits[:FIT_SCORED_JOBS]
+    scored_ids = {h["_source"].get("job_id") for h in hits}
+
     def parse(content: str) -> list[dict]:
         data = _parse_json(content)
         if not isinstance(data, list):
             raise ValueError("expected a JSON array")
-        return data
+        out = []
+        for item in data:
+            if not isinstance(item, dict) or not isinstance(item.get("job_id"), str):
+                raise ValueError("expected objects with a string job_id")
+            try:
+                score = int(item["fit_score"])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError("fit_score is not a number") from None
+            item = {**item, "fit_score": score}
+            if item["job_id"] in scored_ids:  # an id the model made up is dropped
+                out.append(item)
+        return out
 
-    hits = hits[:FIT_SCORED_JOBS]
     jobs_blob = "\n".join(
         json.dumps({"job_id": h["_source"].get("job_id"), "job": job_text(h, FIT_TEXT_CHARS)}, ensure_ascii=False)
         for h in hits
@@ -126,10 +139,16 @@ async def score_fit(cv_text: str, preference_memory: str, hits: list[dict]) -> l
 
 async def distill_memory(existing: str, user_edited: bool, query: str, filters_summary: str,
                          clarify_qa: list[tuple[str, str]]) -> str:
+    def parse(content: str) -> str:
+        text = content.strip()
+        if not text:  # an empty answer must not overwrite the stored memory
+            raise ValueError("empty summary")
+        return text
+
     qa = "\n".join(f"Q: {q} A: {a}" for q, a in clarify_qa) or "(none)"
     out = await get_pool().acomplete(
         f"Existing summary (user_edited={str(user_edited).lower()}):\n{existing or '(none)'}\n\n"
         f"New session — query: {query}\nfilters: {filters_summary}\nclarifications:\n{qa}",
-        str.strip, "distill_memory", system=_DISTILL_SYSTEM, json=False,
+        parse, "distill_memory", system=_DISTILL_SYSTEM, json=False,
     )
     return existing if out is None else out

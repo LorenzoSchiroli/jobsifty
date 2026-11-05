@@ -75,6 +75,8 @@ _RULES = [
         r"(?<![\w.,/+€$£-])(?:\+|00)\d{1,3}[ .-]?\(?\d{1,4}\)?(?:[ .-]?\d{2,4}){2,4}(?![\w]|[.,]\d)")),
     ("phone", re.compile(
         r"\b(?:Tel|Phone|Cell|Mobile|Mob|Telefono|Cellulare)\b\.?[ \t]*:?[ \t]*"
+        # not a year or a year range ("Mobile 2018-2020: built apps")
+        r"(?!(?:19|20)\d{2}(?:[ \t]*[-–]?[ \t]*(?:19|20)\d{2})?(?![\d ./()-]*\d))"
         r"(?P<value>\d[\d ./()-]{5,}\d)(?![\w]|[.,]\d)", re.IGNORECASE)),
     ("phone", re.compile(
         r"(?<![\w.,/+€$£-])3(?:\d{2} \d{3} \d{4}|\d{2} \d{7}|\d{9})(?![\w]|[.,]\d)")),

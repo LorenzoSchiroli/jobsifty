@@ -11,7 +11,12 @@ def _fake_pool(content: str | None):
     pool = MagicMock()
 
     async def acomplete(prompt, parse, what="LLM call", wait_up_to=0.0, *, system=None, json=True):
-        return None if content is None else parse(content)
+        if content is None:
+            return None
+        try:  # like the real pool: a parse that raises counts as a failed provider
+            return parse(content)
+        except Exception:
+            return None
 
     pool.acomplete = AsyncMock(side_effect=acomplete)
     return pool
@@ -79,6 +84,44 @@ async def test_score_fit_sends_only_the_top_jobs():
         await llm.score_fit("cv", "", hits)
     prompt = pool.acomplete.call_args.args[0]
     assert '"j9"' in prompt and '"j10"' not in prompt
+
+
+async def test_distill_memory_empty_answer_keeps_existing_memory():
+    from backend.search.advanced import llm
+    with patch.object(llm, "get_pool", return_value=_fake_pool("   ")):
+        out = await llm.distill_memory("likes remote", True, "q", "", [])
+    assert out == "likes remote"
+
+
+def _hits():
+    return [{"_source": {"job_id": "j1", "title": "a"}}, {"_source": {"job_id": "j2", "title": "b"}}]
+
+
+async def test_score_fit_list_of_strings_falls_back():
+    from backend.search.advanced import llm
+    with patch.object(llm, "get_pool", return_value=_fake_pool('["j1", "j2"]')):
+        out = await llm.score_fit("cv", "", _hits())
+    assert [r["job_id"] for r in out] == ["j1", "j2"] and all(r["fit_score"] == 0 for r in out)
+
+
+async def test_score_fit_non_numeric_score_falls_back():
+    from backend.search.advanced import llm
+    payload = json.dumps([{"job_id": "j1", "fit_score": "high"}])
+    with patch.object(llm, "get_pool", return_value=_fake_pool(payload)):
+        out = await llm.score_fit("cv", "", _hits())
+    assert all(r["fit_score"] == 0 for r in out) and len(out) == 2
+
+
+async def test_score_fit_drops_unknown_job_ids_and_coerces_score():
+    from backend.search.advanced import llm
+    payload = json.dumps([
+        {"job_id": "zzz", "fit_score": 90},
+        {"job_id": "j2", "fit_score": "82", "fit_rationale": "r", "fit_gaps": "g"},
+    ])
+    with patch.object(llm, "get_pool", return_value=_fake_pool(payload)):
+        out = await llm.score_fit("cv", "", _hits())
+    assert [r["job_id"] for r in out] == ["j2"] and out[0]["fit_score"] == 82
+    assert isinstance(out[0]["fit_score"], int)
 
 
 async def test_distill_memory_returns_text():

@@ -49,7 +49,7 @@ async def _load_cv(session: AsyncSession, user: User) -> str:
     )
     profile = result.scalar_one_or_none()
     if not profile or not profile.cv_text:
-        raise HTTPException(status_code=400, detail="No CV uploaded. Please upload your CV first.")
+        raise HTTPException(status_code=400, detail="No CV saved. Add your CV on the CV page first.")
     return profile.cv_text
 
 

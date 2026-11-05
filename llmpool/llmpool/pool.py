@@ -65,7 +65,7 @@ class Provider:
     env_key: str
     # client-side spacing between calls, to stay under the provider's per-minute limit
     min_interval: float = 0.0
-    # HTTP statuses meaning no later call this run can succeed (bad key, no credits)
+    # HTTP statuses meaning no call can succeed for a while (bad key, no credits): the provider is paused for an hour
     unusable_statuses: frozenset[int] = frozenset({401, 402, 403})
 
     def __init__(self, api_key: str | None):
@@ -106,7 +106,7 @@ class Provider:
             return resp
         detail = f"HTTP {resp.status_code} {resp.text[:200]}"
         if resp.status_code == 429:
-            # a daily quota will not come back within this run
+            # a daily quota will not come back within the hour the provider is paused
             if any(marker in resp.text.lower() for marker in _DAILY_QUOTA_MARKERS):
                 raise Unusable(detail)
             raise RateLimited(detail, _retry_after(resp))
@@ -181,7 +181,7 @@ class Pool(Generic[P]):
                 logger.warning("%s rate limited (%s); paused", provider.name, e)
             except Unusable as e:
                 provider.unusable()
-                logger.warning("%s unusable for the rest of the run (%s)", provider.name, e)
+                logger.warning("%s unusable, paused for an hour (%s)", provider.name, e)
             except Transient as e:
                 provider.transient()
                 logger.warning("%s failed for %s: %s", provider.name, what, e)

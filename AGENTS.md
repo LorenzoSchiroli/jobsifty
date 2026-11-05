@@ -12,7 +12,7 @@ This is a `uv` workspace with three packages:
 
 - **`backend/`** — FastAPI service: REST API (JWT auth), Postgres (SQLAlchemy async), OpenSearch hybrid search, outbox reconcile worker, LangGraph agent (advanced search)
 - **`ingestion/`** — Pipeline: job scraping, deterministic offer parsing, an optional LLM summary per offer, company enrichment (LLM only for judgement fields), chunked embedding, and HTTP posting to backend
-- **`llmpool/`** — the provider pool (OpenAI-compatible LLM chat plus the company web-search pool: `llmpool/pool.py`, `llmpool/llm.py`), shared by `ingestion/` and `backend/`
+- **`llmpool/`** — the provider pool (the base provider pool and the OpenAI-compatible LLM chat providers: `llmpool/pool.py`, `llmpool/llm.py`; the web-search providers stay in `ingestion/company/scraping/providers.py`), shared by `ingestion/` and `backend/`
 
 Other top-level directories:
 - `frontend/` — React (Vite) SPA, served by nginx in Docker/k8s

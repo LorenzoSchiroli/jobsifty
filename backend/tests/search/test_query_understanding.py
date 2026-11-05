@@ -54,6 +54,17 @@ async def test_extract_filters_falls_back_to_raw_query():
     assert f.semantic_query == "python remote" and f.seniority is None
 
 
+def test_backend_pool_without_large_model_env_uses_groq_default(monkeypatch):
+    from backend import llm as backend_llm
+    backend_llm.get_pool.cache_clear()
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.delenv("GROQ_MODEL_LARGE", raising=False)
+    monkeypatch.delenv("GROQ_MODEL_BASE", raising=False)
+    groq = next(p for p in backend_llm.get_pool().providers if p.name == "groq")
+    assert groq.model == type(groq).default_model
+    backend_llm.get_pool.cache_clear()
+
+
 def test_backend_pool_uses_large_groq_model_and_no_pacing(monkeypatch):
     from backend import llm as backend_llm
     backend_llm.get_pool.cache_clear()

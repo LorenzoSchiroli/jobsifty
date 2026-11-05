@@ -10,4 +10,5 @@ def get_pool() -> LLMPool:
 
     Unpaced: a client-side sleep would be shared by every user of the API.
     """
-    return LLMPool.from_env(pace=False, models={"groq": os.environ["GROQ_MODEL_LARGE"]})
+    large = os.environ.get("GROQ_MODEL_LARGE")
+    return LLMPool.from_env(pace=False, models={"groq": large} if large else None)
