@@ -138,3 +138,13 @@ async def test_update_memory_preserves_user_edited_flag(db_session):
     assert captured["user_edited"] is True
     assert captured["existing"] == "user wrote this"
     assert pm.user_edited is True  # stays True after distill
+
+
+async def test_array_calls_do_not_use_json_object_mode():
+    from backend.search.advanced import llm
+    pool = _fake_pool("[]")
+    with patch.object(llm, "get_pool", return_value=pool):
+        await llm.generate_clarify_questions("q", "cv", "")
+        assert pool.acomplete.call_args.kwargs["json"] is False
+        await llm.score_fit("cv", "", [{"_source": {"job_id": "j1", "title": "t"}}])
+        assert pool.acomplete.call_args.kwargs["json"] is False

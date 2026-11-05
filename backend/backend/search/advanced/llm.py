@@ -53,7 +53,7 @@ async def generate_clarify_questions(query: str, cv_text: str, preference_memory
     out = await get_pool().acomplete(
         f"Query:\n{query}\n\nCV (excerpt):\n{cv_text[:1500]}\n\n"
         f"Known preferences:\n{preference_memory or '(none)'}",
-        parse, "clarify", system=_CLARIFY_SYSTEM,
+        parse, "clarify", system=_CLARIFY_SYSTEM, json=False,
     )
     if out is None:
         _log.warning("[advanced.llm] clarify failed")
@@ -113,7 +113,7 @@ async def score_fit(cv_text: str, preference_memory: str, hits: list[dict]) -> l
     out = await get_pool().acomplete(
         f"CV (excerpt):\n{cv_text[:1500]}\n\nPreferences:\n{preference_memory or '(none)'}\n\n"
         f"Jobs:\n{jobs_blob}",
-        parse, "score_fit", system=_FIT_SYSTEM,
+        parse, "score_fit", system=_FIT_SYSTEM, json=False,
     )
     if out is None:
         _log.warning("[advanced.llm] fit-score failed")
