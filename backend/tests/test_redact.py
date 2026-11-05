@@ -71,6 +71,11 @@ def test_no_name_line_removes_no_name():
     assert "name" not in found and "surname" not in found
 
 
+def test_job_title_line_is_not_taken_for_a_name():
+    cv = "Software Architect\nSoftware design and Architect reviews"
+    assert redact(cv) == (cv, {})
+
+
 def test_name_also_an_ordinary_word_is_left_in_lowercase_prose():
     out, _ = redact("Rosa Bianco\nI will grant access; rosa and bianco wines.")
     assert out.startswith("[NAME] [SURNAME]") and "rosa and bianco" in out

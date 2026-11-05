@@ -89,7 +89,12 @@ _NAME_WORD = re.compile(r"[A-ZÀ-ÖØ-Ý][A-Za-zÀ-ÖØ-öø-ÿ'’-]*")
 _NAME_CUT = re.compile(r"–| - |\||·|,")
 _NAME_STOP = {w.lower() for w in (
     "Curriculum Vitae CV Resume Résumé Data Engineer Developer Scientist Analyst Senior Junior "
-    "Lead Manager Consultant Experience Esperienza Profile Profilo Contact Contatti").split()}
+    "Lead Manager Consultant Experience Esperienza Profile Profilo Contact Contatti "
+    # common job / section words, so a title line is never taken for a name
+    "Architect Specialist Software Machine Learning AI ML Intern Internship Director Head Officer "
+    "Designer Researcher Research Programmer Administrator Technician Expert Full Stack Backend "
+    "Frontend Cloud DevOps Product Project Sales Marketing Summary Skills Competenze Ingegnere "
+    "Sviluppatore Analista Tirocinante").split()}
 
 
 def _is_placeholder(s: str) -> bool:
