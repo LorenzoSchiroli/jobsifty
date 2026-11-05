@@ -130,13 +130,15 @@ def test_lone_language_string_is_wrapped_and_score_is_float():
     assert score.value == 4.0 and isinstance(score.value, float)
 
 
-def test_stated_prefer_is_locked_but_not_hard_nor_a_violation():
-    pref = REMOTE.model_copy(update={"kind": "prefer"})
+def test_preferably_remote_stays_tradeable():
+    pref = BriefItem(text="preferably remote", kind="prefer", source="stated", field="location_type",
+                     value="remote")
+    assert pref.source == "inferred"  # a stated preference is coerced: preferences are never locked
     b = Brief(items=[pref])
+    assert b.locked() == []
     assert hard_filters(b) is None
     assert violations(b, {"location_type": "on-site"}) == []
-    with pytest.raises(LockedRequirementError):
-        merge_brief(b, Brief(items=[]), unlock_allowed=False)
+    assert merge_brief(b, Brief(items=[]), unlock_allowed=False).items == []
 
 
 def test_satisfies_true_false_and_unknown():

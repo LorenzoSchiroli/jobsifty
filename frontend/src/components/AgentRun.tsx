@@ -12,7 +12,7 @@ function Items({ title, items }: { title: string; items: BriefItem[] }) {
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
         {items.map((it, i) => (
           <span key={i} style={{ fontSize: '0.75rem', background: '#2a2a2a', padding: '0.15rem 0.5rem', borderRadius: 4 }}>
-            {it.kind === 'avoid' ? 'avoid: ' : it.kind === 'prefer' ? 'preferred: ' : ''}{it.text}
+            {it.kind === 'avoid' ? 'avoid: ' : ''}{it.text}
           </span>
         ))}
       </div>
@@ -31,12 +31,10 @@ interface Props {
 export default function AgentRun({ run, running, onAnswer, part }: Props) {
   const [text, setText] = useState('')
   const avoid = run?.brief?.avoid ?? []
-  // Stated requires and avoids are kept in every result; a stated preference is not.
-  const statedAll = [...(run?.brief?.stated ?? []), ...avoid.filter(i => i.source === 'stated')]
-  const kept = statedAll.filter(i => i.kind !== 'prefer')
-  const preferred = statedAll.filter(i => i.kind === 'prefer')
+  // Stated requires and avoids are kept in every result.
+  const kept = [...(run?.brief?.stated ?? []), ...avoid.filter(i => i.source === 'stated')]
   const fromYou = [...(run?.brief?.inferred ?? []), ...avoid.filter(i => i.source === 'inferred')]
-  const hasBrief = statedAll.length > 0 || fromYou.length > 0
+  const hasBrief = kept.length > 0 || fromYou.length > 0
   const question = run?.status === 'question' ? run.question : null
 
   function send(answer: string) {
@@ -75,7 +73,6 @@ export default function AgentRun({ run, running, onAnswer, part }: Props) {
         <div style={box}>
           <div style={heading}>What I understood</div>
           <Items title="You asked for (kept in every result)" items={kept} />
-          <Items title="You asked for (preferred, not required)" items={preferred} />
           <Items title="From your CV and past searches" items={fromYou} />
         </div>
       )}

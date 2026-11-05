@@ -62,7 +62,8 @@ def update_brief(items: list[BriefItem], runtime: Runtime, notes: str = "") -> C
 
     Each item is a short phrase (`text`), `kind` require / prefer / avoid, and `source`: "stated"
     when the user said it (in the request or an answer), "inferred" when you read it into the CV,
-    the preference memory or the request. When unsure, it is stated. Give `field` and `value`
+    the preference memory or the request. When unsure, it is stated, except a `prefer` item, which
+    is always inferred: preferences are never locked. Give `field` and `value`
     when the item maps to an index field, with a value from the schema's vocabulary; "remote or
     hybrid" is one item whose value is ["remote", "hybrid"], never two items on one field.
     Stated items are locked: you cannot drop or change them; only the user can, through ask_user.
@@ -97,8 +98,6 @@ def _refusal(variant: SearchVariant, brief: Brief, searches: int, probes: int) -
     if item.field is None:
         return (f'"{item.text}" maps to no index field, so no search can lift it; '
                 "check it on the job lines instead")
-    if item.kind == "prefer":
-        return f'"{item.text}" is a stated preference, not a hard filter; there is nothing to lift'
     return None
 
 

@@ -47,7 +47,7 @@ def test_a_value_outside_the_vocabulary_is_refused_with_the_allowed_values():
 def test_employee_count_is_not_a_brief_field():
     with pytest.raises(ValidationError):
         stated("employee_count", "11-50")
-    assert BriefItem(text="a small company", kind="prefer", source="stated").field is None
+    assert BriefItem(text="a small company", kind="require", source="stated").field is None
 
 
 def test_tool_schema_carries_the_vocabulary():

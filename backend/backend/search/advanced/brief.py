@@ -76,8 +76,11 @@ class BriefItem(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _normalise(cls, data):
-        if isinstance(data, dict) and data.get("field") is not None and data.get("value") is not None:
-            data = {**data, "value": normalise_value(data["field"], data["value"])}
+        if isinstance(data, dict):
+            if data.get("kind") == "prefer":
+                data = {**data, "source": "inferred"}  # a preference is tradeable, so never locked
+            if data.get("field") is not None and data.get("value") is not None:
+                data = {**data, "value": normalise_value(data["field"], data["value"])}
         return data
 
     @model_validator(mode="after")
@@ -168,8 +171,7 @@ def _wanted(item: BriefItem) -> tuple[str, object]:
 
 
 def _stated_mapped(brief: Brief) -> list[BriefItem]:
-    # A stated "prefer" stays locked in the brief but is neither a hard filter nor a violation.
-    return [i for i in brief.locked() if i.field is not None and i.kind != "prefer"]
+    return [i for i in brief.locked() if i.field is not None]
 
 
 def hard_filters(brief: Brief, *, lifted: str | None = None) -> SearchFilters | None:

@@ -122,10 +122,17 @@ async def test_probe_of_unmapped_stated_item_is_refused(run_tool, patched_run_va
     assert out.state.get("searches_run", 0) == 0 and out.state.get("probes_run", 0) == 0
 
 
-async def test_probe_of_stated_preference_is_refused(run_tool, patched_run_variant):
-    out = await run_tool("search_jobs", {"variants": [{"query": "ml", "probe": "startup"}]},
-                         state={"brief": Brief(items=[STARTUP.model_copy(update={"source": "stated"})]).model_dump(), **WROTE})
-    assert "a stated preference, not a hard filter" in out.messages[-1].content
+async def test_preference_is_never_locked_so_it_can_be_dropped_and_not_probed(run_tool, patched_run_variant):
+    item = {"text": "preferably remote", "kind": "prefer", "source": "stated", "field": "location_type",
+            "value": "remote"}
+    out = await run_tool("update_brief", {"items": [item]})
+    brief = Brief.model_validate(out.state["brief"])
+    assert [(i.kind, i.source) for i in brief.items] == [("prefer", "inferred")]
+    dropped = await run_tool("update_brief", {"items": []}, state={"brief": brief.model_dump(), "turns": 2})
+    assert Brief.model_validate(dropped.state["brief"]).items == []
+    probed = await run_tool("search_jobs", {"variants": [{"query": "ml", "probe": "preferably remote"}]},
+                            state={"brief": brief.model_dump(), **WROTE})
+    assert "is not a stated requirement" in probed.messages[-1].content
     assert patched_run_variant.await_count == 0
 
 
