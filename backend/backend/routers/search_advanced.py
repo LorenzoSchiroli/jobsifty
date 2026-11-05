@@ -8,14 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.cross_encoder import CrossEncoder
 from opensearchpy import AsyncOpenSearch
-from groq import Groq
 from langgraph.types import Command
 
 from backend.database import get_session, get_session_factory
 from backend.models import ApplicantProfile, Job, User
 from backend.schemas import JobSearchResponse
 from backend.search.models_lifecycle import get_biencoder, get_reranker
-from backend.search.query_understanding import get_groq_client
 from backend.opensearch_client import get_opensearch
 from backend.auth.dependencies import get_current_user
 from backend.search.advanced.agent import build_graph
@@ -76,7 +74,6 @@ async def start_advanced_search(
     session: AsyncSession = Depends(get_session),
     biencoder: SentenceTransformer = Depends(get_biencoder),
     reranker: CrossEncoder = Depends(get_reranker),
-    groq_client: Groq = Depends(get_groq_client),
     os_client: AsyncOpenSearch = Depends(get_opensearch),
     checkpointer=Depends(get_checkpointer),
 ) -> AdvancedSearchStart:
@@ -86,7 +83,7 @@ async def start_advanced_search(
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
     graph = build_graph(checkpointer, biencoder=biencoder, reranker=reranker,
-                        os_client=os_client, groq_client=groq_client)
+                        os_client=os_client)
     init_state = {
         "query": body.query,
         "cv_text": cv_text,
@@ -108,13 +105,12 @@ async def resume_advanced_search(
     session: AsyncSession = Depends(get_session),
     biencoder: SentenceTransformer = Depends(get_biencoder),
     reranker: CrossEncoder = Depends(get_reranker),
-    groq_client: Groq = Depends(get_groq_client),
     os_client: AsyncOpenSearch = Depends(get_opensearch),
     checkpointer=Depends(get_checkpointer),
 ) -> list[AdvancedJobResult]:
     config = {"configurable": {"thread_id": body.thread_id}}
     graph = build_graph(checkpointer, biencoder=biencoder, reranker=reranker,
-                        os_client=os_client, groq_client=groq_client)
+                        os_client=os_client)
     await graph.ainvoke(Command(resume=body.clarify_answers), config)
     snap = await graph.aget_state(config)
     values = snap.values or {}

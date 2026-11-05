@@ -11,7 +11,7 @@ from backend.main import app
 from backend.routers.search_advanced import get_checkpointer
 from backend.database import get_session
 from backend.search.models_lifecycle import get_biencoder, get_reranker
-from backend.search.query_understanding import get_groq_client
+from backend.search.filters import SearchFilters
 from backend.opensearch_client import get_opensearch
 from backend.auth.dependencies import get_current_user
 from backend.models import ApplicantProfile, Company, Job, User
@@ -20,14 +20,6 @@ pytestmark = pytest.mark.asyncio
 
 # NOTE: override the router's get_checkpointer (the dependency the endpoints actually
 # use). backend.main.get_checkpointer is a different object and would not take effect.
-
-
-def _mock_groq(semantic_query="ml engineer"):
-    msg = MagicMock(); msg.content = json.dumps({"semantic_query": semantic_query})
-    choice = MagicMock(); choice.message = msg
-    completion = MagicMock(); completion.choices = [choice]
-    client = MagicMock(); client.chat.completions.create.return_value = completion
-    return client
 
 
 @pytest_asyncio.fixture
@@ -61,7 +53,6 @@ async def adv_client(engine):
     app.dependency_overrides[get_session] = override_session
     app.dependency_overrides[get_biencoder] = lambda: biencoder
     app.dependency_overrides[get_reranker] = lambda: MagicMock()
-    app.dependency_overrides[get_groq_client] = lambda: _mock_groq()
     app.dependency_overrides[get_opensearch] = lambda: os_mock
     app.dependency_overrides[get_current_user] = lambda: mock_user
     app.dependency_overrides[get_checkpointer] = lambda: saver
@@ -70,6 +61,8 @@ async def adv_client(engine):
          patch("backend.main.init_opensearch", new_callable=AsyncMock), \
          patch("backend.search.advanced.nodes.rerank",
                side_effect=lambda r, hits, q, top_k=20: hits), \
+         patch("backend.search.advanced.nodes.extract_filters",
+               new=AsyncMock(return_value=SearchFilters(semantic_query="ml engineer"))), \
          patch("backend.search.advanced.nodes.generate_clarify_questions",
                new=AsyncMock(return_value=["Remote only?"])), \
          patch("backend.search.advanced.nodes.critique_results",
@@ -118,7 +111,6 @@ async def test_advanced_requires_cv(engine):
     app.dependency_overrides[get_session] = override_session
     app.dependency_overrides[get_biencoder] = lambda: MagicMock()
     app.dependency_overrides[get_reranker] = lambda: MagicMock()
-    app.dependency_overrides[get_groq_client] = lambda: _mock_groq()
     app.dependency_overrides[get_opensearch] = lambda: AsyncMock()
     app.dependency_overrides[get_current_user] = lambda: mock_user
     app.dependency_overrides[get_checkpointer] = lambda: MemorySaver()

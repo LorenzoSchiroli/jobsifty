@@ -21,7 +21,7 @@ async def node_clarify(state: dict) -> dict:
     return {"clarify_answers": answers}
 
 
-async def node_search(state: dict, *, biencoder, reranker, os_client, groq_client) -> dict:
+async def node_search(state: dict, *, biencoder, reranker, os_client) -> dict:
     answers = state.get("clarify_answers") or []
     base_query = state.get("refined_query") or state["query"]
     augmented = (
@@ -29,7 +29,7 @@ async def node_search(state: dict, *, biencoder, reranker, os_client, groq_clien
         f"Clarifications: {' | '.join(str(a) for a in answers)}\n"
         f"Preferences: {state.get('preference_memory', '')}"
     )
-    filters = await extract_filters(groq_client, state.get("cv_text", ""), augmented)
+    filters = await extract_filters(state.get("cv_text", ""), augmented)
     embedding = encode_query(biencoder, filters.semantic_query)
     hits = await hybrid_retrieve(os_client, embedding, filters)
     ranked = rerank(reranker, hits, filters.semantic_query, embedding)

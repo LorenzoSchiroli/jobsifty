@@ -1,9 +1,7 @@
 import json
-import os
-from groq import Groq
+import re
+from backend.llm import get_pool
 from backend.search.filters import SearchFilters
-
-_MODEL = os.environ["GROQ_MODEL_LARGE"]
 
 _SYSTEM_PROMPT = """Extract structured search filters and a semantic query from a CV and job search query.
 Return a JSON object with exactly these fields (null for unknown):
@@ -25,20 +23,18 @@ Return a JSON object with exactly these fields (null for unknown):
 }"""
 
 
-def get_groq_client() -> Groq:
-    return Groq(api_key=os.environ["GROQ_API_KEY"])
+async def extract_filters(cv_text: str, query: str) -> SearchFilters:
+    def parse(content: str) -> dict:
+        data = json.loads(re.sub(r"```(?:json)?\s*|\s*```", "", content.strip()))
+        if not isinstance(data, dict):
+            raise ValueError("filters must be a JSON object")
+        return data
 
-
-async def extract_filters(client: Groq, cv_text: str, query: str) -> SearchFilters:
-    response = client.chat.completions.create(
-        model=_MODEL,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": f"CV:\n{cv_text}\n\nSearch query:\n{query}"},
-        ],
-        response_format={"type": "json_object"},
+    data = await get_pool().acomplete(
+        f"CV:\n{cv_text}\n\nSearch query:\n{query}", parse, "extract_filters", system=_SYSTEM_PROMPT, json=True,
     )
-    data = json.loads(response.choices[0].message.content)
+    if data is None:
+        return SearchFilters(semantic_query=query)
     data.setdefault("semantic_query", query)
     valid_fields = SearchFilters.model_fields.keys()
     return SearchFilters(**{k: v for k, v in data.items() if k in valid_fields})

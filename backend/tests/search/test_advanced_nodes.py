@@ -14,7 +14,6 @@ async def test_node_search_retrieves_and_reranks():
     biencoder.encode.return_value = enc
     reranker = MagicMock()
     os_client = AsyncMock()
-    groq_client = MagicMock()
 
     state = {"query": "ml engineer", "cv_text": "cv", "preference_memory": "",
              "clarify_answers": ["yes"], "refined_query": None, "refined_once": False}
@@ -24,7 +23,7 @@ async def test_node_search_retrieves_and_reranks():
          patch("backend.search.advanced.nodes.hybrid_retrieve", new=AsyncMock(return_value=[_hit("j1", "a")])), \
          patch("backend.search.advanced.nodes.rerank", return_value=[_hit("j1", "a")]):
         out = await nodes.node_search(state, biencoder=biencoder, reranker=reranker,
-                                      os_client=os_client, groq_client=groq_client)
+                                      os_client=os_client)
     assert out["hits"][0]["_source"]["job_id"] == "j1"
 
 
@@ -37,14 +36,14 @@ async def test_node_search_uses_refined_query_when_present():
     state = {"query": "ml", "cv_text": "cv", "preference_memory": "",
              "clarify_answers": [], "refined_query": "senior ml pytorch", "refined_once": True}
     captured = {}
-    async def fake_extract(client, cv, q):
+    async def fake_extract(cv, q):
         captured["q"] = q
         f = MagicMock(); f.semantic_query = q; return f
     with patch("backend.search.advanced.nodes.extract_filters", new=fake_extract), \
          patch("backend.search.advanced.nodes.hybrid_retrieve", new=AsyncMock(return_value=[])), \
          patch("backend.search.advanced.nodes.rerank", return_value=[]):
         await nodes.node_search(state, biencoder=biencoder, reranker=MagicMock(),
-                                os_client=AsyncMock(), groq_client=MagicMock())
+                                os_client=AsyncMock())
     assert "senior ml pytorch" in captured["q"]
 
 
@@ -94,5 +93,5 @@ def test_build_graph_compiles():
     from backend.search.advanced.agent import build_graph
     from langgraph.checkpoint.memory import MemorySaver
     graph = build_graph(MemorySaver(), biencoder=MagicMock(), reranker=MagicMock(),
-                        os_client=AsyncMock(), groq_client=MagicMock())
+                        os_client=AsyncMock())
     assert graph is not None

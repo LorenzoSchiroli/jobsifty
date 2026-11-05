@@ -1,21 +1,10 @@
 import json
 import re
 import logging
-import os
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+
+from backend.llm import get_pool
 
 _log = logging.getLogger(__name__)
-
-_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-
-
-def large_llm() -> ChatOpenAI:
-    return ChatOpenAI(
-        model=os.environ["GROQ_MODEL_LARGE"],
-        api_key=os.environ["GROQ_API_KEY"],
-        base_url=_GROQ_BASE_URL,
-    )
 
 
 def _parse_json(raw: str):
@@ -55,20 +44,21 @@ _DISTILL_SYSTEM = (
 
 
 async def generate_clarify_questions(query: str, cv_text: str, preference_memory: str) -> list[str]:
-    llm = large_llm()
-    resp = await llm.ainvoke([
-        SystemMessage(content=_CLARIFY_SYSTEM),
-        HumanMessage(content=(
-            f"Query:\n{query}\n\nCV (excerpt):\n{cv_text[:1500]}\n\n"
-            f"Known preferences:\n{preference_memory or '(none)'}"
-        )),
-    ])
-    try:
-        data = _parse_json(resp.content)
-        return [str(q) for q in data][:2] if isinstance(data, list) else []
-    except Exception:
-        _log.warning("[advanced.llm] clarify parse failed")
+    def parse(content: str) -> list[str]:
+        data = _parse_json(content)
+        if not isinstance(data, list):
+            raise ValueError("expected a JSON array")
+        return [str(q) for q in data][:2]
+
+    out = await get_pool().acomplete(
+        f"Query:\n{query}\n\nCV (excerpt):\n{cv_text[:1500]}\n\n"
+        f"Known preferences:\n{preference_memory or '(none)'}",
+        parse, "clarify", system=_CLARIFY_SYSTEM,
+    )
+    if out is None:
+        _log.warning("[advanced.llm] clarify failed")
         return []
+    return out
 
 
 # Each scored job is sent as title + company + the start of its cleaned text;
@@ -91,55 +81,55 @@ def job_text(hit: dict, limit: int) -> str:
 
 
 async def critique_results(query: str, hits: list[dict]) -> dict:
-    llm = large_llm()
-    titles = "\n".join(f"- {job_text(h, CRITIQUE_TEXT_CHARS)}" for h in hits[:10])
-    resp = await llm.ainvoke([
-        SystemMessage(content=_CRITIQUE_SYSTEM),
-        HumanMessage(content=f"Query:\n{query}\n\nTop results:\n{titles or '(none)'}"),
-    ])
-    try:
-        data = _parse_json(resp.content)
+    def parse(content: str) -> dict:
+        data = _parse_json(content)
+        if not isinstance(data, dict):
+            raise ValueError("expected a JSON object")
         return {"need_refine": bool(data.get("need_refine")), "refined_query": data.get("refined_query")}
-    except Exception:
-        _log.warning("[advanced.llm] critique parse failed")
+
+    titles = "\n".join(f"- {job_text(h, CRITIQUE_TEXT_CHARS)}" for h in hits[:10])
+    out = await get_pool().acomplete(
+        f"Query:\n{query}\n\nTop results:\n{titles or '(none)'}",
+        parse, "critique", system=_CRITIQUE_SYSTEM,
+    )
+    if out is None:
+        _log.warning("[advanced.llm] critique failed")
         return {"need_refine": False, "refined_query": None}
+    return out
 
 
 async def score_fit(cv_text: str, preference_memory: str, hits: list[dict]) -> list[dict]:
-    llm = large_llm()
+    def parse(content: str) -> list[dict]:
+        data = _parse_json(content)
+        if not isinstance(data, list):
+            raise ValueError("expected a JSON array")
+        return data
+
     hits = hits[:FIT_SCORED_JOBS]
     jobs_blob = "\n".join(
         json.dumps({"job_id": h["_source"].get("job_id"), "job": job_text(h, FIT_TEXT_CHARS)}, ensure_ascii=False)
         for h in hits
     )
-    resp = await llm.ainvoke([
-        SystemMessage(content=_FIT_SYSTEM),
-        HumanMessage(content=(
-            f"CV (excerpt):\n{cv_text[:1500]}\n\nPreferences:\n{preference_memory or '(none)'}\n\n"
-            f"Jobs:\n{jobs_blob}"
-        )),
-    ])
-    fallback = [
-        {"job_id": h["_source"].get("job_id"), "fit_score": 0, "fit_rationale": "", "fit_gaps": ""}
-        for h in hits
-    ]
-    try:
-        data = _parse_json(resp.content)
-        return data if isinstance(data, list) else fallback
-    except Exception:
-        _log.warning("[advanced.llm] fit-score parse failed")
-        return fallback
+    out = await get_pool().acomplete(
+        f"CV (excerpt):\n{cv_text[:1500]}\n\nPreferences:\n{preference_memory or '(none)'}\n\n"
+        f"Jobs:\n{jobs_blob}",
+        parse, "score_fit", system=_FIT_SYSTEM,
+    )
+    if out is None:
+        _log.warning("[advanced.llm] fit-score failed")
+        return [
+            {"job_id": h["_source"].get("job_id"), "fit_score": 0, "fit_rationale": "", "fit_gaps": ""}
+            for h in hits
+        ]
+    return out
 
 
 async def distill_memory(existing: str, user_edited: bool, query: str, filters_summary: str,
                          clarify_qa: list[tuple[str, str]]) -> str:
-    llm = large_llm()
     qa = "\n".join(f"Q: {q} A: {a}" for q, a in clarify_qa) or "(none)"
-    resp = await llm.ainvoke([
-        SystemMessage(content=_DISTILL_SYSTEM),
-        HumanMessage(content=(
-            f"Existing summary (user_edited={str(user_edited).lower()}):\n{existing or '(none)'}\n\n"
-            f"New session — query: {query}\nfilters: {filters_summary}\nclarifications:\n{qa}"
-        )),
-    ])
-    return resp.content.strip()
+    out = await get_pool().acomplete(
+        f"Existing summary (user_edited={str(user_edited).lower()}):\n{existing or '(none)'}\n\n"
+        f"New session — query: {query}\nfilters: {filters_summary}\nclarifications:\n{qa}",
+        str.strip, "distill_memory", system=_DISTILL_SYSTEM, json=False,
+    )
+    return existing if out is None else out

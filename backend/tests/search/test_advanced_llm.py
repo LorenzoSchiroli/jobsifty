@@ -7,17 +7,19 @@ from backend.models import User
 pytestmark = pytest.mark.asyncio
 
 
-def _mock_llm(content: str):
-    resp = MagicMock()
-    resp.content = content
-    llm = MagicMock()
-    llm.ainvoke = AsyncMock(return_value=resp)
-    return llm
+def _fake_pool(content: str | None):
+    pool = MagicMock()
+
+    async def acomplete(prompt, parse, what="LLM call", wait_up_to=0.0, *, system=None, json=True):
+        return None if content is None else parse(content)
+
+    pool.acomplete = AsyncMock(side_effect=acomplete)
+    return pool
 
 
 async def test_generate_clarify_questions_parses_list():
     from backend.search.advanced import llm
-    with patch.object(llm, "large_llm", return_value=_mock_llm('["Remote only?", "Which countries?"]')):
+    with patch.object(llm, "get_pool", return_value=_fake_pool('["Remote only?", "Which countries?"]')):
         qs = await llm.generate_clarify_questions("ml engineer", "cv", "")
     assert qs == ["Remote only?", "Which countries?"]
 
@@ -25,7 +27,7 @@ async def test_generate_clarify_questions_parses_list():
 async def test_critique_results_parses_dict():
     from backend.search.advanced import llm
     payload = json.dumps({"need_refine": True, "refined_query": "senior ml engineer pytorch"})
-    with patch.object(llm, "large_llm", return_value=_mock_llm(payload)):
+    with patch.object(llm, "get_pool", return_value=_fake_pool(payload)):
         out = await llm.critique_results("ml", [{"_source": {"title": "x"}}])
     assert out == {"need_refine": True, "refined_query": "senior ml engineer pytorch"}
 
@@ -36,20 +38,20 @@ async def test_score_fit_parses_scored_list():
         {"job_id": "j1", "fit_score": 82, "fit_rationale": "strong overlap", "fit_gaps": "no kubernetes"}
     ])
     hits = [{"_source": {"job_id": "j1", "title": "ml role"}}]
-    with patch.object(llm, "large_llm", return_value=_mock_llm(payload)):
+    with patch.object(llm, "get_pool", return_value=_fake_pool(payload)):
         out = await llm.score_fit("cv", "", hits)
     assert out[0]["job_id"] == "j1"
     assert out[0]["fit_score"] == 82
     assert out[0]["fit_gaps"] == "no kubernetes"
 
 
-async def test_score_fit_falls_back_to_unranked_hits_on_parse_failure():
+async def test_score_fit_falls_back_to_unranked_hits_when_no_provider():
     from backend.search.advanced import llm
     hits = [
         {"_source": {"job_id": "j1", "title": "ml role"}},
         {"_source": {"job_id": "j2", "title": "data role"}},
     ]
-    with patch.object(llm, "large_llm", return_value=_mock_llm("not valid json")):
+    with patch.object(llm, "get_pool", return_value=_fake_pool(None)):
         out = await llm.score_fit("cv", "", hits)
     assert [r["job_id"] for r in out] == ["j1", "j2"]
     assert all(r["fit_score"] == 0 for r in out)
@@ -72,18 +74,38 @@ def test_job_text_uses_title_company_and_cleaned_text():
 async def test_score_fit_sends_only_the_top_jobs():
     from backend.search.advanced import llm
     hits = [{"_source": {"job_id": f"j{i}", "title": f"role {i}"}} for i in range(25)]
-    mock = _mock_llm("[]")
-    with patch.object(llm, "large_llm", return_value=mock):
+    pool = _fake_pool("[]")
+    with patch.object(llm, "get_pool", return_value=pool):
         await llm.score_fit("cv", "", hits)
-    prompt = mock.ainvoke.call_args.args[0][1].content
+    prompt = pool.acomplete.call_args.args[0]
     assert '"j9"' in prompt and '"j10"' not in prompt
 
 
 async def test_distill_memory_returns_text():
     from backend.search.advanced import llm
-    with patch.object(llm, "large_llm", return_value=_mock_llm("prefers remote ml roles in EU")):
+    with patch.object(llm, "get_pool", return_value=_fake_pool("prefers remote ml roles in EU")):
         out = await llm.distill_memory("", False, "ml engineer", "remote=true", [("Remote?", "yes")])
     assert "remote" in out.lower()
+
+
+async def test_clarify_falls_back_when_no_provider():
+    from backend.search.advanced import llm
+    with patch.object(llm, "get_pool", return_value=_fake_pool(None)):
+        assert await llm.generate_clarify_questions("q", "cv", "") == []
+
+
+async def test_distill_keeps_existing_when_no_provider():
+    from backend.search.advanced import llm
+    with patch.object(llm, "get_pool", return_value=_fake_pool(None)):
+        assert await llm.distill_memory("old", False, "q", "", []) == "old"
+
+
+async def test_distill_is_plain_text():
+    from backend.search.advanced import llm
+    pool = _fake_pool("  new summary ")
+    with patch.object(llm, "get_pool", return_value=pool):
+        assert await llm.distill_memory("", False, "q", "", []) == "new summary"
+    assert pool.acomplete.call_args.kwargs["json"] is False
 
 
 async def test_update_memory_from_session_persists_distilled(db_session):
