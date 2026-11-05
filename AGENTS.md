@@ -121,8 +121,8 @@ uv run pytest                              # run all ingestion tests
 
 ```
 GROQ_API_KEY=...                        # LLM: advanced search, company enrichment
-NVIDIA_NIM_API_KEY=...                  # LLM pools for offer summaries and company enrichment (public data only)
-GEMINI_API_KEY=...                      #   free tier is used by Google for training: never user data
+NVIDIA_NIM_API_KEY=...                  # LLM pools: offer summaries, company enrichment, advanced search
+GEMINI_API_KEY=...                      #   free tier is used by Google for training; every provider is assumed to keep prompts, so the CV is cleaned before it is saved (/cv page)
 SECRET_KEY=...                          # JWT signing
 INGEST_TOKEN=...                        # ingestion's writes (X-Ingest-Token on POST /jobs/, /companies/)
 TINYFISH_API_KEY=...                    # company web search pool (any subset): TinyFish free, rate limited

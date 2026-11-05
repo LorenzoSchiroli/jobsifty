@@ -130,7 +130,7 @@ flowchart TB
 
 ### Advanced search — a checkpointed LangGraph agent (WIP)
 
-`POST /jobs/search/advanced` → `POST /jobs/search/advanced/resume`. Requires an
+`POST /jobs/search/advanced` → `POST /jobs/search/advanced/resume`. Requires a
 saved CV. On the `/cv` page you upload a file (PDF/DOCX/TXT, text extracted and
 not stored) or write the CV; "Remove private info" (`backend/cv/redact.py`)
 replaces obvious personal data with placeholders such as `[EMAIL]` and `[PHONE]`,
@@ -339,7 +339,7 @@ cp .env.example .env      # then fill in the keys below
 | Variable | Where | Purpose |
 |----------|-------|---------|
 | `GROQ_API_KEY` | `.env` | LLM pool (advanced search, company enrichment); last in the order |
-| `NVIDIA_NIM_API_KEY` / `GEMINI_API_KEY` | `.env` | Offer summary and company enrichment LLM pools (public data only; Gemini's free tier trains on prompts) |
+| `NVIDIA_NIM_API_KEY` / `GEMINI_API_KEY` | `.env` | All LLM pools: offer summaries, company enrichment, advanced search. Gemini's free tier trains on prompts; every provider is assumed to keep them, so the CV is cleaned before it is saved (`/cv` page) |
 | `SECRET_KEY` | `.env` | JWT signing |
 | `INGEST_TOKEN` | `.env` | Ingestion's job/company writes (`X-Ingest-Token`); refused while unset |
 | `TINYFISH_API_KEY` / `EXA_API_KEY` / `TAVILY_API_KEY` | `.env` | Company enrichment web search pool; any subset, missing keys are skipped |
