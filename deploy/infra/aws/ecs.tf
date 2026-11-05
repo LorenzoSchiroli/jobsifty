@@ -7,18 +7,43 @@ locals {
     bootstrap = "/ecs/${var.project}/bootstrap"
   }
 
+  # Non-secret configuration comes straight from the repo's .env.public, the
+  # same file Helm and compose read; only CORS follows this stack's domain.
+  public_env = merge(
+    {
+      for kv in [
+        for line in split("\n", file("${path.module}/../../../.env.public")) :
+        regex("^([A-Z][A-Z0-9_]*)=(.*)$", trimspace(line))
+        if can(regex("^[A-Z][A-Z0-9_]*=", trimspace(line)))
+      ] : kv[0] => kv[1]
+    },
+    { CORS_ORIGINS = "https://app.${var.domain}" },
+  )
+
+  app_environment = [for name, value in local.public_env : { name = name, value = value }]
+
   app_secret_keys = [
     "DATABASE_URL",
     "OPENSEARCH_URL",
     "OPENSEARCH_USER",
     "OPENSEARCH_PASSWORD",
     "SECRET_KEY",
+    "INGEST_TOKEN",
     "GROQ_API_KEY",
-    "GROQ_MODEL_LARGE",
-    "GROQ_MODEL_BASE",
-    "CORS_ORIGINS",
-    "JOB_LIVE_DAYS",
-    "ACCESS_TOKEN_EXPIRE_DAYS",
+    "ADZUNA_APP_ID",
+    "ADZUNA_APP_KEY",
+    "TAVILY_API_KEY",
+    "TINYFISH_API_KEY",
+    "EXA_API_KEY",
+    "NVIDIA_NIM_API_KEY",
+    "GEMINI_API_KEY",
+  ]
+
+  # Ingestion only talks to the API over HTTP, so it gets no database,
+  # OpenSearch or JWT secrets: just its write token and the external API keys.
+  ingestion_secret_keys = [
+    "INGEST_TOKEN",
+    "GROQ_API_KEY",
     "ADZUNA_APP_ID",
     "ADZUNA_APP_KEY",
     "TAVILY_API_KEY",
@@ -30,6 +55,13 @@ locals {
 
   app_container_secrets = [
     for key in local.app_secret_keys : {
+      name      = key
+      valueFrom = "${aws_secretsmanager_secret.app.arn}:${key}::"
+    }
+  ]
+
+  ingestion_container_secrets = [
+    for key in local.ingestion_secret_keys : {
       name      = key
       valueFrom = "${aws_secretsmanager_secret.app.arn}:${key}::"
     }
@@ -135,10 +167,10 @@ resource "aws_ecs_task_definition" "api" {
           protocol      = "tcp"
         }
       ]
-      environment = [
+      environment = concat(local.app_environment, [
         { name = "TORCH_NUM_THREADS", value = "2" },
         { name = "OMP_NUM_THREADS", value = "2" },
-      ]
+      ])
       secrets = local.app_container_secrets
       logConfiguration = {
         logDriver = "awslogs"
@@ -168,11 +200,12 @@ resource "aws_ecs_task_definition" "worker" {
 
   container_definitions = jsonencode([
     merge(local.ghcr_repository_credentials, {
-      name      = "worker"
-      image     = var.backend_image
-      essential = true
-      command   = ["uv", "run", "python", "-m", "backend.worker"]
-      secrets   = local.app_container_secrets
+      name        = "worker"
+      image       = var.backend_image
+      essential   = true
+      command     = ["uv", "run", "python", "-m", "backend.worker"]
+      environment = local.app_environment
+      secrets     = local.app_container_secrets
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -217,13 +250,13 @@ resource "aws_ecs_task_definition" "ingestion" {
       command   = ["sh", "-c", local.ingestion_command]
       # Internal Cloud Map address, not the public hostname: ingestion must
       # always reach THIS stack's API, whichever cloud currently owns DNS.
-      environment = [
+      environment = concat(local.app_environment, [
         {
           name  = "BACKEND_URL"
           value = "http://api.${var.project}.local:8000"
         }
-      ]
-      secrets = local.app_container_secrets
+      ])
+      secrets = local.ingestion_container_secrets
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -259,7 +292,8 @@ resource "aws_ecs_task_definition" "bootstrap" {
         "sh", "-c",
         "uv run alembic upgrade head && uv run python -m backend.bootstrap",
       ]
-      secrets = local.app_container_secrets
+      environment = local.app_environment
+      secrets     = local.app_container_secrets
       logConfiguration = {
         logDriver = "awslogs"
         options = {

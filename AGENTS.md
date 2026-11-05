@@ -87,7 +87,7 @@ Full runbook in `deploy/infra/aws/README.md`. Things that differ from the Helm p
 
 - **Migrations run as a one-shot RunTask, not a hook Job.** `deploy/scripts/run aws up` fires it (`aws_run_bootstrap_task`) between apply and dump restore; a bare `tofu apply` does not, so after a manual apply you must `aws ecs run-task` the `bootstrap` task definition yourself. A green ALB `/health` does **not** mean the DB is migrated.
 - **Ingestion is an EventBridge Scheduler `RunTask`** (every 2h), and it posts to the internal Cloud Map address `http://api.<project>.local:8000` — never the public hostname, so a run cannot write into whichever stack currently owns DNS.
-- **Secrets** live in one Secrets Manager entry; each key is injected per container via `secrets[].valueFrom` (`local.app_secret_keys` in `ecs.tf`). Adding an env var means adding it there.
+- **Secrets** live in one Secrets Manager entry; each key is injected per container via `secrets[].valueFrom` (`local.app_secret_keys` in `ecs.tf`; ingestion gets only `local.ingestion_secret_keys`: no database, OpenSearch or JWT secrets). Adding a secret means adding it there. **Non-secrets** come from the repo's `.env.public`, which tofu reads and passes as plain `environment` (only `CORS_ORIGINS` follows the stack's domain), so the AWS stack picks up an `.env.public` edit on the next apply.
 - **OpenSearch** is VPC-only with fine-grained access control; the backend authenticates as the internal-database master user over basic auth, so the domain policy is deliberately principal-`*` (an IAM-scoped policy 403s basic auth before FGAC sees it). Access is closed by the security group instead.
 - **The demo dump rides in S3** (`dump.tf`, `pgtools` image): `run aws up` restores it, `run aws down` captures and promotes it before destroying. A 4th image, `jobsifty-pgtools`, must be published alongside the other three.
 - **Cost guards are part of the stack**: AWS Budgets (80%/100% email), 7-day CloudWatch retention, 7-day S3 dump lifecycle, single NAT, single-AZ RDS, one-node OpenSearch. Do not "fix" these silently — they are deliberate demo-scale choices.
@@ -123,6 +123,7 @@ GROQ_API_KEY=...                        # LLM; the only private provider (advanc
 NVIDIA_NIM_API_KEY=...                  # LLM pools for offer summaries and company enrichment (public data only)
 GEMINI_API_KEY=...                      #   free tier is used by Google for training: never user data
 SECRET_KEY=...                          # JWT signing
+INGEST_TOKEN=...                        # ingestion's writes (X-Ingest-Token on POST /jobs/, /companies/)
 TINYFISH_API_KEY=...                    # company web search pool (any subset): TinyFish free, rate limited
 EXA_API_KEY=...                         #   Exa $10/month free credits
 TAVILY_API_KEY=...                      #   Tavily 1,000 searches/month free
@@ -168,7 +169,7 @@ Keep values UNQUOTED: `kubectl create secret --from-env-file` stores quotes verb
 3. **Cross-encoder reranking** — `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` (override with `RERANKER_MODEL`, `max_length=256`) reranks retrieved hits on the job's LLM summary chunk, else the chunk closest to the query embedding, picked in Python from `_source.chunks` (title if a job has no chunks), returns top 20; torch threads follow `TORCH_NUM_THREADS` (default 2, matching the api pod's 2-CPU limit) (`search/reranker.py`)
 4. **Postgres round-trip** — full `Job` + `Company` records fetched by ID for the response
 
-**Auth**: `backend/auth/` + `routers/auth.py` — JWT bearer tokens (`POST /auth/register`, `POST /auth/login`, `GET /auth/me`); most endpoints depend on `get_current_user`.
+**Auth**: `backend/auth/` + `routers/auth.py` — JWT bearer tokens (`POST /auth/register`, `POST /auth/login`, `GET /auth/me`); most endpoints depend on `get_current_user`. Ingestion's writes (`POST /jobs/`, `POST /companies/`) instead need the shared `INGEST_TOKEN` in an `X-Ingest-Token` header (`require_ingest_token`), and are refused while it is unset; AWS generates it, elsewhere it goes in `.env`.
 
 **Advanced search (WIP)** — `POST /jobs/search/advanced` (`routers/search_advanced.py`, `search/advanced/`): a Postgres-checkpointed LangGraph agent that uses the Groq LLM and per-user preference memory. It interrupts with up to 2 clarifying questions (answered via `POST /jobs/search/advanced/resume`), can critique/refine its retrieval, and returns fit-scored results (the top 10 jobs, each sent to the LLM as title + company + the first 1,500 chars of its cleaned text). Requires an uploaded CV (`ApplicantProfile`).
 

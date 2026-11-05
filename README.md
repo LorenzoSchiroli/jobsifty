@@ -335,6 +335,7 @@ cp .env.example .env      # then fill in the keys below
 | `GROQ_API_KEY` | `.env` | Agents (the only private LLM provider); last in the company enrichment pool |
 | `NVIDIA_NIM_API_KEY` / `GEMINI_API_KEY` | `.env` | Offer summary and company enrichment LLM pools (public data only; Gemini's free tier trains on prompts) |
 | `SECRET_KEY` | `.env` | JWT signing |
+| `INGEST_TOKEN` | `.env` | Ingestion's job/company writes (`X-Ingest-Token`); refused while unset |
 | `TINYFISH_API_KEY` / `EXA_API_KEY` / `TAVILY_API_KEY` | `.env` | Company enrichment web search pool; any subset, missing keys are skipped |
 | `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | `.env` | Optional job source |
 | `BACKUP_SBOX_HOST` / `_USER` / `_RCLONE_PASS` | `.env` | Optional nightly Postgres backup |
@@ -422,8 +423,8 @@ Offer sources: `jobspy`, `adzuna`, `arbeitnow`, `freehire` (default: all); what 
 | Endpoint | Notes |
 |----------|-------|
 | `POST /auth/register`, `POST /auth/login`, `GET /auth/me` | JWT bearer tokens |
-| `POST /jobs/`, `GET /jobs/{id}` | Ingestion writes here |
-| `POST /companies/`, `GET /companies/{id}` | |
+| `POST /jobs/`, `GET /jobs/{id}` | Ingestion writes here (`X-Ingest-Token`) |
+| `POST /companies/`, `GET /companies/{id}` | Ingestion writes here (`X-Ingest-Token`) |
 | `POST /jobs/search` | Hybrid search + rerank |
 | `POST /jobs/search/advanced`, `.../resume` | Agent search (WIP) |
 | `POST /users/cv`, `GET /users/cv` | CV upload for fit scoring |

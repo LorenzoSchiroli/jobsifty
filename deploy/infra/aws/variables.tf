@@ -81,16 +81,6 @@ variable "groq_api_key" {
   sensitive = true
 }
 
-variable "groq_model_large" {
-  type    = string
-  default = "openai/gpt-oss-120b"
-}
-
-variable "groq_model_base" {
-  type    = string
-  default = "qwen/qwen3-32b"
-}
-
 variable "ingestion_interval_hours" {
   description = "Hours between ingestion runs. The schedule, the kill timeout and the pipeline's look-back and company enrichment time all follow from it."
   type        = number
@@ -108,16 +98,6 @@ variable "offer_scope" {
   validation {
     condition     = can(regex("^[a-z_]+$", var.offer_scope))
     error_message = "offer_scope is a scope name such as \"ai\"."
-  }
-}
-
-variable "job_live_days" {
-  description = "Days a job stays live, from its posting time: search retention, reconcile, company enrichment."
-  type        = number
-  default     = 14
-  validation {
-    condition     = var.job_live_days >= 1
-    error_message = "job_live_days must be at least 1."
   }
 }
 
