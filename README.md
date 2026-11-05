@@ -343,8 +343,7 @@ cp .env.example .env      # then fill in the keys below
 | `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | `.env` | Optional job source |
 | `BACKUP_SBOX_HOST` / `_USER` / `_RCLONE_PASS` | `.env` | Optional nightly Postgres backup |
 | `GROQ_MODEL_LARGE` / `GROQ_MODEL_BASE` | `.env.public` | Model IDs for agents / company enrichment |
-| `ADVANCED_LLM_BASE_URL` / `_MODEL` | `.env.public` | Optional: advanced search on another OpenAI-compatible endpoint (default: Groq settings) |
-| `ADVANCED_LLM_API_KEY` | `.env` | Optional: that endpoint's key (default: `GROQ_API_KEY`) |
+| `ADVANCED_LLM_BASE_URL` / `_MODEL` | `.env.public` | Optional: advanced search on another OpenAI-compatible endpoint (default: Groq settings; the agent always sends `GROQ_API_KEY`) |
 | `NVIDIA_MODEL` / `GEMINI_MODEL` / `LLM_PROVIDERS` | `.env.public` | Company enrichment LLM pool: models (comma-separated fallbacks) and order (default `nvidia,gemini,groq`) |
 | `OFFER_LLM_PROVIDERS` | `.env.public` | Offer summary LLM pool order (default `nvidia,gemini`, Groq left out) |
 | `JOB_LIVE_DAYS` | `.env.public` | Days a job stays live, from its posting time: search retention, reconcile, company enrichment (default 14) |

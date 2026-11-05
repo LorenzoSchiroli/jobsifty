@@ -8,13 +8,13 @@ _GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
 
 def get_agent_llm() -> BaseChatModel:
-    """The advanced-search model: Groq by default, any OpenAI-compatible endpoint via ADVANCED_LLM_*.
+    """The advanced-search model: Groq by default, another OpenAI-compatible endpoint via ADVANCED_LLM_BASE_URL / _MODEL (it is sent GROQ_API_KEY).
 
     It reads the CV, so it must stay a private provider. The env is read on every call.
     """
     return ChatOpenAI(
         model=os.environ.get("ADVANCED_LLM_MODEL") or os.environ["GROQ_MODEL_LARGE"],
-        api_key=os.environ.get("ADVANCED_LLM_API_KEY") or os.environ["GROQ_API_KEY"],
+        api_key=os.environ["GROQ_API_KEY"],
         base_url=os.environ.get("ADVANCED_LLM_BASE_URL") or _GROQ_BASE_URL,
         max_retries=3,
         timeout=60,

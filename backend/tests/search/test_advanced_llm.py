@@ -13,7 +13,7 @@ def _mock_llm(content: str):
 
 def test_agent_llm_defaults_to_groq(monkeypatch):
     from backend.search.advanced import llm
-    for name in ("ADVANCED_LLM_BASE_URL", "ADVANCED_LLM_MODEL", "ADVANCED_LLM_API_KEY"):
+    for name in ("ADVANCED_LLM_BASE_URL", "ADVANCED_LLM_MODEL"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("GROQ_MODEL_LARGE", "groq-large")
     monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
@@ -27,10 +27,10 @@ def test_agent_llm_env_overrides_are_read_at_call_time(monkeypatch):
     from backend.search.advanced import llm
     monkeypatch.setenv("ADVANCED_LLM_BASE_URL", "http://localhost:9000/v1")
     monkeypatch.setenv("ADVANCED_LLM_MODEL", "other-model")
-    monkeypatch.setenv("ADVANCED_LLM_API_KEY", "other-key")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
     model = llm.get_agent_llm()
     assert (model.model_name, model.openai_api_key.get_secret_value(), model.openai_api_base) == (
-        "other-model", "other-key", "http://localhost:9000/v1")
+        "other-model", "gsk-test", "http://localhost:9000/v1")
 
 
 async def test_distill_memory_returns_text():

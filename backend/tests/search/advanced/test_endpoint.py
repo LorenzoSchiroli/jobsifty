@@ -185,7 +185,6 @@ async def test_missing_llm_config_is_503(adv_client, monkeypatch):
     ac, _ = adv_client([], [])
     del app.dependency_overrides[router.get_llm]
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    monkeypatch.delenv("ADVANCED_LLM_API_KEY", raising=False)
     r = await ac.post("/jobs/search/advanced", json={"query": "x"})
     assert r.status_code == 503
 
