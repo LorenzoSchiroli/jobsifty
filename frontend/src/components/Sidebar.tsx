@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { me, UserResponse } from '../api/auth'
 import { getPreferenceMemory, setPreferenceMemory } from '../api/preferences'
-import { getCV, uploadCV } from '../api/cv'
 import { useSearchMode } from '../hooks/useSearchMode'
 
 export default function Sidebar({ open, onToggle }: { open: boolean; onToggle: () => void }) {
@@ -12,41 +11,15 @@ export default function Sidebar({ open, onToggle }: { open: boolean; onToggle: (
   const [user, setUser] = useState<UserResponse | null>(null)
   const [memory, setMemory] = useState('')
   const [savedNote, setSavedNote] = useState('')
-  const [cvChars, setCvChars] = useState<number | null>(null)
-  const [cvText, setCvText] = useState('')
-  const [showCv, setShowCv] = useState(false)
-  const [cvError, setCvError] = useState('')
-  const [cvBusy, setCvBusy] = useState(false)
-  const cvInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     me().then(setUser).catch(() => {})
     getPreferenceMemory().then(p => setMemory(p.memory_text || '')).catch(() => {})
-    getCV().then(({ cv_text }) => {
-      setCvText(cv_text || '')
-      setCvChars(cv_text ? cv_text.length : null)
-    }).catch(() => {})
   }, [])
 
   const logout = () => {
     localStorage.removeItem('access_token')
     navigate('/login')
-  }
-
-  const handleCvFile = async (file: File) => {
-    setCvError('')
-    setCvBusy(true)
-    try {
-      const res = await uploadCV(file)
-      setCvChars(res.char_count)
-      const { cv_text } = await getCV()
-      setCvText(cv_text || '')
-    } catch (err: any) {
-      setCvError(err.response?.data?.detail || 'Upload failed')
-    } finally {
-      setCvBusy(false)
-      if (cvInputRef.current) cvInputRef.current.value = ''
-    }
   }
 
   const saveMemory = async () => {
@@ -89,6 +62,7 @@ export default function Sidebar({ open, onToggle }: { open: boolean; onToggle: (
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
         {navLink('/search', 'Search')}
+        {navLink('/cv', 'CV')}
       </div>
 
       <div>
@@ -108,29 +82,6 @@ export default function Sidebar({ open, onToggle }: { open: boolean; onToggle: (
             </button>
           ))}
         </div>
-      </div>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
-        <div style={{ fontSize: '0.8rem', opacity: 0.6 }}>
-          CV {cvChars != null ? `(${cvChars.toLocaleString()} chars)` : '(none)'}
-        </div>
-        <button onClick={() => cvInputRef.current?.click()} disabled={cvBusy}
-                style={{ padding: '0.35rem', borderRadius: 6, cursor: 'pointer' }}>
-          {cvBusy ? 'Uploading...' : cvChars != null ? 'Replace CV' : 'Upload CV'}
-        </button>
-        <input ref={cvInputRef} type="file" accept=".pdf,.docx,.txt" style={{ display: 'none' }}
-               onChange={e => { const f = e.target.files?.[0]; if (f) handleCvFile(f) }} />
-        {cvChars != null && (
-          <button onClick={() => setShowCv(s => !s)}
-                  style={{ padding: '0.25rem', borderRadius: 6, cursor: 'pointer', fontSize: '0.75rem', background: 'transparent', color: '#aaa', border: '1px solid #2a2a2a' }}>
-            {showCv ? 'Hide CV' : 'View CV'}
-          </button>
-        )}
-        {showCv && (
-          <textarea value={cvText} readOnly rows={8}
-                    style={{ resize: 'vertical', fontSize: '0.75rem', background: '#141414', color: '#ccc', border: '1px solid #2a2a2a', borderRadius: 6, padding: '0.4rem' }} />
-        )}
-        {cvError && <span style={{ fontSize: '0.75rem', color: '#f87171' }}>{cvError}</span>}
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
