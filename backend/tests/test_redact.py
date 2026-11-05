@@ -76,6 +76,25 @@ def test_job_title_line_is_not_taken_for_a_name():
     assert redact(cv) == (cv, {})
 
 
+def test_numbers_that_are_not_phones_are_left_alone():
+    for cv in ("Acme 03 2019 2022", "Raised 350 000 000 EUR", "Ref 070 1234 5678 code",
+               "1.5 million 012 345 678"):
+        assert redact(cv) == (cv, {})
+
+
+def test_phone_forms():
+    for cv in ("Tel 06 1234 5678", "+39 333 1234567", "cell: 333 1234567", "333 123 4567"):
+        out, found = redact(cv)
+        assert found == {"phone": 1} and "[PHONE]" in out and not any(c.isdigit() for c in out)
+
+
+def test_name_only_from_first_line_or_after_cv_header():
+    assert redact("Projects\nBuilt X") == ("Projects\nBuilt X", {})
+    assert redact("Profile\nJane Doe") == ("Profile\nJane Doe", {})
+    out, found = redact("Resume\nJane Doe\nJane works")
+    assert found == {"name": 2, "surname": 1} and out == "Resume\n[NAME] [SURNAME]\n[NAME] works"
+
+
 def test_name_also_an_ordinary_word_is_left_in_lowercase_prose():
     out, _ = redact("Rosa Bianco\nI will grant access; rosa and bianco wines.")
     assert out.startswith("[NAME] [SURNAME]") and "rosa and bianco" in out

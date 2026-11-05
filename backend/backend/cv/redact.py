@@ -3,7 +3,8 @@
 Regexes and word lists only, no I/O. Rules run in a fixed order: consent sentence,
 email, link, id (IBAN, codice fiscale), labelled lines (birth date, address,
 nationality / marital status / gender), unlabelled street address, phone, and last
-the name. The name is found on the *original* top lines but replaced at the end, so
+the name. The name is only the first non-empty line (or the next one when the first
+is a bare CV header), found on the *original* text but replaced at the end, so
 emails and URLs that contain it are already gone.
 
 Principle: when a rule is unsure, it leaves the text alone. Skills, employers,
@@ -67,15 +68,16 @@ _RULES = [
         # ... and English "12 Baker Street, ..." (number + capitalised words + street type + comma).
         r"|\d+[a-z]?[ \t]+[A-Z]\w+(?:[ \t]+[A-Z]\w+)*[ \t]+(?:Street|St\.|Road|Rd\.|Avenue|Ave\.|Lane|Drive)[ \t]*,[^\n]*)",
         re.MULTILINE)),
-    # Phone: international (+44 20 7946 0958), Italian mobile (333 123 4567) and
-    # numbers with a leading 0 in groups (02 1234 5678). The lookbehind keeps it out of
-    # the middle of other numbers, money (€300 000 000), dates and versions.
+    # Phone. A number counts only when it is clearly one: international (+44 20 7946
+    # 0958, 0044 ...), after a label (Tel 06 1234 5678, cell: 333 1234567), or a
+    # 10-digit Italian mobile (333 123 4567). Bare digit groups are dates and amounts.
     ("phone", re.compile(
-        r"(?<![\w.,/+€$£-])(?:"
-        r"\+\d{1,3}[ .-]?\(?\d{1,4}\)?(?:[ .-]?\d{2,4}){2,4}"
-        r"|3\d{2} ?\d{3} ?\d{3,4}"
-        r"|0\d{1,3}[ ./-]?\d{3,4}[ ./-]?\d{3,4}"
-        r")(?![\w]|[.,]\d)")),
+        r"(?<![\w.,/+€$£-])(?:\+|00)\d{1,3}[ .-]?\(?\d{1,4}\)?(?:[ .-]?\d{2,4}){2,4}(?![\w]|[.,]\d)")),
+    ("phone", re.compile(
+        r"\b(?:Tel|Phone|Cell|Mobile|Mob|Telefono|Cellulare)\b\.?[ \t]*:?[ \t]*"
+        r"(?P<value>\d[\d ./()-]{5,}\d)(?![\w]|[.,]\d)", re.IGNORECASE)),
+    ("phone", re.compile(
+        r"(?<![\w.,/+€$£-])3(?:\d{2} \d{3} \d{4}|\d{2} \d{7}|\d{9})(?![\w]|[.,]\d)")),
 ]
 
 _CONSENT_TRIGGERS = re.compile(
@@ -85,6 +87,7 @@ _CONSENT_TRIGGERS = re.compile(
 # A sentence ends at . ! ? followed by a capital ("D.Lgs. 196/2003" does not end one).
 _SENTENCE_END = re.compile(r"(?<=[.!?])(\s+)(?=[A-ZÀ-Ý])")
 
+_CV_HEADERS = {"curriculum vitae", "cv", "resume", "résumé"}
 _NAME_WORD = re.compile(r"[A-ZÀ-ÖØ-Ý][A-Za-zÀ-ÖØ-öø-ÿ'’-]*")
 _NAME_CUT = re.compile(r"–| - |\||·|,")
 _NAME_STOP = {w.lower() for w in (
@@ -118,14 +121,20 @@ def _consent(text: str) -> tuple[str, int]:
 
 
 def _find_name(lines: list[str]) -> list[str]:
-    """First names then surname, from the first 3 non-empty lines; [] when unsure."""
-    for line in [l.strip() for l in lines if l.strip()][:3]:
-        if "[NAME]" in line or "[SURNAME]" in line:
-            return []  # already redacted: do not pick another line as the name
-        words = _NAME_CUT.split(line)[0].split()
-        if 2 <= len(words) <= 4 and all(
-                _NAME_WORD.fullmatch(w) and w.lower() not in _NAME_STOP for w in words):
-            return words
+    """First names then surname from the first non-empty line, or the next one when
+    the first is just a CV header; [] when unsure."""
+    candidates = [l.strip() for l in lines if l.strip()][:2]
+    if not candidates:
+        return []
+    line = candidates[0]
+    if line.lower() in _CV_HEADERS and len(candidates) > 1:
+        line = candidates[1]
+    if "[NAME]" in line or "[SURNAME]" in line:
+        return []  # already redacted
+    words = _NAME_CUT.split(line)[0].split()
+    if 2 <= len(words) <= 4 and all(
+            _NAME_WORD.fullmatch(w) and w.lower() not in _NAME_STOP for w in words):
+        return words
     return []
 
 
