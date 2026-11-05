@@ -14,6 +14,8 @@ RUN uvx --from huggingface_hub hf download intfloat/multilingual-e5-small \
 COPY pyproject.toml uv.lock ./
 COPY ingestion/pyproject.toml ./ingestion/pyproject.toml
 
+COPY llmpool/ ./llmpool/
+
 RUN uv sync --package ingestion --no-dev
 
 RUN uv run playwright install chromium && \

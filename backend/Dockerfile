@@ -21,6 +21,8 @@ RUN uvx --from huggingface_hub hf download intfloat/multilingual-e5-small \
 COPY pyproject.toml uv.lock ./
 COPY backend/pyproject.toml ./backend/pyproject.toml
 
+COPY llmpool/ ./llmpool/
+
 RUN uv sync --package backend --no-dev
 
 COPY backend/ ./backend/

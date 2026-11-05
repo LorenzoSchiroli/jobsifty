@@ -3,6 +3,7 @@ name = "ingestion"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
+    "llmpool",
     "beautifulsoup4>=4.14.3",
     "ftfy>=6.3.1",
     "playwright>=1.58.0",
@@ -26,4 +27,5 @@ dev = [
 ]
 
 [tool.uv.sources]
+llmpool = { workspace = true }
 torch = { index = "pytorch-cpu" }

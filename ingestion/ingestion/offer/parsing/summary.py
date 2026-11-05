@@ -8,7 +8,7 @@ import json
 import logging
 import re
 
-from ingestion.llm import LLMPool
+from llmpool.llm import LLMPool
 from ingestion.offer.parsing.sections import clean_input
 from ingestion.offer.scraping.models import JobOffer
 from ingestion.utils.text import MAX_OFFER_DESCRIPTION_CHARS

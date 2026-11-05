@@ -4,7 +4,7 @@ import time
 from dotenv import load_dotenv
 
 from ingestion.company.company import enrich
-from ingestion.llm import LLMPool
+from llmpool.llm import LLMPool
 
 load_dotenv(".env.public")
 load_dotenv(".env", override=True)

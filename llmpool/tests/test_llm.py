@@ -4,10 +4,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from ingestion import pool as pool_module
-from ingestion.llm import Gemini, Groq, LLMPool, Nvidia
+from llmpool import pool as pool_module
+from llmpool.llm import Gemini, Groq, LLMPool, Nvidia
 
-_POST = "ingestion.llm.requests.post"
+_POST = "llmpool.llm.requests.post"
 
 
 @pytest.fixture(autouse=True)
@@ -141,7 +141,7 @@ def test_stats_line(monkeypatch):
 
 
 def test_offer_pool_leaves_groq_out(monkeypatch):
-    from ingestion.llm import offer_pool
+    from llmpool.llm import offer_pool
     _all_keys(monkeypatch)
     assert [p.name for p in offer_pool().providers] == ["nvidia", "gemini"]
     monkeypatch.setenv("OFFER_LLM_PROVIDERS", "gemini")

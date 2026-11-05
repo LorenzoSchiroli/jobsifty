@@ -1,4 +1,4 @@
-"""LLM providers behind one OpenAI-compatible interface, tried in order as a pool (`ingestion/pool.py`).
+"""LLM providers behind one OpenAI-compatible interface, tried in order as a pool (`llmpool/pool.py`).
 
 Each provider is marked `private` when its terms say prompts are neither kept nor
 used for training. Company enrichment sends only public data and uses every
@@ -19,7 +19,7 @@ from typing import TypeVar
 
 import requests
 
-from ingestion.pool import Pool, Provider, Unusable, order_from_env
+from llmpool.pool import Pool, Provider, Unusable, order_from_env
 
 logger = logging.getLogger(__name__)
 
