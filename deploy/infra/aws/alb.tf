@@ -33,7 +33,8 @@ resource "aws_lb" "main" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = aws_subnet.public[*].id
 
-  # Advanced search runs 1-3 minutes per request; the 60 s default would cut it.
+  # An advanced-search request is held to about 4 minutes (LLM calls are cut at the deadline,
+  # 45 s kept for finalize); the 60 s default would cut it, 300 s leaves room above the cap.
   idle_timeout = 300
 
   tags = {

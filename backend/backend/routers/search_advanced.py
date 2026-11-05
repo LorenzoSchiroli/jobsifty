@@ -23,7 +23,7 @@ from backend.schemas import JobSearchResponse
 from backend.search.advanced.brief import Brief
 from backend.search.advanced.budget import WALL_CLOCK_SECONDS
 from backend.search.advanced.context import AgentContext
-from backend.search.advanced.finalize import filters_summary
+from backend.search.advanced.finalize import filters_summary as summarize_filters
 from backend.search.advanced.llm import get_agent_llm
 from backend.search.advanced.preference_memory import get_memory, update_memory_from_session
 from backend.search.models_lifecycle import get_biencoder, get_reranker
@@ -99,12 +99,12 @@ async def _load_cv(session: AsyncSession, user: User) -> str:
     return profile.cv_text
 
 
-async def _distill_in_background(user_id: uuid.UUID, query: str, summary: str,
+async def _distill_in_background(user_id: uuid.UUID, query: str, filters_summary: str,
                                  clarify_qa: list[tuple[str, str]]) -> None:
     factory = get_session_factory()
     async with factory() as session:
         try:
-            await update_memory_from_session(session, user_id, query, summary, clarify_qa)
+            await update_memory_from_session(session, user_id, query, filters_summary, clarify_qa)
         except Exception:
             logger.exception("[advanced] memory distill failed")
 
@@ -133,36 +133,54 @@ async def _results(session: AsyncSession, shortlist: list[dict]) -> list[Advance
     return out
 
 
+def _pending_interrupts(snap) -> list:
+    return [i for task in snap.tasks for i in task.interrupts]
+
+
+async def _delete_thread(checkpointer, thread_id: str) -> None:
+    try:
+        await checkpointer.adelete_thread(thread_id)
+    except Exception:  # never hides the run's own answer or error
+        logger.exception("[advanced] could not delete thread %s", thread_id)
+
+
 async def run_agent(graph, checkpointer, ctx: AgentContext, payload, thread_id: str, session: AsyncSession,
                     background: BackgroundTasks) -> AdvancedSearchResponse:
+    """Runs the graph until a question or the end. The thread is deleted unless a question is open,
+    also when the run raises (durability="exit" saves on an error too); the error still propagates."""
     config = {"configurable": {"thread_id": thread_id}}
-    await graph.ainvoke(payload, config, context=ctx, durability="exit")
-    snap = await graph.aget_state(config)
-    values = snap.values or {}
-    brief = Brief.model_validate(values["brief"]).to_api() if values.get("brief") else {}
+    question_open = False
+    try:
+        await graph.ainvoke(payload, config, context=ctx, durability="exit")
+        snap = await graph.aget_state(config)
+        values = snap.values or {}
+        brief = Brief.model_validate(values["brief"]).to_api() if values.get("brief") else {}
 
-    interrupts = [i for task in snap.tasks for i in task.interrupts]
-    if interrupts:
-        value = interrupts[0].value
-        return AdvancedSearchResponse(
-            status="question", thread_id=thread_id, brief=brief,
-            question=Question(text=value["question"], options=list(value.get("options") or [])),
+        if interrupts := _pending_interrupts(snap):
+            value = interrupts[0].value
+            question_open = True
+            return AdvancedSearchResponse(
+                status="question", thread_id=thread_id, brief=brief,
+                question=Question(text=value["question"], options=list(value.get("options") or [])),
+            )
+
+        status = values.get("status", "partial")
+        results = await _results(session, values.get("shortlist") or [])
+        # matches: jobs meeting every soft filter of the search, or the jobs returned when it set none
+        searches = [SearchLog(query=s["query"], filters=s.get("filters") or {}, matches=s.get("matches", 0),
+                              probe=s.get("probe")) for s in values.get("searches") or []]
+        response = AdvancedSearchResponse(
+            status=status, thread_id=thread_id, brief=brief, summary=values.get("summary", ""),
+            searches=searches, results=results, usage=values.get("usage"),
         )
-
-    status = values.get("status", "partial")
-    results = await _results(session, values.get("shortlist") or [])
-    searches = [SearchLog(query=s["query"], filters=s.get("filters") or {}, matches=s.get("matches", 0),
-                          probe=s.get("probe")) for s in values.get("searches") or []]
-    response = AdvancedSearchResponse(
-        status=status, thread_id=thread_id, brief=brief, summary=values.get("summary", ""),
-        searches=searches, results=results, usage=values.get("usage"),
-    )
-    await checkpointer.adelete_thread(thread_id)
-    if status == "done":
-        qa = [(q["question"], q["answer"]) for q in values.get("qa") or []]
-        background.add_task(_distill_in_background, uuid.UUID(values["user_id"]), values.get("query", ""),
-                            filters_summary(values), qa)
-    return response
+        if status == "done":
+            qa = [(q["question"], q["answer"]) for q in values.get("qa") or []]
+            background.add_task(_distill_in_background, uuid.UUID(values["user_id"]), values.get("query", ""),
+                                summarize_filters(values), qa)
+        return response
+    finally:
+        if not question_open:
+            await _delete_thread(checkpointer, thread_id)
 
 
 async def _context(session: AsyncSession, user: User, llm, biencoder, reranker, os_client) -> AgentContext:
@@ -212,6 +230,9 @@ async def resume_advanced_search(
     snap = await graph.aget_state({"configurable": {"thread_id": body.thread_id}})
     values = snap.values or {}
     if not values or values.get("user_id") != str(current_user.id):
+        raise HTTPException(status_code=404, detail="Search not found.")
+    if not _pending_interrupts(snap):  # an orphan: a thread left behind with no question open
+        await _delete_thread(checkpointer, body.thread_id)
         raise HTTPException(status_code=404, detail="Search not found.")
     ctx = await _context(session, current_user, llm, biencoder, reranker, os_client)
     return await run_agent(graph, checkpointer, ctx, Command(resume=body.answer), body.thread_id, session, background)

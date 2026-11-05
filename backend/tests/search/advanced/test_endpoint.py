@@ -190,6 +190,36 @@ async def test_missing_llm_config_is_503(adv_client, monkeypatch):
     assert r.status_code == 503
 
 
+def _threads(saver) -> list:
+    return list(saver.list(None))
+
+
+async def test_thread_is_deleted_when_the_graph_raises(adv_client, saver):
+    ac, _ = adv_client(SEARCH_THEN_FINISH, [RuntimeError("finalize down")])
+    with patch("backend.search.advanced.agent.partial_result", side_effect=RuntimeError("partial down")):
+        with pytest.raises(RuntimeError, match="partial down"):
+            await ac.post("/jobs/search/advanced", json={"query": "x"})
+    assert _threads(saver) == []
+
+
+async def test_thread_is_deleted_when_building_the_response_raises(adv_client, saver):
+    ac, _ = adv_client(SEARCH_THEN_FINISH, [shortlist_of(88)])
+    with patch("backend.routers.search_advanced._results", AsyncMock(side_effect=RuntimeError("db down"))):
+        with pytest.raises(RuntimeError, match="db down"):
+            await ac.post("/jobs/search/advanced", json={"query": "x"})
+    assert _threads(saver) == []
+
+
+async def test_resume_of_an_orphan_thread_is_404_and_deletes_it(adv_client, saver):
+    ac, _ = adv_client(SEARCH_THEN_FINISH, [shortlist_of(88)])
+    with patch("backend.routers.search_advanced._delete_thread", AsyncMock()):  # the deletion fails: an orphan
+        done = (await ac.post("/jobs/search/advanced", json={"query": "x"})).json()
+    assert await saver.aget_tuple({"configurable": {"thread_id": done["thread_id"]}}) is not None
+    r = await ac.post("/jobs/search/advanced/resume", json={"thread_id": done["thread_id"], "answer": "A"})
+    assert r.status_code == 404
+    assert await saver.aget_tuple({"configurable": {"thread_id": done["thread_id"]}}) is None
+
+
 async def test_distill_gets_filters_and_answers(adv_client, distill_mock):
     ac, _ = adv_client(ASK_THEN_SEARCH_THEN_FINISH, [shortlist_of(80)])
     q = (await ac.post("/jobs/search/advanced", json={"query": "x"})).json()

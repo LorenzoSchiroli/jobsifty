@@ -11,7 +11,7 @@ from backend.search.advanced.agent import build_graph
 from backend.search.advanced.brief import Brief
 from backend.search.advanced.finalize import PARTIAL_SUMMARY, FinalShortlist
 from tests.search.advanced.conftest import JOB_A, item
-from tests.search.advanced.fakes import ScriptedChatModel, tool_call
+from tests.search.advanced.fakes import Delayed, ScriptedChatModel, tool_call
 from tests.search.advanced.samples import REMOTE
 
 FIRST_SHORT_ID = JOB_A[:4]  # the short id of the first candidate the patched search returns
@@ -70,6 +70,56 @@ async def test_deadline_forces_finalize(graph, ctx_factory):
     ctx = ctx_factory(llm=llm, deadline=time.monotonic() - 1)
     out = await graph.ainvoke(initial("x"), config(), context=ctx, durability="exit")
     assert (out["status"], out["summary"], out.get("turns", 0)) == ("done", "late", 0)
+
+
+async def test_no_agent_call_inside_the_finalize_reserve(graph, ctx_factory):
+    from backend.search.advanced.budget import FINALIZE_RESERVE_SECONDS
+
+    llm = ScriptedChatModel(script=[], structured=[FinalShortlist(summary="reserved", shortlist=[])])
+    ctx = ctx_factory(llm=llm, deadline=time.monotonic() + FINALIZE_RESERVE_SECONDS - 1)
+    out = await graph.ainvoke(initial("x"), config(), context=ctx, durability="exit")
+    assert (out["status"], out["summary"], out.get("turns", 0)) == ("done", "reserved", 0)
+
+
+async def test_slow_agent_call_is_cut_and_the_run_finalizes(graph, ctx_factory, monkeypatch):
+    monkeypatch.setattr("backend.search.advanced.agent.FINALIZE_RESERVE_SECONDS", 0.3)
+    llm = ScriptedChatModel(script=[Delayed(5, brief())],
+                            structured=[FinalShortlist(summary="cut short", shortlist=[])])
+    ctx = ctx_factory(llm=llm, deadline=time.monotonic() + 0.5)  # 0.2 s for the agent, then finalize
+    started = time.monotonic()
+    out = await graph.ainvoke(initial("x"), config(), context=ctx, durability="exit")
+    assert time.monotonic() - started < 2
+    assert (out["status"], out["summary"]) == ("done", "cut short")
+
+
+async def test_slow_finalize_is_cut_and_the_run_ends_partial(graph, ctx_factory, monkeypatch):
+    monkeypatch.setattr("backend.search.advanced.agent.FINALIZE_RESERVE_SECONDS", 0.2)
+    llm = ScriptedChatModel(script=[tool_call("finish", {"keep": [], "notes": ""})],
+                            structured=[Delayed(5, FinalShortlist(summary="too late", shortlist=[]))])
+    ctx = ctx_factory(llm=llm, deadline=time.monotonic() + 0.5)
+    started = time.monotonic()
+    out = await graph.ainvoke(initial("x"), config(), context=ctx, durability="exit")
+    assert time.monotonic() - started < 2
+    assert (out["status"], out["summary"]) == ("partial", PARTIAL_SUMMARY)
+
+
+async def test_agent_model_is_bound_one_call_at_a_time_with_capped_output(graph, ctx_factory):
+    from backend.search.advanced.budget import AGENT_MAX_TOKENS
+
+    llm = ScriptedChatModel(script=[tool_call("finish", {"keep": [], "notes": ""})],
+                            structured=[FinalShortlist(summary="s", shortlist=[])])
+    await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=llm), durability="exit")
+    assert llm.bound_kwargs == {"parallel_tool_calls": False, "max_tokens": AGENT_MAX_TOKENS}
+
+
+async def test_unparsed_tool_call_log_leaves_out_the_arguments(graph, ctx_factory, caplog):
+    broken = AIMessage(content="", invalid_tool_calls=[
+        {"name": "update_brief", "args": '{"notes": "SECRET-CV-QUOTE', "id": "call-x", "error": "bad json",
+         "type": "invalid_tool_call"}])
+    llm = ScriptedChatModel(script=[broken], structured=[])
+    await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=llm), durability="exit")
+    assert "update_brief" in caplog.text and "bad json" in caplog.text
+    assert "SECRET-CV-QUOTE" not in caplog.text
 
 
 async def test_plain_text_reply_goes_to_finalize(graph, ctx_factory):
