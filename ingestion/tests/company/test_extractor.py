@@ -65,7 +65,7 @@ class _Stub(ChatProvider):
         self.replies = list(replies)
         self.prompts = []
 
-    def complete(self, prompt):
+    def complete(self, prompt, *, system=None, json=True):
         self.prompts.append(prompt)
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):

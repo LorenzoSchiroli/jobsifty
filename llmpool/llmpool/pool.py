@@ -6,7 +6,8 @@ failure maps onto one of three outcomes:
 - `RateLimited`: the provider is paused (Retry-After, else a minute) and the
   call goes to the next one;
 - `Unusable`: out of credits, daily quota used up, bad key or unknown model;
-  skipped for the rest of the run;
+  skipped for an hour (`UNUSABLE_PAUSE`), since a long-lived process would
+  otherwise never try it again;
 - `Transient`: network error, timeout, 5xx or an unusable answer; the call goes
   to the next one, and a provider failing several times in a row is paused too.
 
@@ -15,6 +16,7 @@ call returns None and the caller carries on without it. A caller that would
 rather wait out a short pause passes `wait_up_to`.
 """
 import logging
+import math
 import threading
 import time
 from collections.abc import Callable
@@ -27,6 +29,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_PAUSE = 60.0
 _TRANSIENT_PAUSE_AFTER = 3
 _TRANSIENT_PAUSE = 300.0
+UNUSABLE_PAUSE = 3600.0
 _DAILY_QUOTA_MARKERS = ("per day", "perday", "(tpd)", "(rpd)", "daily")
 
 
@@ -67,12 +70,20 @@ class Provider:
 
     def __init__(self, api_key: str | None):
         self.api_key = api_key
-        self.disabled = not api_key
+        self.disabled_until = 0.0 if api_key else math.inf
         self.paused_until = 0.0
         self.calls = self.ok = self.failed = 0
         self._consecutive_failures = 0
         self._last_call = 0.0
         self._lock = threading.Lock()
+
+    @property
+    def disabled(self) -> bool:
+        return time.monotonic() < self.disabled_until
+
+    @disabled.setter
+    def disabled(self, value: bool) -> None:
+        self.disabled_until = math.inf if value else 0.0
 
     def usable(self) -> bool:
         return not self.disabled and time.monotonic() >= self.paused_until
@@ -114,7 +125,7 @@ class Provider:
 
     def unusable(self) -> None:
         self.failed += 1
-        self.disabled = True
+        self.disabled_until = time.monotonic() + UNUSABLE_PAUSE
 
     def transient(self) -> None:
         self.failed += 1
@@ -138,11 +149,11 @@ class Pool(Generic[P]):
         return [p.name for p in self.providers if p.api_key]
 
     def down(self) -> bool:
-        """True when providers were configured but all are out for the rest of the run."""
+        """True when providers were configured but all are out."""
         return bool(self.configured()) and all(p.disabled for p in self.providers)
 
     def ready_in(self) -> float | None:
-        """Seconds until the first paused provider is usable again; None when all are out for the run."""
+        """Seconds until the first paused provider is usable again; None when all are out."""
         waits = [p.paused_until - time.monotonic() for p in self.providers if not p.disabled]
         return max(0.0, min(waits)) if waits else None
 
