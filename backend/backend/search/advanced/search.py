@@ -18,8 +18,8 @@ from backend.search.advanced.vocabulary import (
     normalise_choice,
     normalise_country,
     normalise_languages,
-    same_country,
 )
+from backend.search.countries import same_country
 from backend.search.filters import SearchFilters
 from backend.search.models_lifecycle import encode_query
 from backend.search.retrieval import hybrid_retrieve

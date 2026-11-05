@@ -19,8 +19,8 @@ from backend.search.advanced.vocabulary import (
     normalise_choice,
     normalise_country,
     normalise_languages,
-    same_country,
 )
+from backend.search.countries import same_country
 from backend.search.filters import SearchFilters
 
 # A company-size requirement stays possible as a text-only item: employee_count is not in the index.

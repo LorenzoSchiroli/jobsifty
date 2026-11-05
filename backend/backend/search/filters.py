@@ -1,38 +1,9 @@
 from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel
 
+from backend.search.countries import country_values
+
 _BOOST = 2.0
-
-# Indexed company.country is often an ISO code (DE) while query parsing emits
-# canonical names (Germany). Match both forms.
-_COUNTRY_NAME_TO_ISO = {
-    "United Kingdom": "GB",
-    "United States": "US",
-    "Germany": "DE",
-    "France": "FR",
-    "Spain": "ES",
-    "Italy": "IT",
-    "Netherlands": "NL",
-    "Poland": "PL",
-    "Portugal": "PT",
-    "Ireland": "IE",
-    "Switzerland": "CH",
-    "Austria": "AT",
-    "Belgium": "BE",
-    "Sweden": "SE",
-    "Canada": "CA",
-}
-
-
-def _country_values(country: str) -> list[str]:
-    if country in _COUNTRY_NAME_TO_ISO:
-        return [country, _COUNTRY_NAME_TO_ISO[country]]
-    upper = country.upper()
-    for name, iso in _COUNTRY_NAME_TO_ISO.items():
-        if upper == iso:
-            return [name, iso]
-    return [country]
-
 
 class SearchFilters(BaseModel):
     is_consulting: bool | None = None
@@ -79,7 +50,7 @@ def build_clauses(filters: SearchFilters) -> list[dict]:
         elif value is not None and (not isinstance(value, str) or "|" not in value):
             clauses.append(term(field, value))
     if filters.country is not None and "|" not in filters.country:
-        values = _country_values(filters.country)
+        values = country_values(filters.country)
         if len(values) == 1:
             clauses.append(term("country", values[0]))
         else:

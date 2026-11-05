@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from backend.search.advanced.budget import CANDIDATE_WINDOW, SHOWN_PER_SEARCH
-from backend.search.advanced.vocabulary import LANGUAGE_CODES, canonical_country
+from backend.search.advanced.vocabulary import LANGUAGE_CODES
+from backend.search.countries import canonical_country
 from backend.search.filters import SearchFilters
 
 if TYPE_CHECKING:

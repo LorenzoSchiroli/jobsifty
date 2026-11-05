@@ -8,7 +8,7 @@ JSON schema the model sees; `normalise_*` map what the model may still write ("o
 import re
 from typing import Literal, get_args
 
-from backend.search.filters import _COUNTRY_NAME_TO_ISO
+from backend.search.countries import canonical_country
 
 LocationType = Literal["remote", "hybrid", "on-site"]
 Seniority = Literal["junior", "mid", "senior", "staff", "lead", "principal", "director"]
@@ -92,39 +92,8 @@ def normalise_languages(value) -> list[str]:
     return values
 
 
-_ISO_TO_NAME = {iso: name for name, iso in _COUNTRY_NAME_TO_ISO.items()}
-_NAMES = {name.casefold(): name for name in _COUNTRY_NAME_TO_ISO}
-
-_US_STATES = frozenset(
-    "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH "
-    "OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split()
-)
-
-
-def canonical_country(value: str | None, *, in_location: bool = False) -> str | None:
-    """A country name or ISO code as the canonical name; None when it is neither.
-
-    In a free-text location a code that is also a US state ("San Francisco, CA") is not a country.
-    """
-    if not value:
-        return None
-    v = value.strip()
-    if name := _NAMES.get(v.casefold()):
-        return name
-    if in_location and v.upper() in _US_STATES:
-        return None
-    return _ISO_TO_NAME.get(v.upper())
-
-
 def normalise_country(value) -> str:
     """The canonical name of a known country or ISO code, else the stripped text."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"company_country needs a country name, got {value!r}")
     return canonical_country(value) or value.strip()
-
-
-def same_country(a: str | None, b: str | None) -> bool:
-    """Whether two country names or ISO codes name the same country ("Germany" and "DE" do)."""
-    if not a or not b:
-        return False
-    return (canonical_country(a) or a.strip()).casefold() == (canonical_country(b) or b.strip()).casefold()
