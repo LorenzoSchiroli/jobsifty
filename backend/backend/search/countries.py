@@ -26,7 +26,8 @@ _ALIASES: dict[str, str] = {
     "usa": "United States", "united states of america": "United States", "america": "United States",
 }
 
-_BY_NAME = {name.casefold(): name for name in _ISO} | _ALIASES
+# casefolded canonical names and aliases (no ISO codes: they are ambiguous in free text) -> canonical name
+COUNTRY_NAMES = {name.casefold(): name for name in _ISO} | _ALIASES
 _BY_ISO = {iso: name for name, iso in _ISO.items()}
 
 _US_STATES = frozenset(
@@ -43,7 +44,7 @@ def canonical_country(value: str | None, *, in_location: bool = False) -> str | 
     if not value:
         return None
     v = value.strip()
-    if name := _BY_NAME.get(v.casefold()):
+    if name := COUNTRY_NAMES.get(v.casefold()):
         return name
     if in_location and v.upper() in _US_STATES:
         return None

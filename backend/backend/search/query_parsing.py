@@ -1,5 +1,6 @@
 import re
 
+from backend.search.countries import COUNTRY_NAMES
 from backend.search.filters import SearchFilters
 
 _NUM_WORDS = {
@@ -48,17 +49,8 @@ _LANGS = [
 ]
 _LANG_ALT = "|".join(_LANGS)
 
-# canonical name keyed by the lowercase form matched
-_COUNTRIES = {
-    "united kingdom": "United Kingdom", "united states": "United States",
-    "germany": "Germany", "france": "France", "spain": "Spain",
-    "italy": "Italy", "netherlands": "Netherlands", "poland": "Poland",
-    "portugal": "Portugal", "ireland": "Ireland", "switzerland": "Switzerland",
-    "austria": "Austria", "belgium": "Belgium", "sweden": "Sweden",
-    "canada": "Canada",
-}
 # longest first so multi-word countries win
-_COUNTRY_KEYS = sorted(_COUNTRIES, key=len, reverse=True)
+_COUNTRY_KEYS = sorted(COUNTRY_NAMES, key=len, reverse=True)
 
 _NEG = r"\b(?:(?:no|not|without|excluding)\s+|non[\s-]?)"
 _OP = r"(?:>=|≥|above|over|at least|min(?:imum)?|greater than|more than)\s*"
@@ -132,7 +124,7 @@ def parse_query(query: str) -> SearchFilters:
     # Keep country in semantic_query too — BM25 still benefits from the place name.
     for key in _COUNTRY_KEYS:
         if re.search(r"\b" + re.escape(key) + r"\b", text):
-            fields["country"] = _COUNTRIES[key]
+            fields["country"] = COUNTRY_NAMES[key]
             break
 
     # --- enum filters (first per field wins) ---

@@ -80,6 +80,19 @@ def test_country():
     assert parse_query("python jobs in the united kingdom").country == "United Kingdom"
 
 
+@pytest.mark.parametrize("query,name", [
+    ("python jobs in UK", "United Kingdom"),
+    ("ml jobs in Deutschland", "Germany"),
+    ("data jobs in the Netherlands", "Netherlands"),
+])
+def test_country_aliases(query, name):
+    assert parse_query(query).country == name
+
+
+def test_iso_codes_are_not_countries_in_free_text():
+    assert parse_query("it support jobs, de-escalation").country is None
+
+
 def test_country_case_insensitive():
     assert parse_query("Python Jobs In GERMANY").country == "Germany"
 
