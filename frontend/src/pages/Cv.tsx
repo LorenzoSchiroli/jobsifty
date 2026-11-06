@@ -85,8 +85,7 @@ export default function Cv() {
       const res = await saveCV(text, confirm)
       setSavedText(res.cv_text || '')
       setFindings(null)
-      setSavedNote('Saved')
-      setTimeout(() => setSavedNote(''), 2000)
+      setSavedNote('Saved correctly')
     } catch (err: any) {
       const f = err.response?.status === 409 ? err.response?.data?.detail?.findings : null
       if (f) setFindings(f)
@@ -99,6 +98,7 @@ export default function Cv() {
   return (
     <div style={{ padding: '2rem', maxWidth: 800, margin: '0 auto' }}>
       <h2 style={{ marginTop: 0 }}>CV</h2>
+      <p style={{ fontSize: '0.9rem', opacity: 0.7, marginTop: 0 }}>Used by agent mode.</p>
       <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
         <button style={btn} disabled={busy} onClick={() => fileRef.current?.click()}>Upload file</button>
         <input ref={fileRef} type="file" accept=".pdf,.docx,.txt" style={{ display: 'none' }}
@@ -106,16 +106,20 @@ export default function Cv() {
         <button style={btn} disabled={busy} onClick={handleRedact}>Remove private info</button>
         <button style={{ ...btn, background: '#3b82f6', border: 'none' }} disabled={busy}
                 onClick={() => doSave(false)}>Save CV</button>
+        {savedNote && (
+          <span style={{ alignSelf: 'center', fontSize: '0.9rem' }}>
+            <span style={{ color: '#4ade80' }}>✓ {savedNote}</span>
+          </span>
+        )}
       </div>
       <textarea
         value={text}
-        onChange={e => setText(e.target.value)}
+        onChange={e => { setText(e.target.value); setSavedNote('') }}
         rows={26}
         style={{ width: '100%', boxSizing: 'border-box', resize: 'vertical', fontSize: '0.85rem', background: '#141414', color: '#eee', border: '1px solid #2a2a2a', borderRadius: 6, padding: '0.75rem' }}
       />
       <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', minHeight: '1.2rem' }}>
         {removedNote && <div style={{ opacity: 0.7 }}>{removedNote}</div>}
-        {savedNote && <div style={{ opacity: 0.7 }}>{savedNote}</div>}
         {error && <div style={{ color: '#f87171' }}>{error}</div>}
       </div>
 

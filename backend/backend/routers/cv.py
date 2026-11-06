@@ -92,7 +92,11 @@ async def save_cv(
     current_user: User = Depends(get_current_user),
 ):
     if not body.text.strip():
-        raise HTTPException(status_code=400, detail="CV is empty.")
+        # An empty editor saves as no CV, so advanced search asks for one again.
+        profile = await _get_or_create_profile(session, current_user.id)
+        profile.cv_text = None
+        await session.commit()
+        return CVResponse(cv_text=None, has_cv=False)
     if not body.confirm:
         _, findings = redact(body.text)
         if findings:

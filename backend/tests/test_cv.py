@@ -65,9 +65,14 @@ async def test_save_replaces_previous(client: AsyncClient):
     assert (await client.get("/users/cv", headers=H(t))).json()["cv_text"] == "new cv content"
 
 
-async def test_save_empty_is_refused(client: AsyncClient):
+async def test_save_empty_deletes_the_cv(client: AsyncClient):
     t = await _token(client, "s3")
-    assert (await client.put("/users/cv", headers=H(t), json={"text": "  \n"})).status_code == 400
+    await client.put("/users/cv", headers=H(t), json={"text": "Python dev"})
+    res = await client.put("/users/cv", headers=H(t), json={"text": "  \n"})
+    assert res.status_code == 200
+    assert res.json() == {"cv_text": None, "has_cv": False}
+    assert (await client.get("/users/cv", headers=H(t))).json() == {"cv_text": None, "has_cv": False}
+    assert (await client.get("/auth/me", headers=H(t))).json()["has_cv"] is False
 
 
 async def test_old_upload_endpoint_is_gone(client: AsyncClient):

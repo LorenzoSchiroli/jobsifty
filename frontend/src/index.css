@@ -34,3 +34,57 @@ button {
 
 button:hover:not(:disabled) { background: #333; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid #262626;
+  border-left: 3px solid #262626;
+  background: #171717;
+  color: #e5e5e5;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.nav-link svg { flex-shrink: 0; opacity: 0.75; }
+.nav-link:hover { background: #222; border-color: #3a3a3a; }
+.nav-link:focus-visible { outline: 2px solid #3b82f6; outline-offset: 1px; }
+.nav-link.active { background: #1e293b; border-color: #334155; border-left-color: #3b82f6; color: #fff; font-weight: 500; }
+.nav-link.active svg { opacity: 1; color: #60a5fa; }
+
+.text-link { color: #60a5fa; text-decoration: none; }
+.text-link:hover { text-decoration: underline; }
+
+/* Agent mode: gradient border that slowly moves, a soft glow, one pulse on switching */
+.search-input { transition: box-shadow 300ms ease, border-color 300ms ease; }
+.search-form.agent .search-input,
+.search-form.agent .search-input:focus {
+  border: 2px solid transparent;
+  padding: calc(0.5rem - 1px) calc(0.75rem - 1px);
+  background:
+    linear-gradient(#16161f, #16161f) padding-box,
+    linear-gradient(90deg, #3b82f6, #8b5cf6, #ec4899, #8b5cf6, #3b82f6) border-box;
+  background-size: 100% 100%, 300% 100%;
+  box-shadow: 0 0 22px rgba(139, 92, 246, 0.4);
+  animation: adv-border 6s linear infinite, adv-pulse 900ms ease-out;
+}
+.search-form.agent .search-btn {
+  background: linear-gradient(90deg, #6366f1, #8b5cf6);
+  border-color: transparent;
+  color: #fff;
+}
+.search-form.agent .search-btn:hover:not(:disabled) { background: linear-gradient(90deg, #7174f5, #9a6cf8); }
+.mode-btn.agent-on { background: linear-gradient(90deg, #6366f1, #8b5cf6) !important; }
+
+@keyframes adv-border { to { background-position: 0 0, 300% 0; } }
+@keyframes adv-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.7); }
+  50%  { box-shadow: 0 0 32px 6px rgba(139, 92, 246, 0.55); }
+  100% { box-shadow: 0 0 22px rgba(139, 92, 246, 0.4); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .search-form.agent .search-input { animation: none; }
+}

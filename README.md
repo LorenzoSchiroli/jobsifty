@@ -134,8 +134,12 @@ flowchart TB
 saved CV. On the `/cv` page you upload a file (PDF/DOCX/TXT, text extracted and
 not stored) or write the CV; "Remove private info" (`backend/cv/redact.py`)
 replaces obvious personal data with placeholders such as `[EMAIL]` and `[PHONE]`,
-and `PUT /users/cv` answers 409 with the findings until you confirm. LLM calls
-see only the saved text. All agent calls go through one pool (`backend/llm.py`:
+and `PUT /users/cv` answers 409 with the findings until you confirm (saving
+empty text deletes the CV). LLM calls see only the saved text. Basic search uses
+neither the CV nor the preference memory. The UI calls this mode **Agent**;
+choosing it on the search page without a saved CV asks whether to add one, and
+the preference memory is read and edited on the `/preferences` page. All agent
+calls go through one pool (`backend/llm.py`:
 unpaced, so users never wait on each other; Groq on `GROQ_MODEL_LARGE`, order
 from `LLM_PROVIDERS`); a provider out of quota or with a bad key is paused for an hour.
 
@@ -434,7 +438,7 @@ Offer sources: `jobspy`, `adzuna`, `arbeitnow`, `freehire` (default: all); what 
 | `POST /companies/`, `GET /companies/{id}` | Ingestion writes here (`X-Ingest-Token`) |
 | `POST /jobs/search` | Hybrid search + rerank |
 | `POST /jobs/search/advanced`, `.../resume` | Agent search (WIP) |
-| `POST /users/cv/extract`, `POST /users/cv/redact`, `PUT /users/cv`, `GET /users/cv` | CV text from a file, private-info removal, save with a confirm check, read |
+| `POST /users/cv/extract`, `POST /users/cv/redact`, `PUT /users/cv`, `GET /users/cv` | CV text from a file, private-info removal, save with a confirm check (empty text deletes it), read |
 | `GET/PUT /me/preference-memory` | Per-user search preferences |
 | `GET /health` | Liveness probe for k8s and the ALB |
 
