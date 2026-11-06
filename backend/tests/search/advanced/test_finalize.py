@@ -10,14 +10,14 @@ from tests.search.advanced.samples import candidate
 async def test_finalize_drops_invented_and_violating_jobs(ctx_factory, pool_state):
     llm = ScriptedChatModel(script=[], structured=[FinalShortlist(summary="s", shortlist=[
         item("a1f3", 90), item("zzzz", 80), item("b2c4", 70)])])   # b2c4 is on-site, brief says remote only
-    out = await run_finalize(pool_state, ctx_factory(llm=llm))
+    out = await run_finalize(pool_state, ctx_factory(llm=llm), timeout=30)
     assert [r["job_id"] for r in out["shortlist"]] == [pool_state["short_ids"]["a1f3"]]
     assert out["status"] == "done" and out["summary"] == "s"
 
 
 async def test_finalize_prompt_carries_cv_rules_and_candidate_text(ctx_factory, pool_state):
     llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[])])
-    await run_finalize({**pool_state, "notes": "my notes"}, ctx_factory(llm=llm, cv_text="PyTorch CV"))
+    await run_finalize({**pool_state, "notes": "my notes"}, ctx_factory(llm=llm, cv_text="PyTorch CV"), timeout=30)
     text = "\n".join(str(m.content) for m in llm.calls[0])
     assert "PyTorch CV" in text and "my notes" in text and "- remote only" in text
     assert "[a1f3]" in text and "Build ranking models" in text and 'search 1 "ml"' in text
@@ -63,7 +63,7 @@ def test_filters_summary_lists_searches_that_found_shortlisted_jobs(pool_state):
 
 async def _run(ctx_factory, state, items):
     llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=items)])
-    return await run_finalize(state, ctx_factory(llm=llm))
+    return await run_finalize(state, ctx_factory(llm=llm), timeout=30)
 
 
 def _many_state(pool_state, n):
@@ -124,7 +124,7 @@ async def test_finalize_drops_a_returned_job_that_does_not_meet_a_stated_item(ct
 async def test_finalize_prompt_carries_the_questions_and_answers(ctx_factory, pool_state):
     llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[])])
     qa = [{"question": "Allow hybrid?", "options": ["Yes", "No"], "answer": "only if in Milan", "chosen": None}]
-    await run_finalize({**pool_state, "qa": qa}, ctx_factory(llm=llm))
+    await run_finalize({**pool_state, "qa": qa}, ctx_factory(llm=llm), timeout=30)
     text = "\n".join(str(m.content) for m in llm.calls[0])
     assert "- Q: Allow hybrid? A: only if in Milan" in text
 
@@ -133,5 +133,5 @@ async def test_finalize_caps_output_tokens(ctx_factory, pool_state):
     from backend.search.advanced.budget import FINALIZE_MAX_TOKENS
 
     llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[])])
-    await run_finalize(pool_state, ctx_factory(llm=llm))
+    await run_finalize(pool_state, ctx_factory(llm=llm), timeout=30)
     assert llm.structured_kwargs["max_tokens"] == FINALIZE_MAX_TOKENS

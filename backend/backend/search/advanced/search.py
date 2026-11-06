@@ -98,10 +98,10 @@ def matches_soft(c: Candidate, variant: SearchVariant) -> bool:
     return True
 
 
-def soft_matches(variant: SearchVariant, candidates: list[Candidate]) -> int:
-    """How many candidates meet every soft filter; with no soft filters, how many were returned."""
+def soft_matches(variant: SearchVariant, candidates: list[Candidate]) -> int | None:
+    """How many candidates meet every soft filter; None when the variant set none."""
     if not has_soft_filters(variant):
-        return len(candidates)
+        return None
     return sum(matches_soft(c, variant) for c in candidates)
 
 

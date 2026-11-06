@@ -226,3 +226,13 @@ def test_a_failed_answer_is_not_retried_by_waiting(monkeypatch):
     with patch(_POST, return_value=_reply("not json")) as post:
         assert llm.complete("p", json.loads, wait_up_to=90) is None
     assert sleeps == [] and post.call_count == 1
+
+
+def test_error_for_classifies_a_status_for_any_caller():
+    groq = Groq("k")
+    limited = groq.error_for(429, "tokens per minute (TPM)", {"Retry-After": "7"})
+    assert isinstance(limited, pool_module.RateLimited) and limited.retry_after == 7.0
+    assert isinstance(groq.error_for(429, "Rate limit reached on tokens per day (TPD)"), pool_module.Unusable)
+    assert isinstance(groq.error_for(404, "model not found"), pool_module.Unusable)
+    assert isinstance(groq.error_for(503, "overloaded"), pool_module.Transient)
+    assert groq.error_for(429, "slow down", {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}).retry_after is None

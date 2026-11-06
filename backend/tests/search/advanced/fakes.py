@@ -4,10 +4,16 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+import openai
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import RunnableLambda
+from llmpool.llm import ChatProvider
+from llmpool.pool import Provider
+
+from backend.search.advanced.llm import AgentLLM
 
 
 def tool_call(name: str, args: dict, id: str | None = None) -> AIMessage:
@@ -86,3 +92,32 @@ class ScriptedChatModel(BaseChatModel):
             return await self._apop(self.structured, messages_of(prompt))
 
         return RunnableLambda(answer, afunc=aanswer)
+
+
+class FakeProvider(Provider):
+    """A keyed pool provider (llmpool's state and bookkeeping), for AgentLLM tests."""
+    env_key = "FAKE_KEY"
+    unusable_statuses = ChatProvider.unusable_statuses
+
+    def __init__(self, name: str):
+        super().__init__("k")
+        self.name = name
+
+
+def agent_llm(*models: BaseChatModel) -> AgentLLM:
+    """An AgentLLM over one fake provider per model, in order (provider-0, provider-1, ...)."""
+    providers = [FakeProvider(f"provider-{i}") for i in range(len(models))]
+    by_name = {p.name: m for p, m in zip(providers, models)}
+    return AgentLLM(providers, lambda p: by_name[p.name])
+
+
+def api_error(status: int, code: str | None = None, message: str = "error", headers: dict | None = None,
+              **extra) -> openai.APIStatusError:
+    """The error the openai client raises for an HTTP error answer: the class it picks for the status,
+    `body` the response's `error` object, as `_make_status_error` builds it."""
+    body = {"message": message, "type": "invalid_request_error", "code": code, **extra}
+    request = httpx.Request("POST", "https://llm.test/v1/chat/completions")
+    response = httpx.Response(status, headers=headers or {}, json={"error": body}, request=request)
+    cls = {400: openai.BadRequestError, 401: openai.AuthenticationError, 404: openai.NotFoundError,
+           429: openai.RateLimitError}.get(status, openai.InternalServerError if status >= 500 else openai.APIStatusError)
+    return cls(f"Error code: {status} - {{'error': {body}}}", response=response, body=body)

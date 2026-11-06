@@ -4,10 +4,10 @@ agent (LLM, tools bound) ─► tools ─► agent ...; the agent goes to finali
 tool calls, at the turn cap, or when its time is up (the deadline less FINALIZE_RESERVE_SECONDS;
 an agent call still running then is cut), tools go to finalize once `finish` ran. Finalize gets
 what is left to the deadline, at least the reserve.
-An LLM failure never raises: the agent step ends the run as partial, so does a failed or
-timed-out finalize. Every call's output is capped (AGENT_MAX_TOKENS, FINALIZE_MAX_TOKENS).
+Each call goes through `ctx.llm`, which tries the pool's providers in order (search/advanced/llm.py).
+An LLM failure never raises: when no provider answers, the agent step ends the run as partial, so
+does a failed or timed-out finalize. Every call's output is capped (AGENT_MAX_TOKENS, FINALIZE_MAX_TOKENS).
 """
-import asyncio
 import logging
 import time
 
@@ -42,10 +42,9 @@ async def agent_node(state: AgentState, runtime: Runtime[AgentContext]) -> Comma
     left = _agent_time_left(ctx)
     if state.get("turns", 0) >= MAX_TURNS or left <= 0:
         return Command(goto="finalize")
-    llm = ctx.llm.bind_tools(TOOLS, parallel_tool_calls=False, max_tokens=AGENT_MAX_TOKENS)
     try:
         prompt = [SystemMessage(system_prompt(state, ctx)), *compact_history(state["messages"])]
-        message = await asyncio.wait_for(llm.ainvoke(prompt), timeout=left)
+        message = await ctx.llm.tool_turn(prompt, TOOLS, AGENT_MAX_TOKENS, timeout=left)
     except TimeoutError:
         logger.warning("advanced agent call ran past the agent's time; finalizing with what was found")
         return Command(goto="finalize")
@@ -65,7 +64,7 @@ async def finalize_node(state: AgentState, runtime: Runtime[AgentContext]) -> di
     ctx = runtime.context
     timeout = max(ctx.deadline - time.monotonic(), FINALIZE_RESERVE_SECONDS)
     try:
-        result = await asyncio.wait_for(run_finalize(state, ctx), timeout=timeout)
+        result = await run_finalize(state, ctx, timeout)
     except TimeoutError:
         logger.warning("advanced finalize timed out; the run ends partial")
         return partial_result(state)

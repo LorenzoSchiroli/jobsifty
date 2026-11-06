@@ -141,9 +141,11 @@ calls see only the saved text. Basic search uses neither the CV nor the
 preference memory. The UI calls this mode **Agent**; choosing it on the search
 page without a saved CV asks whether to add one, and the preference memory is
 read and edited on the `/preferences` page. The agent calls the LLM through
-`langchain-openai` `ChatOpenAI` against Groq's OpenAI-compatible API
-(`ADVANCED_LLM_BASE_URL` / `ADVANCED_LLM_MODEL`, key `GROQ_API_KEY`), so the CV
-it sees is the redacted one.
+`langchain-openai` `ChatOpenAI`, one per provider of the shared `llmpool` pool
+(`LLM_PROVIDERS` order, Groq on `GROQ_MODEL_LARGE`): a 429, an error or a
+malformed tool call moves the call to the next provider (Groq's
+`tool_use_failed` is first retried twice), and a provider paused by one
+request is skipped by the next. Every provider sees only the redacted CV.
 
 ```mermaid
 flowchart TB
@@ -167,10 +169,10 @@ flowchart TB
 |--------|------------|
 | **A tool loop, one call per turn** | The model decides what to do next (update what it understood, search with 1–3 query variants, read a job, ask, finish) instead of following a fixed graph. One call per turn keeps every step observable and the budget countable. |
 | **Stated vs inferred requirements** | What you typed is locked in the brief and every result must satisfy it; only you can relax it, by answering a question. A requirement that maps to an index field uses the index's own values (the tool schema lists them), so "on-site" or "English" filters what ingestion wrote rather than matching nothing. What the agent inferred from your CV and past searches it may trade, and so is any preference ("preferably remote"): it ranks but is never locked, so results can include non-remote jobs. Probes ("what if …" searches) measure what a stated requirement costs, so a question can say so. |
-| **A hard budget: 6 turns, 9 searches (2 probes), 2 questions, 4 minutes** | An agent loop is how a 3-second search becomes a 40-second one with an unbounded LLM bill. A spent budget goes straight to `finalize` and ends with a normal shortlist; every LLM call is cut at the deadline (45 s kept for finalize) and capped in output tokens. The answer is `partial` only when the assistant could not finish (an LLM error, an unparsed answer, a failed or timed-out finalize): the most relevant jobs found, without fit scores. |
+| **A hard budget: 6 turns, 9 searches (2 probes), 2 questions, 4 minutes** | An agent loop is how a 3-second search becomes a 40-second one with an unbounded LLM bill. A spent budget goes straight to `finalize` and ends with a normal shortlist; every LLM call is cut at the deadline (45 s kept for finalize) and capped in output tokens. The answer is `partial` only when the assistant could not finish (no LLM provider answered, an unparsed answer, a failed or timed-out finalize): the most relevant jobs found, without fit scores or a summary. |
 | **`finalize` scores the whole pool** | Fit score, rationale, gaps and trade-offs are written once over every job found, not only the last search, so an early good hit is not lost. |
 | **State in Postgres only while a question is open** | The agent interrupts to ask, so the run survives an HTTP round trip: checkpointed by `thread_id` (`durability="exit"`), `/resume` can land on any API replica. The thread is deleted when a run ends. The CV stays in the run context and out of the checkpoint. |
-| **Any OpenAI-compatible LLM** | Groq by default (it sees the saved, redacted CV); `ADVANCED_LLM_BASE_URL` / `_MODEL` point it elsewhere (the agent always sends `GROQ_API_KEY`). |
+| **The shared provider pool, not one LLM** | Free tiers rate-limit and gpt-oss sometimes emits a malformed tool call, so one provider would end many runs `partial`. The agent tries the `llmpool` providers in `LLM_PROVIDERS` order with the pool's own pause state; since the CV is redacted before it is saved, any provider may see it. |
 | **Preference memory is distilled in a background task** | The user gets results at once; the LLM that merges this session into their long-term preference summary runs after the response. A `user_edited` flag protects a hand-written summary: the distiller may only append. |
 
 Not built yet: one active run per user, the sweep of abandoned threads, and a
@@ -347,16 +349,15 @@ cp .env.example .env      # then fill in the keys below
 
 | Variable | Where | Purpose |
 |----------|-------|---------|
-| `GROQ_API_KEY` | `.env` | Advanced-search agent (`ChatOpenAI` against Groq); last in the company enrichment pool |
-| `NVIDIA_NIM_API_KEY` / `GEMINI_API_KEY` | `.env` | Offer summary and company enrichment LLM pools. Gemini's free tier trains on prompts; every provider is assumed to keep them, so the CV is cleaned before it is saved (`/cv` page) |
+| `GROQ_API_KEY` | `.env` | Last in the company enrichment and advanced-search pools |
+| `NVIDIA_NIM_API_KEY` / `GEMINI_API_KEY` | `.env` | Offer summary, company enrichment and advanced-search LLM pools. Gemini's free tier trains on prompts; every provider is assumed to keep them, so the CV is cleaned before it is saved (`/cv` page) |
 | `SECRET_KEY` | `.env` | JWT signing |
 | `INGEST_TOKEN` | `.env` | Ingestion's job/company writes (`X-Ingest-Token`); refused while unset |
 | `TINYFISH_API_KEY` / `EXA_API_KEY` / `TAVILY_API_KEY` | `.env` | Company enrichment web search pool; any subset, missing keys are skipped |
 | `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | `.env` | Optional job source |
 | `BACKUP_SBOX_HOST` / `_USER` / `_RCLONE_PASS` | `.env` | Optional nightly Postgres backup |
-| `GROQ_MODEL_LARGE` / `GROQ_MODEL_BASE` | `.env.public` | Model IDs for agents / company enrichment |
-| `ADVANCED_LLM_BASE_URL` / `_MODEL` | `.env.public` | Optional: advanced search on another OpenAI-compatible endpoint (default: Groq settings; the agent always sends `GROQ_API_KEY`) |
-| `NVIDIA_MODEL` / `GEMINI_MODEL` / `LLM_PROVIDERS` | `.env.public` | Company enrichment LLM pool: models (comma-separated fallbacks) and order (default `nvidia,gemini,groq`) |
+| `GROQ_MODEL_LARGE` / `GROQ_MODEL_BASE` | `.env.public` | Groq's model in the advanced-search agent / in company enrichment |
+| `NVIDIA_MODEL` / `GEMINI_MODEL` / `LLM_PROVIDERS` | `.env.public` | Company enrichment and advanced-search LLM pool: models (comma-separated fallbacks) and order (default `nvidia,gemini,groq`) |
 | `OFFER_LLM_PROVIDERS` | `.env.public` | Offer summary LLM pool order (default `nvidia,gemini`, Groq left out) |
 | `JOB_LIVE_DAYS` | `.env.public` | Days a job stays live, from its posting time: search retention, reconcile, company enrichment (default 14) |
 | `SEARCH_PROVIDERS` | `.env.public` | Search pool order (default `tinyfish,exa,tavily`) |

@@ -8,6 +8,7 @@ WALL_CLOCK_SECONDS = 240
 FINALIZE_RESERVE_SECONDS = 45  # kept free for finalize: agent calls stop this long before the deadline
 AGENT_MAX_TOKENS = 1500  # output tokens per agent call
 FINALIZE_MAX_TOKENS = 2500  # output tokens of the finalize call
+DISTILL_SECONDS = 60  # the preference-memory call, after the run
 MAX_VARIANTS = 3
 CANDIDATE_WINDOW = 30
 SHOWN_PER_SEARCH = 8

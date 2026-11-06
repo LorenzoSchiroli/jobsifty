@@ -50,11 +50,9 @@ export default function AgentRun({ run, running, onAnswer, part }: Props) {
       <div style={box}>
         <div style={heading}>How I searched</div>
         {run.searches.map((s, i) => {
-          // matches: jobs meeting every soft filter, or the jobs returned when the search set none
-          const soft = Object.keys(s.filters).some(k => k !== 'locked')
-          const count = soft
-            ? `${s.matches} matching its filters`
-            : `${s.matches} job${s.matches === 1 ? '' : 's'} found`
+          // matches: jobs meeting every soft filter (null without soft filters); new_jobs: not found before
+          const newJobs = `${s.new_jobs} new job${s.new_jobs === 1 ? '' : 's'}`
+          const count = s.matches === null ? newJobs : `${s.matches} matching its filters, ${newJobs}`
           return (
             <div key={i} style={{ fontSize: '0.78rem', opacity: 0.6, marginBottom: '0.15rem' }}>
               {s.probe ? `what if ${s.probe}: ` : ''}"{s.query}" — {count}
@@ -100,7 +98,7 @@ export default function AgentRun({ run, running, onAnswer, part }: Props) {
               The assistant could not finish (an LLM error or timeout): these are the most relevant jobs found so far, without fit scores.
             </div>
           )}
-          <div style={{ fontSize: '0.9rem' }}>{run.summary}</div>
+          {run.summary && <div style={{ fontSize: '0.9rem' }}>{run.summary}</div>}
         </div>
       )}
     </div>

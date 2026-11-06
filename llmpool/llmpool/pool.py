@@ -51,10 +51,10 @@ class Transient(ProviderError):
     pass
 
 
-def _retry_after(resp: requests.Response) -> float | None:
+def _retry_after(headers) -> float | None:
     try:
-        return float(resp.headers.get("Retry-After", ""))
-    except ValueError:
+        return float(headers.get("Retry-After", ""))
+    except (TypeError, ValueError):
         return None
 
 
@@ -104,15 +104,20 @@ class Provider:
             raise Transient(str(e)) from e
         if resp.status_code == 200:
             return resp
-        detail = f"HTTP {resp.status_code} {resp.text[:200]}"
-        if resp.status_code == 429:
+        raise self.error_for(resp.status_code, resp.text, resp.headers)
+
+    def error_for(self, status: int, text: str, headers=None) -> ProviderError:
+        """The outcome of an HTTP error status; `text` is the response body, `headers` any
+        mapping with `.get` (requests' or httpx's headers), read for Retry-After."""
+        detail = f"HTTP {status} {text[:200]}"
+        if status == 429:
             # a daily quota will not come back within the hour the provider is paused
-            if any(marker in resp.text.lower() for marker in _DAILY_QUOTA_MARKERS):
-                raise Unusable(detail)
-            raise RateLimited(detail, _retry_after(resp))
-        if resp.status_code in self.unusable_statuses:
-            raise Unusable(detail)
-        raise Transient(detail)
+            if any(marker in text.lower() for marker in _DAILY_QUOTA_MARKERS):
+                return Unusable(detail)
+            return RateLimited(detail, _retry_after(headers or {}))
+        if status in self.unusable_statuses:
+            return Unusable(detail)
+        return Transient(detail)
 
     # outcome bookkeeping, called by the pool
     def succeeded(self) -> None:

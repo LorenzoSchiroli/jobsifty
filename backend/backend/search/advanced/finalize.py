@@ -14,8 +14,6 @@ from backend.search.advanced.context import AgentContext
 from backend.search.advanced.observation import Candidate, job_line
 from backend.search.advanced.state import AgentState
 
-PARTIAL_SUMMARY = "The assistant could not finish; these are the most relevant jobs found so far."
-
 RULES = """You write the final shortlist of jobs for one user from the candidates below.
 
 - Return up to 10 jobs, best fit first. Fewer is fine; never pad the list with jobs that break what the user asked for.
@@ -87,14 +85,13 @@ def finalize_prompt(state: AgentState, ctx: AgentContext, candidates: list[Candi
     return [SystemMessage(RULES), HumanMessage("\n\n".join(blocks))]
 
 
-async def run_finalize(state: AgentState, ctx: AgentContext) -> dict:
+async def run_finalize(state: AgentState, ctx: AgentContext, timeout: float) -> dict:
     brief = _brief(state)
     candidates = finalize_candidates(state)
     by_job = {c.job_id: c for c in candidates}
     short_ids = state.get("short_ids") or {}
-    structured = ctx.llm.with_structured_output(FinalShortlist, method="json_schema", strict=True,
-                                                max_tokens=FINALIZE_MAX_TOKENS)
-    result: FinalShortlist = await structured.ainvoke(finalize_prompt(state, ctx, candidates))
+    result: FinalShortlist = await ctx.llm.structured(finalize_prompt(state, ctx, candidates), FinalShortlist,
+                                                      FINALIZE_MAX_TOKENS, timeout=timeout)
     shortlist = []
     for item in result.shortlist:
         job_id = short_ids.get(item.job_id.strip().strip("[]").strip().lower())
@@ -108,6 +105,8 @@ async def run_finalize(state: AgentState, ctx: AgentContext) -> dict:
 
 
 def partial_result(state: AgentState) -> dict:
+    """The most relevant eligible jobs, without fit fields. The summary is empty: no LLM wrote
+    one, and `status: partial` already says the run did not finish."""
     brief = _brief(state)
     pool = (Candidate.from_dict(c) for c in (state.get("pool") or {}).values())
     ranked = sorted((c for c in pool if _eligible(c, brief)), key=lambda c: -c.score)
@@ -115,7 +114,7 @@ def partial_result(state: AgentState) -> dict:
         "status": "partial",
         "shortlist": [{"job_id": c.job_id, "fit_score": None, "fits": "", "trade_offs": [], "gaps": []}
                       for c in ranked[:MAX_SHORTLIST]],
-        "summary": PARTIAL_SUMMARY,
+        "summary": "",
     }
 
 

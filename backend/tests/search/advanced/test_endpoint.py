@@ -5,20 +5,23 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from langgraph.checkpoint.memory import MemorySaver
+from llmpool.llm import PROVIDERS
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.auth.dependencies import get_current_user
 from backend.database import get_session
+from backend.llm import get_pool
 from backend.main import app
 from backend.models import ApplicantProfile, Company, Job, User
 from backend.opensearch_client import get_opensearch
 from backend.routers import search_advanced as router
 from backend.search.advanced.agent import build_graph
 from backend.search.advanced.finalize import FinalShortlist, ShortlistItem
+from backend.search.advanced.llm import get_agent_llm
 from backend.search.models_lifecycle import get_biencoder, get_reranker
 from tests.search.advanced.conftest import JOB_A
-from tests.search.advanced.fakes import ScriptedChatModel, tool_call
+from tests.search.advanced.fakes import ScriptedChatModel, agent_llm, tool_call
 from tests.search.advanced.samples import REMOTE
 
 pytestmark = pytest.mark.asyncio
@@ -67,7 +70,7 @@ def _install(factory, user_id, saver, llm):
         get_session: override_session, get_biencoder: lambda: MagicMock(), get_reranker: lambda: MagicMock(),
         get_opensearch: lambda: AsyncMock(), get_current_user: lambda: user,
         router.get_checkpointer: lambda: saver, router.get_agent_graph: lambda: graph,
-        router.get_llm: lambda: llm,
+        router.get_llm: lambda: agent_llm(llm),
     })
 
 
@@ -118,6 +121,7 @@ async def test_run_without_question_returns_done(adv_client):
     assert result["id"] == JOB_A and result["fit_score"] == 88 and result["company"]["name"] == "acme"
     assert result["trade_offs"] == ["not a startup"] and result["fit_gaps"] == "no k8s; no Go"
     assert result["fit_rationale"] == "remote ML" and body["searches"][0]["query"] == "ml engineer"
+    assert (body["searches"][0]["matches"], body["searches"][0]["new_jobs"]) == (None, 2)
     assert body["summary"] == "Good match."
 
 
@@ -158,6 +162,7 @@ async def test_llm_failure_returns_partial_not_500(adv_client, distill_mock):
     r = await ac.post("/jobs/search/advanced", json={"query": "x"})
     body = r.json()
     assert r.status_code == 200 and body["status"] == "partial" and body["results"][0]["fit_score"] is None
+    assert body["summary"] == ""  # the frontend's banner explains a partial run
     distill_mock.assert_not_awaited()
 
 
@@ -184,8 +189,14 @@ async def test_advanced_requires_cv(adv_client, env):
 async def test_missing_llm_config_is_503(adv_client, monkeypatch):
     ac, _ = adv_client([], [])
     del app.dependency_overrides[router.get_llm]
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    r = await ac.post("/jobs/search/advanced", json={"query": "x"})
+    for cls in PROVIDERS.values():
+        monkeypatch.delenv(cls.env_key, raising=False)
+    get_pool.cache_clear()
+    get_agent_llm.cache_clear()
+    try:
+        r = await ac.post("/jobs/search/advanced", json={"query": "x"})
+    finally:
+        get_pool.cache_clear()
     assert r.status_code == 503
 
 

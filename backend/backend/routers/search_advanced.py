@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from langchain_core.language_models import BaseChatModel
 from langgraph.types import Command
 from opensearchpy import AsyncOpenSearch
 from pydantic import BaseModel
@@ -24,7 +23,7 @@ from backend.search.advanced.brief import Brief
 from backend.search.advanced.budget import WALL_CLOCK_SECONDS
 from backend.search.advanced.context import AgentContext
 from backend.search.advanced.finalize import filters_summary as summarize_filters
-from backend.search.advanced.llm import get_agent_llm
+from backend.search.advanced.llm import AgentLLM, get_agent_llm
 from backend.search.advanced.preference_memory import get_memory, update_memory_from_session
 from backend.search.models_lifecycle import get_biencoder, get_reranker
 
@@ -40,7 +39,8 @@ class Question(BaseModel):
 class SearchLog(BaseModel):
     query: str
     filters: dict
-    matches: int
+    matches: int | None = None  # jobs of the window meeting every soft filter; None without soft filters
+    new_jobs: int = 0  # jobs of the window not found by an earlier search of the run
     probe: str | None = None
 
 
@@ -81,7 +81,7 @@ def get_agent_graph():
     return _gg()
 
 
-def get_llm() -> BaseChatModel:
+def get_llm() -> AgentLLM:
     try:
         return get_agent_llm()
     except Exception as e:
@@ -166,9 +166,9 @@ async def run_agent(graph, checkpointer, ctx: AgentContext, payload, thread_id: 
 
         status = values.get("status", "partial")
         results = await _results(session, values.get("shortlist") or [])
-        # matches: jobs meeting every soft filter of the search, or the jobs returned when it set none
-        searches = [SearchLog(query=s["query"], filters=s.get("filters") or {}, matches=s.get("matches", 0),
-                              probe=s.get("probe")) for s in values.get("searches") or []]
+        searches = [SearchLog(query=s["query"], filters=s.get("filters") or {}, matches=s.get("matches"),
+                              new_jobs=s.get("new_jobs", 0), probe=s.get("probe"))
+                    for s in values.get("searches") or []]
         response = AdvancedSearchResponse(
             status=status, thread_id=thread_id, brief=brief, summary=values.get("summary", ""),
             searches=searches, results=results, usage=values.get("usage"),
@@ -183,7 +183,7 @@ async def run_agent(graph, checkpointer, ctx: AgentContext, payload, thread_id: 
             await _delete_thread(checkpointer, thread_id)
 
 
-async def _context(session: AsyncSession, user: User, llm, biencoder, reranker, os_client) -> AgentContext:
+async def _context(session: AsyncSession, user: User, llm: AgentLLM, biencoder, reranker, os_client) -> AgentContext:
     cv_text = await _load_cv(session, user)
     memory = await get_memory(session, user.id)
     return AgentContext(
@@ -203,7 +203,7 @@ async def start_advanced_search(
     biencoder: SentenceTransformer = Depends(get_biencoder),
     reranker: CrossEncoder = Depends(get_reranker),
     os_client: AsyncOpenSearch = Depends(get_opensearch),
-    llm: BaseChatModel = Depends(get_llm),
+    llm: AgentLLM = Depends(get_llm),
     checkpointer=Depends(get_checkpointer),
     graph=Depends(get_agent_graph),
 ) -> AdvancedSearchResponse:
@@ -223,7 +223,7 @@ async def resume_advanced_search(
     biencoder: SentenceTransformer = Depends(get_biencoder),
     reranker: CrossEncoder = Depends(get_reranker),
     os_client: AsyncOpenSearch = Depends(get_opensearch),
-    llm: BaseChatModel = Depends(get_llm),
+    llm: AgentLLM = Depends(get_llm),
     checkpointer=Depends(get_checkpointer),
     graph=Depends(get_agent_graph),
 ) -> AdvancedSearchResponse:

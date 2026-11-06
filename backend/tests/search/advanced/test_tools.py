@@ -80,12 +80,22 @@ async def test_search_log_entry_short_ids_and_stream(run_tool, patched_run_varia
     assert entry["index"] == 2 and entry["probe"] is None and entry["max_age_hours"] == 168
     assert entry["filters"] == {"location_type": "remote", "locked": {"location_type": "remote"}}
     assert entry["matches"] == 1  # only JOB_A is remote
+    assert entry["new_jobs"] == 2
     assert entry["header"].startswith('search 2 "ml" · locked: location_type=remote')
     assert out.state["short_ids"] == {"a1f3": JOB_A, "9c02": JOB_B}
     assert out.state["searches_run"] == 2
     assert out.events == [{"type": "search", "line": entry["header"]}]
     assert "[a1f3] ML Engineer" in out.messages[-1].content
     assert patched_run_variant.call_args.kwargs["search_index"] == 2
+
+
+async def test_search_log_counts_only_jobs_new_to_the_pool(run_tool, patched_run_variant):
+    seen = {JOB_A: candidate(JOB_A, 0.9, search_index=1).to_dict()}
+    out = await run_tool("search_jobs", {"variants": [{"query": "ml"}, {"query": "ai"}]},
+                         state={"pool": seen, "short_ids": {"a1f3": JOB_A}, **WROTE})
+    first, second = out.state["searches"]
+    assert (first["new_jobs"], second["new_jobs"]) == (1, 0)  # JOB_B is new once, JOB_A was already found
+    assert first["matches"] is None  # no soft filters: no match count
 
 
 async def test_search_runs_variants_up_to_budget_and_refuses_the_rest(run_tool, patched_run_variant):

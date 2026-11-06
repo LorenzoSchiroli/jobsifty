@@ -52,7 +52,10 @@ export interface AgentQuestion {
 export interface SearchLog {
   query: string
   filters: Record<string, unknown>
-  matches: number
+  // jobs of the window meeting every soft filter; null when the search set none
+  matches: number | null
+  // jobs of the window no earlier search of the run had found
+  new_jobs: number
   probe: string | null
 }
 

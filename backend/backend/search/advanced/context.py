@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from langchain_core.language_models import BaseChatModel
 from sqlalchemy.ext.asyncio import async_sessionmaker
+
+from backend.search.advanced.llm import AgentLLM
 
 
 @dataclass
@@ -14,7 +15,7 @@ class AgentContext:
     run_id: str
     cv_text: str  # lives only here, so the CV never lands in the checkpoint tables
     preference_memory: str
-    llm: BaseChatModel
+    llm: AgentLLM  # the pool's providers in order (search/advanced/llm.py)
     biencoder: Any
     reranker: Any
     os_client: Any

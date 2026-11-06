@@ -9,9 +9,9 @@ from langgraph.types import Command
 
 from backend.search.advanced.agent import build_graph
 from backend.search.advanced.brief import Brief
-from backend.search.advanced.finalize import PARTIAL_SUMMARY, FinalShortlist
+from backend.search.advanced.finalize import FinalShortlist
 from tests.search.advanced.conftest import JOB_A, item
-from tests.search.advanced.fakes import Delayed, ScriptedChatModel, tool_call
+from tests.search.advanced.fakes import Delayed, ScriptedChatModel, agent_llm, api_error, tool_call
 from tests.search.advanced.samples import REMOTE
 
 FIRST_SHORT_ID = JOB_A[:4]  # the short id of the first candidate the patched search returns
@@ -100,7 +100,7 @@ async def test_slow_finalize_is_cut_and_the_run_ends_partial(graph, ctx_factory,
     started = time.monotonic()
     out = await graph.ainvoke(initial("x"), config(), context=ctx, durability="exit")
     assert time.monotonic() - started < 2
-    assert (out["status"], out["summary"]) == ("partial", PARTIAL_SUMMARY)
+    assert (out["status"], out["summary"]) == ("partial", "")
 
 
 async def test_agent_model_is_bound_one_call_at_a_time_with_capped_output(graph, ctx_factory):
@@ -134,7 +134,7 @@ async def test_unparsed_tool_call_ends_partial(graph, ctx_factory):
         {"name": "search_jobs", "args": "{not json", "id": "call-x", "error": "bad json", "type": "invalid_tool_call"}])
     llm = ScriptedChatModel(script=[broken], structured=[])
     out = await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=llm), durability="exit")
-    assert (out["status"], out["summary"]) == ("partial", PARTIAL_SUMMARY)
+    assert (out["status"], out["summary"]) == ("partial", "")
 
 
 async def test_no_hits_ends_done_with_empty_results(graph, ctx_factory, run_variant_empty):
@@ -150,6 +150,27 @@ async def test_llm_error_ends_partial(graph, ctx_factory):
                             structured=[])
     out = await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=llm), durability="exit")
     assert out["status"] == "partial" and out["shortlist"]
+
+
+async def test_a_rate_limited_provider_gives_way_to_the_next_within_a_run(graph, ctx_factory):
+    first = ScriptedChatModel(script=[api_error(429, headers={"Retry-After": "60"})])
+    second = ScriptedChatModel(script=[brief(), search(), tool_call("finish", {"keep": [], "notes": ""})],
+                               structured=[FinalShortlist(summary="from the second", shortlist=[])])
+    llm = agent_llm(first, second)
+    out = await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=llm), durability="exit")
+    assert (out["status"], out["summary"]) == ("done", "from the second")
+    assert len(first.calls) == 1 and not llm.providers[0].usable()
+
+
+async def test_every_provider_failing_ends_partial(graph, ctx_factory, caplog):
+    first = ScriptedChatModel(script=[brief(), search(), api_error(500)])
+    malformed = api_error(400, code="tool_use_failed", failed_generation='{"notes": "SECRET-CV-QUOTE')
+    second = ScriptedChatModel(script=[malformed] * 3)
+    out = await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=agent_llm(first, second)),
+                              durability="exit")
+    assert out["status"] == "partial" and out["shortlist"]
+    assert len(second.calls) == 3
+    assert "tool_use_failed" in caplog.text and "SECRET-CV-QUOTE" not in caplog.text
 
 
 async def test_finalize_error_ends_partial(graph, ctx_factory):

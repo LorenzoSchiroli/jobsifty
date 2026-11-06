@@ -156,7 +156,7 @@ def test_observation_counts_english_as_english():
 def test_no_soft_filters_reports_the_jobs_returned():
     window = [candidate(f"{i:04x}0000-0000-4000-8000-000000000000") for i in range(1, 4)]
     plain = SearchVariant(query="ml")
-    assert soft_matches(plain, window) == 3
+    assert soft_matches(plain, window) is None
     assert "no soft filters: 3 jobs returned" in render_observation(1, plain, None, window, {}, 3, NOW)
     filtered = SearchVariant(query="ml", filters=VariantFilters(seniority="junior"))
     assert soft_matches(filtered, window) == 0

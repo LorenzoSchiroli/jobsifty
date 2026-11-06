@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
@@ -14,7 +15,7 @@ from langgraph.types import Command
 from backend.search.advanced.context import AgentContext
 from backend.search.advanced.state import AgentState
 from backend.search.advanced.tools import tools_step
-from tests.search.advanced.fakes import ScriptedChatModel
+from tests.search.advanced.fakes import ScriptedChatModel, agent_llm
 from tests.search.advanced.samples import candidate
 
 NOW = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
@@ -24,7 +25,8 @@ JOB_B = "9c020000-0000-4000-8000-000000000002"
 
 @pytest.fixture
 def ctx_factory():
-    """Builds an AgentContext of mocks; keyword arguments override any field."""
+    """Builds an AgentContext of mocks; keyword arguments override any field. A chat model given
+    as `llm` becomes an AgentLLM with that one provider."""
 
     def build(**overrides) -> AgentContext:
         values = dict(
@@ -32,6 +34,8 @@ def ctx_factory():
             preference_memory="", llm=ScriptedChatModel(), biencoder=MagicMock(), reranker=MagicMock(),
             os_client=MagicMock(), session_factory=MagicMock(), deadline=time.monotonic() + 240, now=NOW,
         ) | overrides
+        if isinstance(values["llm"], BaseChatModel):
+            values["llm"] = agent_llm(values["llm"])
         return AgentContext(**values)
 
     return build

@@ -159,7 +159,7 @@ def render_observation(
     pool_size: int,
     now: datetime,
 ) -> str:
-    from backend.search.advanced.search import has_soft_filters, soft_matches
+    from backend.search.advanced.search import soft_matches
 
     soft = _describe(variant.filters.to_search_filters(variant.query, variant.max_age_hours))
     header = (f'search {index} "{variant.query}" · locked: {_describe(locked)} · soft: {soft}'
@@ -181,7 +181,7 @@ def render_observation(
         f"  startup: {_yes_no([c.is_startup for c in window])}; consulting: {_yes_no([c.is_consulting for c in window])}",
         f"  posted: ≤3d {sum(a <= 3 for a in ages)}, 4–7d {sum(3 < a <= 7 for a in ages)}, older {sum(a > 7 for a in ages)}, age unknown {hours.count(None)}",
         f"  salary known: {sum(1 for c in window if c.salary)}",
-        (f"matching all soft filters: {soft_matches(variant, window)}" if has_soft_filters(variant)
+        (f"matching all soft filters: {matched}" if (matched := soft_matches(variant, window)) is not None
          else f"no soft filters: {len(window)} jobs returned"),
     ]
     by_job = {job_id: short for short, job_id in short_ids.items()}

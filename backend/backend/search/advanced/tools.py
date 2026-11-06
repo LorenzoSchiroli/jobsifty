@@ -145,6 +145,7 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
         ran += 1
         probes += variant.probe is not None
         found = {c.job_id: c.to_dict() for c in candidates}
+        new_jobs = sum(c.job_id not in pool for c in candidates[:CANDIDATE_WINDOW])  # before this search
         new_pool = merge_pool(new_pool, found)
         pool = merge_pool(pool, found)
         added = assign_short_ids([c.job_id for c in candidates], short_ids)
@@ -159,8 +160,9 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
             "filters": variant.filters.model_dump(exclude_none=True) | {"locked": _locked_dict(locked)},
             "max_age_hours": variant.max_age_hours,
             "probe": variant.probe,
-            # jobs meeting every soft filter; with no soft filters, the number of jobs returned
+            # jobs of the window meeting every soft filter; None when the search set none
             "matches": soft_matches(variant, candidates[:CANDIDATE_WINDOW]),
+            "new_jobs": new_jobs,  # jobs of the window not in the pool before this search
             "header": header,
         })
         runtime.stream_writer({"type": "search", "line": header})
