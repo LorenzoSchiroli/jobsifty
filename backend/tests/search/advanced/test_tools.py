@@ -337,6 +337,171 @@ async def test_two_probe_searches_in_one_turn_stay_within_probe_budget(run_tool,
     assert [m.content for m in out.messages if isinstance(m, ToolMessage)].count(ONE_CALL_REFUSAL) == 1
 
 
+# --- the posting window ---------------------------------------------------------------------------
+
+def _windows(mock) -> list[int]:
+    return [c.kwargs["variant"].max_age_hours for c in mock.call_args_list]
+
+
+def _window_item(text: str, days: int) -> dict:
+    return {"text": text, "kind": "require", "source": "stated", "field": "posted_within_days", "value": days}
+
+
+async def test_first_search_widens_at_most_one_step(run_tool, patched_run_variant, monkeypatch):
+    monkeypatch.setenv("JOB_LIVE_DAYS", "14")
+    out = await run_tool("search_jobs", {"variants": [{"query": "a", "max_age_hours": 336}, {"query": "b"}]},
+                         state=WROTE)
+    assert _windows(patched_run_variant) == [168, 72]  # 14 days asked: one step above 3 days is 7
+    assert out.state["window_hours"] == 168
+    assert [s["max_age_hours"] for s in out.state["searches"]] == [168, 72]
+    first = out.messages[-1].content.split("\n\n")[0]
+    assert "· last 7d" in first.splitlines()[0]  # the header shows the window used
+    assert "window: last 7d (asked 14d); it widens one step per search" in first
+
+
+async def test_next_search_may_reach_the_cap(run_tool, patched_run_variant, monkeypatch):
+    monkeypatch.setenv("JOB_LIVE_DAYS", "14")
+    out = await run_tool("search_jobs", {"variants": [{"query": "a", "max_age_hours": 336}]},
+                         state={"window_hours": 168, **WROTE})
+    assert _windows(patched_run_variant) == [336] and out.state["window_hours"] == 336
+    assert "window:" not in out.messages[-1].content
+
+
+async def test_a_narrower_search_keeps_the_widest_window(run_tool, patched_run_variant):
+    out = await run_tool("search_jobs", {"variants": [{"query": "a", "max_age_hours": 24}]},
+                         state={"window_hours": 168, **WROTE})
+    assert _windows(patched_run_variant) == [24] and out.state["window_hours"] == 168
+
+
+async def test_stated_window_is_used_as_is_from_the_first_search(run_tool, patched_run_variant, monkeypatch):
+    monkeypatch.setenv("JOB_LIVE_DAYS", "14")
+    brief = Brief(items=[_window_item("last 2 weeks", 14)]).model_dump()
+    out = await run_tool("search_jobs", {"variants": [{"query": "a"}, {"query": "b", "max_age_hours": 24}]},
+                         state={"brief": brief, **WROTE})
+    assert _windows(patched_run_variant) == [336, 336]
+    assert ("window: last 14d (asked 1d); the user's stated window; only the user can change it"
+            in out.messages[-1].content)
+    assert "(asked 14d)" not in out.messages[-1].content  # the variant without a window gets no note
+
+
+async def test_a_probe_lifting_the_stated_window_looks_one_step_wider(run_tool, patched_run_variant, monkeypatch):
+    monkeypatch.setenv("JOB_LIVE_DAYS", "14")
+    brief = Brief(items=[_window_item("last 3 days", 3)]).model_dump()
+    out = await run_tool("search_jobs", {"variants": [{"query": "a", "probe": "last 3 days", "max_age_hours": 336}]},
+                         state={"brief": brief, **WROTE})
+    assert _windows(patched_run_variant) == [168]  # 3 days stated: the what-if is 7 days, not 14
+    assert "window: last 7d (asked 14d); a probe of the stated window looks one step wider" in out.messages[-1].content
+    assert out.state["probes_run"] == 1
+    assert out.state["window_hours"] == 72  # a what-if does not widen the run's window
+
+
+async def test_a_probe_still_works_under_the_ladder(run_tool, patched_run_variant):
+    brief = Brief(items=[REMOTE]).model_dump()
+    out = await run_tool("search_jobs", {"variants": [{"query": "a", "probe": "remote only", "max_age_hours": 336}]},
+                         state={"brief": brief, **WROTE})
+    assert patched_run_variant.await_count == 1 and out.state["probes_run"] == 1
+    assert _windows(patched_run_variant) == [72]  # the run's window: it differs only by the lifted item
+    assert "a probe runs on the run's window and lifts only its item" in out.messages[-1].content
+    assert out.state["window_hours"] == 72
+
+
+@pytest.mark.parametrize("widest", [72, 168, 336])
+@pytest.mark.parametrize("asked", [24, 72, 168, 336])
+async def test_a_probe_never_reaches_older_jobs_than_the_run_has_used(run_tool, patched_run_variant, monkeypatch,
+                                                                      widest, asked):
+    monkeypatch.setenv("JOB_LIVE_DAYS", "14")
+    brief = Brief(items=[REMOTE]).model_dump()
+    out = await run_tool("search_jobs", {"variants": [{"query": "a", "probe": "remote only", "max_age_hours": asked}]},
+                         state={"brief": brief, "window_hours": widest, **WROTE})
+    assert _windows(patched_run_variant) == [min(asked, widest)]
+    assert out.state["window_hours"] == widest
+
+
+@pytest.mark.parametrize("days", [1, 3, 7, 14])
+@pytest.mark.parametrize("asked", [24, 168, 336])
+async def test_a_probe_of_the_stated_window_goes_at_most_one_step_wider(run_tool, patched_run_variant, monkeypatch,
+                                                                        days, asked):
+    from backend.search.advanced.budget import window_limit
+
+    monkeypatch.setenv("JOB_LIVE_DAYS", "14")
+    brief = Brief(items=[_window_item("recent", days)]).model_dump()
+    await run_tool("search_jobs", {"variants": [{"query": "a", "probe": "recent", "max_age_hours": asked}]},
+                   state={"brief": brief, **WROTE})
+    assert _windows(patched_run_variant) == [min(asked, window_limit(days * 24))]
+
+
+def _remembered(days: int) -> dict:
+    return {"text": f"jobs from the last {days} days", "kind": "prefer", "source": "inferred",
+            "field": "posted_within_days", "value": days}
+
+
+async def test_a_remembered_two_weeks_starts_the_run_at_two_weeks(run_tool, patched_run_variant, monkeypatch):
+    monkeypatch.setenv("JOB_LIVE_DAYS", "14")
+    brief = Brief(items=[_remembered(14)]).model_dump()
+    out = await run_tool("search_jobs", {"variants": [{"query": "a"}]}, state={"brief": brief, **WROTE})
+    assert _windows(patched_run_variant) == [336] and out.state["window_hours"] == 336
+    assert "window:" not in out.messages[-1].content
+
+
+async def test_a_remembered_week_starts_at_7_days_and_the_next_search_may_reach_the_cap(
+        run_tool, patched_run_variant, monkeypatch):
+    monkeypatch.setenv("JOB_LIVE_DAYS", "14")
+    brief = Brief(items=[_remembered(7)]).model_dump()
+    first = await run_tool("search_jobs", {"variants": [{"query": "a", "max_age_hours": 336}]},
+                           state={"brief": brief, **WROTE})
+    second = await run_tool("search_jobs", {"variants": [{"query": "a", "max_age_hours": 336}]},
+                            state={"brief": brief, "window_hours": first.state["window_hours"], **WROTE})
+    assert _windows(patched_run_variant) == [336, 336]  # from 7 days, one step up is the cap
+    plain = await run_tool("search_jobs", {"variants": [{"query": "a"}]}, state={"brief": brief, **WROTE})
+    assert _windows(patched_run_variant)[-1] == 168 and plain.state["window_hours"] == 168
+    assert second.state["window_hours"] == 336
+
+
+async def test_without_a_remembered_window_the_run_starts_at_3_days(run_tool, patched_run_variant):
+    out = await run_tool("search_jobs", {"variants": [{"query": "a"}]}, state=WROTE)
+    assert _windows(patched_run_variant) == [72] and out.state["window_hours"] == 72
+
+
+async def test_a_remembered_window_between_steps_widens_to_the_next_step(run_tool, patched_run_variant, monkeypatch):
+    monkeypatch.setenv("JOB_LIVE_DAYS", "14")
+    brief = Brief(items=[_remembered(5)]).model_dump()
+    out = await run_tool("search_jobs", {"variants": [{"query": "a"}, {"query": "b", "max_age_hours": 336}]},
+                         state={"brief": brief, **WROTE})
+    assert _windows(patched_run_variant) == [120, 168] and out.state["window_hours"] == 168
+
+
+async def test_a_remembered_window_written_late_counts_from_the_next_search_and_never_narrows(
+        run_tool, patched_run_variant, monkeypatch):
+    monkeypatch.setenv("JOB_LIVE_DAYS", "14")
+    late = await run_tool("search_jobs", {"variants": [{"query": "a"}]},
+                          state={"brief": Brief(items=[_remembered(14)]).model_dump(), "window_hours": 72,
+                                 "searches_run": 1, **WROTE})
+    narrow = await run_tool("search_jobs", {"variants": [{"query": "a"}]},
+                            state={"brief": Brief(items=[_remembered(3)]).model_dump(), "window_hours": 168,
+                                   "searches_run": 1, **WROTE})
+    assert _windows(patched_run_variant) == [336, 168]
+    assert late.state["window_hours"] == 336 and narrow.state["window_hours"] == 168
+
+
+async def test_a_stated_window_overrides_a_remembered_one(run_tool, patched_run_variant, monkeypatch):
+    monkeypatch.setenv("JOB_LIVE_DAYS", "14")
+    brief = Brief(items=[_remembered(14), _window_item("this week", 7)]).model_dump()
+    await run_tool("search_jobs", {"variants": [{"query": "a"}, {"query": "b", "max_age_hours": 336}]},
+                   state={"brief": brief, **WROTE})
+    assert _windows(patched_run_variant) == [168, 168]
+
+
+def test_a_remembered_window_is_no_hard_filter_and_no_eligibility_rule(pool_state):
+    from backend.search.advanced.brief import hard_filters, unmet
+    from backend.search.advanced.finalize import finalize_candidates
+    from tests.search.advanced.conftest import NOW
+
+    brief = Brief(items=[REMOTE, _remembered(1)])
+    assert hard_filters(brief).max_age_hours is None and unmet(brief, {"posted_within_days": 9.0}) == []
+    old = {JOB_A: candidate(JOB_A, 0.9, posted_at="2026-10-25T10:00:00+00:00").to_dict()}  # 9 days before NOW
+    assert [c.job_id for c in finalize_candidates({**pool_state, "brief": brief.model_dump(), "pool": old}, NOW)] == [JOB_A]
+
+
 # --- ScriptedChatModel --------------------------------------------------------------------------
 
 class _Verdict(BaseModel):

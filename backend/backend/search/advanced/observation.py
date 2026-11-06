@@ -36,8 +36,9 @@ class Candidate:
     breaks: list[str] = field(default_factory=list)  # texts of the stated items a probe job breaks
     review_score: float | None = None
 
-    def fields(self) -> dict:
-        """The view the brief's rules read, keyed by brief field."""
+    def fields(self, now: datetime) -> dict:
+        """The view the brief's rules read, keyed by brief field; the job's age in days as of `now`."""
+        hours = _age_hours(self.posted_at, now)
         return {
             "location_type": self.location_type,
             "seniority": self.seniority,
@@ -47,6 +48,7 @@ class Candidate:
             "is_startup": self.is_startup,
             "company_country": self.company_country,
             "min_review_score": self.review_score,
+            "posted_within_days": None if hours is None else hours / 24,
         }
 
     def to_dict(self) -> dict:
@@ -135,6 +137,22 @@ def _last(hours: int | None) -> str:
     return f"{hours}h" if hours < 24 else f"{hours // 24}d"
 
 
+# Why a search ran on another window than its variant asked, by the rule that cut it (tools._window).
+WINDOW_REASONS = {
+    "ladder": "it widens one step per search",
+    "stated": "the user's stated window; only the user can change it",
+    "probe": "a probe runs on the run's window and lifts only its item",
+    "window_probe": "a probe of the stated window looks one step wider",
+}
+
+
+def window_note(asked: int | None, used: int | None, reason: str) -> str | None:
+    """The observation line saying why a search ran on another window; None when it ran on the one asked."""
+    if asked == used:
+        return None
+    return f"window: last {_last(used)} (asked {_last(asked)}); {WINDOW_REASONS[reason]}"
+
+
 def header_line(observation: str) -> str:
     return observation.splitlines()[0]
 
@@ -158,6 +176,7 @@ def render_observation(
     short_ids: dict[str, str],
     pool_size: int,
     now: datetime,
+    note: str | None = None,
 ) -> str:
     from backend.search.advanced.search import soft_matches
 
@@ -172,6 +191,7 @@ def render_observation(
     langs = [_language_code(l) for c in window for l in c.languages if l.casefold() != "english"]
     lines = [
         header,
+        *([f"  {note}"] if note else []),
         f"over the top {len(window)}:",
         _counts("location type", [c.location_type for c in window]),
         _counts("job in", [c.job_country for c in window]),

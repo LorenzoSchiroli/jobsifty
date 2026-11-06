@@ -49,6 +49,7 @@ class AgentState(TypedDict, total=False):
     searches: Annotated[list[dict], operator.add]
     searches_run: Annotated[int, operator.add]
     probes_run: Annotated[int, operator.add]
+    window_hours: int  # the run's window: the widest a regular search used (from the remembered window, if any); one step above it is allowed
     questions_asked: Annotated[int, operator.add]
     turns: Annotated[int, operator.add]
     unlock_turn: int  # the turn of a free-text answer; the next turn may change locked items

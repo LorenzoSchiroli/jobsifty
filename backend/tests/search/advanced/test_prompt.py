@@ -41,3 +41,30 @@ def test_system_prompt_carries_rules_budget_and_pool_digest(ctx_factory):
     assert "turns 4, searches 8, probes 2, questions 2" in prompt
     assert "pool: 1 jobs, best: [a1f3] ML Engineer (0.91)" in prompt
     assert "likes startups" in prompt
+
+
+def test_system_prompt_asks_for_the_cv_languages_as_an_inferred_item(ctx_factory):
+    prompt = system_prompt({"turns": 0}, ctx_factory())
+    assert "record the languages the user can work in" in prompt
+    assert "inferred require item on languages_required" in prompt
+
+
+def test_window_rule_takes_the_first_step_from_the_ladder(ctx_factory, monkeypatch):
+    monkeypatch.setenv("JOB_LIVE_DAYS", "2")  # the ladder is only the live window: 48 hours
+    prompt = system_prompt({"turns": 0}, ctx_factory())
+    assert "which starts at 48 (2 days)" in prompt and "instead of 2 days" in prompt
+    assert "72 (3 days)" not in prompt
+
+
+def test_system_prompt_states_the_gradual_window_rule_with_the_live_maximum(ctx_factory, monkeypatch):
+    monkeypatch.setenv("JOB_LIVE_DAYS", "10")
+    prompt = system_prompt({"turns": 0}, ctx_factory())
+    assert "too few or unsatisfying" in prompt and "one step per search" in prompt
+    assert "72 (3 days) -> 168 (7 days) -> 240 (10 days)" in prompt
+    assert "that the preference memory or the CV states (only then: never invent one)" in prompt
+    assert "inferred posted_within_days item" in prompt and "The run then starts at that window" in prompt
+    assert "never call it a requirement" in prompt and "it wins over a remembered one" in prompt
+    assert "start at 3 days anyway" not in prompt  # the remembered window now sets the start
+    assert "posted_within_days" in prompt and "Never change it yourself" in prompt
+    assert "finish notes say so" in prompt
+    assert "at most 336" not in prompt and "you may widen max_age_hours" not in prompt  # the old wording is gone

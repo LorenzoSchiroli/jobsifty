@@ -1,10 +1,12 @@
 """One search variant: retrieval, rerank and a Postgres lookup, as candidates."""
 import asyncio
 import uuid
+from datetime import datetime
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy import select
 
+from backend.live import job_live_days
 from backend.models import Job
 from backend.search.advanced.brief import Brief, BriefItem, hard_filters, satisfies
 from backend.search.advanced.budget import CANDIDATE_WINDOW
@@ -63,8 +65,14 @@ class VariantFilters(BaseModel):
 class SearchVariant(BaseModel):
     query: str
     filters: VariantFilters = VariantFilters()
-    max_age_hours: int | None = 72
+    max_age_hours: int | None = None  # None: the run's window (search_jobs sets the window every search runs on)
     probe: str | None = None  # text of the stated item this search lifts
+
+    @field_validator("max_age_hours", mode="after")
+    @classmethod
+    def _cap_window(cls, hours: int | None) -> int | None:
+        """The index holds only live jobs, so a wider window means the live window."""
+        return None if hours is None else min(hours, job_live_days() * 24)
 
 
 def _any_of(actual: str | None, wanted: str | list[str]) -> bool:
@@ -118,6 +126,7 @@ async def run_variant(
     reranker,
     os_client,
     session_factory,
+    now: datetime,
 ) -> list[Candidate]:
     item = _probed_item(brief, variant.probe) if variant.probe else None
     if variant.probe and item is None:
@@ -164,7 +173,7 @@ async def run_variant(
             text=text,
             search_index=search_index,
         )
-        if item is not None and satisfies(item, c.fields()) is not True:
+        if item is not None and satisfies(item, c.fields(now)) is not True:
             c.breaks = [item.text]  # the brief's own text, not the probe as the agent typed it
         candidates.append(c)
     return candidates

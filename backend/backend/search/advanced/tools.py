@@ -17,7 +17,16 @@ from langgraph.prebuilt.tool_node import ToolInvocationError
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field, ValidationError
 
-from backend.search.advanced.brief import Brief, BriefItem, LockedRequirementError, hard_filters, merge_brief, relax
+from backend.search.advanced.brief import (
+    Brief,
+    BriefItem,
+    LockedRequirementError,
+    hard_filters,
+    merge_brief,
+    inferred_window,
+    relax,
+    stated_window,
+)
 from backend.search.advanced.budget import (
     CANDIDATE_WINDOW,
     INSPECT_CHARS,
@@ -27,9 +36,11 @@ from backend.search.advanced.budget import (
     MAX_SEARCHES,
     MAX_TURNS,
     MAX_VARIANTS,
+    window_limit,
+    window_steps,
 )
 from backend.search.advanced.context import AgentContext
-from backend.search.advanced.observation import assign_short_ids, header_line, render_observation
+from backend.search.advanced.observation import assign_short_ids, header_line, render_observation, window_note
 from backend.search.advanced.search import SearchVariant, run_variant, soft_matches
 from backend.search.advanced.state import AgentState, merge_pool
 from backend.search.filters import SearchFilters
@@ -101,12 +112,51 @@ def _refusal(variant: SearchVariant, brief: Brief, searches: int, probes: int) -
     return None
 
 
+def _widest(state: AgentState, brief: Brief) -> int:
+    """The run's window so far: the widest its regular searches used, at least the starting window.
+
+    The run starts at the first ladder step, or at the window the preference memory or the CV
+    states (the brief's inferred posted_within_days item, up to the live window). An inferred item
+    written after the first search counts from the next one, and never narrows a window already used.
+    """
+    widest = state.get("window_hours") or window_steps()[0]
+    if (remembered := inferred_window(brief)) is not None:
+        widest = max(widest, min(remembered.value * 24, window_steps()[-1]))
+    return widest
+
+
+def _window(variant: SearchVariant, brief: Brief, widest: int) -> tuple[int, str]:
+    """The max_age_hours a variant runs on, and the rule behind it (a key of WINDOW_REASONS), so
+    that no search (a probe included) reaches older jobs than the run has agreed to.
+
+    A window the user stated is used as is (up to the live window); a probe lifting it asks what one
+    step wider would give, so it is cut to the step above the stated window. Without a stated window
+    a search is cut to one step above `widest` (the run's window, see _widest), and a probe to
+    `widest` itself: it differs from a regular search only by the item it lifts. A variant without
+    max_age_hours asks for the run's window (a window probe: the step above the stated one).
+    """
+    stated = stated_window(brief)
+    if stated is None:
+        cut, reason = (widest, "probe") if variant.probe is not None else (window_limit(widest), "ladder")
+        default = widest
+    else:
+        stated_hours = min(stated.value * 24, window_steps()[-1])
+        if variant.probe is None or variant.probe.casefold() != stated.text.casefold():
+            return stated_hours, "stated"
+        cut, reason = window_limit(stated_hours), "window_probe"
+        default = cut
+    asked = default if variant.max_age_hours is None else variant.max_age_hours
+    return min(asked, cut), reason
+
+
 @tool
 async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Command | str:
     """Run 1-3 searches; each returns counts over its top 30 jobs and the top 8 job lines.
 
     Per variant: `query` (semantic text), `filters` (soft: they rank matches higher but do not
-    exclude), `max_age_hours` (posting age window, default 72) and `probe`. The brief's stated
+    exclude), `max_age_hours` (posting age window; leave it out for the run's window, which starts
+    at 72 or the remembered window and widens one step per search, 72 -> 168 -> the live window;
+    a window the user stated is used as is) and `probe`. The brief's stated
     requirements are added as hard filters to every variant; do not repeat them. `probe` names
     one stated item's exact text to lift it, for a what-if count to ask the user about; probe
     jobs are flagged with what they break. `company_country` is where the company is based, not
@@ -126,16 +176,21 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
     new_pool: dict[str, dict] = {}
     new_short: dict[str, str] = {}
     log: list[dict] = []
+    widest = _widest(state, brief)
+    new_widest = widest
     ran = probes = 0
     parts: list[str] = []
     for variant in variants:
         if refusal := _refusal(variant, brief, searches_run + ran, probes_run + probes):
             parts.append(f'Refused "{variant.query}": {refusal}.')
             continue
+        hours, reason = _window(variant, brief, widest)
+        asked = hours if variant.max_age_hours is None else variant.max_age_hours  # left out: the run's window
+        variant = variant.model_copy(update={"max_age_hours": hours})
         try:  # the probe is already checked: any error here is unexpected
             candidates = await run_variant(
                 variant=variant, brief=brief, search_index=index + 1, biencoder=ctx.biencoder,
-                reranker=ctx.reranker, os_client=ctx.os_client, session_factory=ctx.session_factory,
+                reranker=ctx.reranker, os_client=ctx.os_client, session_factory=ctx.session_factory, now=ctx.now,
             )
         except Exception as e:  # a failed search is reported, the others still run
             logger.exception("advanced search variant failed")
@@ -144,6 +199,8 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
         index += 1
         ran += 1
         probes += variant.probe is not None
+        if variant.probe is None:  # a what-if search does not widen the run's window
+            new_widest = max(new_widest, variant.max_age_hours)
         found = {c.job_id: c.to_dict() for c in candidates}
         new_jobs = sum(c.job_id not in pool for c in candidates[:CANDIDATE_WINDOW])  # before this search
         new_pool = merge_pool(new_pool, found)
@@ -152,7 +209,8 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
         short_ids |= added
         new_short |= added
         locked = hard_filters(brief, lifted=variant.probe)
-        observation = render_observation(index, variant, locked, candidates, short_ids, len(pool), ctx.now)
+        note = window_note(asked, variant.max_age_hours, reason)
+        observation = render_observation(index, variant, locked, candidates, short_ids, len(pool), ctx.now, note)
         header = header_line(observation)
         log.append({
             "index": index,
@@ -168,7 +226,7 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
         runtime.stream_writer({"type": "search", "line": header})
         parts.append(observation)
     return _reply(runtime, "\n\n".join(parts), pool=new_pool, short_ids=new_short, searches=log,
-                  searches_run=ran, probes_run=probes)
+                  searches_run=ran, probes_run=probes, window_hours=new_widest)
 
 
 @tool

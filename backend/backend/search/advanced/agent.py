@@ -50,13 +50,13 @@ async def agent_node(state: AgentState, runtime: Runtime[AgentContext]) -> Comma
         return Command(goto="finalize")
     except Exception:
         logger.exception("advanced agent LLM call failed; the run ends partial")
-        return Command(goto=END, update=partial_result(state))
+        return Command(goto=END, update=partial_result(state, ctx.now))
     update = {"messages": [message], "turns": 1, "usage": _usage(message)}
     if message.invalid_tool_calls and not message.tool_calls:
         # Names and errors only: the arguments may quote the CV.
         logger.warning("advanced agent tool call did not parse; the run ends partial: %s",
                        [(c.get("name"), c.get("error")) for c in message.invalid_tool_calls])
-        return Command(goto=END, update={**update, **partial_result(state)})
+        return Command(goto=END, update={**update, **partial_result(state, ctx.now)})
     return Command(goto="tools" if message.tool_calls else "finalize", update=update)
 
 
@@ -67,10 +67,10 @@ async def finalize_node(state: AgentState, runtime: Runtime[AgentContext]) -> di
         result = await run_finalize(state, ctx, timeout)
     except TimeoutError:
         logger.warning("advanced finalize timed out; the run ends partial")
-        return partial_result(state)
+        return partial_result(state, ctx.now)
     except Exception:
         logger.exception("advanced finalize failed; the run ends partial")
-        return partial_result(state)
+        return partial_result(state, ctx.now)
     # The structured output does not expose token counts: only the call is counted.
     return {**result, "usage": {"llm_calls": 1}}
 

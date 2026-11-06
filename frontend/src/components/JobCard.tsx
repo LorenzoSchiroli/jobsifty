@@ -25,6 +25,28 @@ function postedAgo(postedAt: string | null): string | null {
   return `${days} day${days === 1 ? '' : 's'} ago`
 }
 
+const REGIONS = new Intl.DisplayNames(['en'], { type: 'region' })
+
+// A two-letter region code as its English name ("DE" → "Germany"); anything else as it is.
+function countryName(value: string): string {
+  const text = value.trim()
+  if (!/^[A-Za-z]{2}$/.test(text)) return text
+  try {
+    return REGIONS.of(text.toUpperCase()) ?? text
+  } catch {
+    return text
+  }
+}
+
+// The company's country, labelled so it does not read as a second job location; left out when
+// unknown or the same as the job's country, the last part of its location ("Madrid, Spain", "Berlin, BE, DE").
+function companyCountry(job: Job): string | null {
+  if (!job.company.country?.trim()) return null
+  const country = countryName(job.company.country)
+  const jobCountry = job.location ? countryName(job.location.split(',').pop() ?? '') : ''
+  return jobCountry.toLowerCase() === country.toLowerCase() ? null : `company in ${country}`
+}
+
 export default function JobCard({ job }: { job: Job }) {
   const tags = [
     job.employment_type,
@@ -72,7 +94,7 @@ export default function JobCard({ job }: { job: Job }) {
         </div>
       )}
       <div style={{ fontSize: '0.875rem', opacity: 0.5, marginTop: '0.2rem' }}>
-        {[job.location, job.company.country, postedAgo(job.posted_at)].filter(Boolean).join(' · ')}
+        {[job.location, companyCountry(job), postedAgo(job.posted_at)].filter(Boolean).join(' · ')}
       </div>
       {tags.length > 0 && (
         <div style={{ marginTop: '0.5rem', display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>

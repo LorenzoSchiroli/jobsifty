@@ -152,3 +152,72 @@ def test_satisfies_avoid_flips_the_bool():
     assert satisfies(NO_CONSULTING, {"is_consulting": False}) is True
     assert satisfies(NO_CONSULTING, {"is_consulting": True}) is False
     assert satisfies(NO_CONSULTING, {"is_consulting": None}) is None
+
+
+# --- the stated posting window ------------------------------------------------------------------
+
+def _window(days, source="stated"):
+    return BriefItem(text="last 2 weeks", kind="require", source=source, field="posted_within_days", value=days)
+
+
+def test_window_item_holds_whole_days():
+    assert _window(14).value == 14 and isinstance(_window(14).value, int)
+    assert _window(7.0).value == 7 and isinstance(_window(7.0).value, int)
+    for bad in (0, 2.5, "two weeks", True):
+        with pytest.raises(ValidationError, match="whole number of days"):
+            _window(bad)
+
+
+def test_stated_window_is_no_hard_filter_and_only_a_stated_one_counts():
+    from backend.search.advanced.brief import stated_window
+
+    assert hard_filters(Brief(items=[_window(14)])) is None
+    assert hard_filters(Brief(items=[REMOTE, _window(14)])).location_type == "remote"
+    assert stated_window(Brief(items=[REMOTE, _window(14)])).value == 14
+    assert stated_window(Brief(items=[_window(14, source="inferred")])) is None
+
+
+def _speaks(*languages):
+    return BriefItem(text="languages from the CV", kind="require", source="inferred", field="languages_required",
+                     value=list(languages))
+
+
+def test_inferred_language_item_gives_a_gap_per_language_the_user_does_not_list():
+    from backend.search.advanced.brief import inferred_shortfalls
+
+    brief = Brief(items=[_speaks("italian", "english", "german")])
+    assert inferred_shortfalls(brief, {"languages_required": ["spanish"]}) == (["requires Spanish"], [])
+    assert inferred_shortfalls(brief, {"languages_required": ["english", "spanish", "french"]}) == (
+        ["requires Spanish", "requires French"], [])
+    assert inferred_shortfalls(brief, {"languages_required": ["english"]}) == ([], [])
+    assert inferred_shortfalls(brief, {"languages_required": []}) == ([], [])  # unknown: no gap
+    assert inferred_shortfalls(brief, {}) == ([], [])
+
+
+def test_other_inferred_fields_are_trade_offs_and_stated_and_preferred_items_are_skipped():
+    from backend.search.advanced.brief import inferred_shortfalls
+
+    senior = BriefItem(text="mid or senior", kind="require", source="inferred", field="seniority",
+                       value=["mid", "senior"])
+    good = BriefItem(text="good reviews", kind="require", source="inferred", field="min_review_score", value=4)
+    brief = Brief(items=[senior, good, STARTUP, REMOTE, _speaks("english")])  # STARTUP a preference, REMOTE stated
+    fields = {"seniority": "lead", "min_review_score": 3.2, "is_startup": False, "location_type": "on-site",
+              "languages_required": ["german"]}
+    assert inferred_shortfalls(brief, fields) == (
+        ["requires German"], ["lead level, not mid or senior", "reviews 3.2, below 4"])
+
+
+def test_an_inferred_window_trade_off_counts_whole_days_up():
+    from backend.search.advanced.brief import inferred_shortfalls
+
+    brief = Brief(items=[_window(1, source="inferred")])
+    assert inferred_shortfalls(brief, {"posted_within_days": 1.2}) == ([], ["posted 2 days ago"])  # not "1 days"
+    assert inferred_shortfalls(brief, {"posted_within_days": 1.0}) == ([], [])
+    assert inferred_shortfalls(Brief(items=[_window(3, source="inferred")]),
+                               {"posted_within_days": 8.1}) == ([], ["posted 9 days ago"])
+
+
+def test_window_is_met_by_the_jobs_age_in_days():
+    assert satisfies(_window(7), {"posted_within_days": 6.5}) is True
+    assert satisfies(_window(7), {"posted_within_days": 9.0}) is False
+    assert satisfies(_window(7), {"posted_within_days": None}) is None

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from backend.models import Company, Job
 from backend.search.advanced.brief import Brief
 from backend.search.advanced.search import SearchVariant, VariantFilters, matches_soft, run_variant
+from tests.search.advanced.conftest import NOW
 from tests.search.advanced.samples import REMOTE
 
 
@@ -45,7 +46,7 @@ def _deps(engine, os_client):
     reranker = MagicMock()
     reranker.predict.side_effect = lambda pairs: [1.0 - 0.1 * i for i in range(len(pairs))]
     return dict(biencoder=biencoder, reranker=reranker, os_client=os_client,
-                session_factory=async_sessionmaker(engine, expire_on_commit=False))
+                session_factory=async_sessionmaker(engine, expire_on_commit=False), now=NOW)
 
 
 async def test_run_variant_passes_locked_filters_as_hard(engine):
@@ -64,7 +65,7 @@ async def test_run_variant_loads_location_and_salary_from_postgres(engine):
                             **_deps(engine, _os([_hit(job.id)])))
     assert (c.location, c.job_country, c.salary) == ("Berlin, Germany", "Germany", "€80k")
     assert c.text == "the summary"
-    assert c.company_country == "DE" and c.fields()["company_country"] == "DE"
+    assert c.company_country == "DE" and c.fields(NOW)["company_country"] == "DE"
     assert c.score == 1.0 and c.search_index == 1 and c.breaks == []
 
 
@@ -131,3 +132,23 @@ async def test_list_valued_stated_item_is_a_hard_terms_clause(engine):
     leg = os_client.search.call_args.kwargs["body"]["query"]["hybrid"]["queries"][0]["bool"]
     assert {"terms": {"location_type": ["remote", "hybrid"]}} in leg["filter"]
     assert c.review_score == 4.1
+
+
+async def test_probe_lifting_a_stated_window_flags_only_older_jobs(engine):
+    from backend.search.advanced.brief import BriefItem
+
+    job = await _seed(engine)
+    today = BriefItem(text="today", kind="require", source="stated", field="posted_within_days", value=1)
+    variant = SearchVariant(query="ml", probe="today", max_age_hours=336)
+    [old] = await run_variant(variant=variant, brief=Brief(items=[today]), search_index=2,
+                              **_deps(engine, _os([_hit(job.id)])))  # posted 26 hours before NOW
+    [new] = await run_variant(variant=variant, brief=Brief(items=[today]), search_index=2,
+                              **_deps(engine, _os([_hit(job.id, posted_at="2026-11-03T08:00:00+00:00")])))
+    assert old.breaks == ["today"] and new.breaks == []
+
+
+def test_variant_window_is_capped_at_the_live_window(monkeypatch):
+    monkeypatch.setenv("JOB_LIVE_DAYS", "14")
+    assert SearchVariant(query="q").max_age_hours is None  # the run's window, set by search_jobs
+    assert SearchVariant(query="q", max_age_hours=1000).max_age_hours == 336
+    assert SearchVariant(query="q", max_age_hours=168).max_age_hours == 168

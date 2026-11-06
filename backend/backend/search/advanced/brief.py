@@ -6,6 +6,7 @@ agent may trade. Pure data and rules, no I/O.
 A mapped item's value is in the index vocabulary (`vocabulary.py`): it is normalised when the item
 is built, so a value the index does not hold can never become a locked requirement.
 """
+import math
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -20,7 +21,7 @@ from backend.search.advanced.vocabulary import (
     normalise_country,
     normalise_languages,
 )
-from backend.search.countries import same_country
+from backend.search.countries import canonical_country, same_country
 from backend.search.filters import SearchFilters
 
 # A company-size requirement stays possible as a text-only item: employee_count is not in the index.
@@ -33,14 +34,22 @@ BriefField = Literal[
     "is_startup",
     "company_country",
     "min_review_score",
+    "posted_within_days",
 ]
+
+# The posting window the user states, in days. Not an index filter: a stated one is the max_age_hours
+# of every search (tools.search_jobs), and a job meets it when its age is within it.
+WINDOW_FIELD = "posted_within_days"
 
 _BOOL_FIELDS = ("is_consulting", "is_startup")
 
 _VALUE_HELP = (
     "With `field` only. location_type / seniority / employment_type: one value, or a list meaning any of "
     "them (\"remote or hybrid\" is [\"remote\", \"hybrid\"]); languages_required: a list of language names; "
-    "is_consulting / is_startup: true or false; company_country: a country name; min_review_score: 1-5."
+    "is_consulting / is_startup: true or false; company_country: a country name; min_review_score: 1-5; "
+    "posted_within_days: the days of a posting window the user, the preference memory or the CV states "
+    "(\"last 2 weeks\" 14, \"this week\" 7, "
+    "\"today\" 1)."
 )
 
 
@@ -60,6 +69,10 @@ def normalise_value(field: str, value):
         return float(value)
     if field == "company_country":
         return normalise_country(value)
+    if field == WINDOW_FIELD:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 1 or value != int(value):
+            raise ValueError(f"{WINDOW_FIELD} needs a whole number of days, at least 1")
+        return int(value)
     return value  # an unknown field: the Literal on `field` refuses it
 
 
@@ -70,7 +83,7 @@ class BriefItem(BaseModel):
     field: BriefField | None = None
     value: (
         LocationType | list[LocationType] | Seniority | list[Seniority] | EmploymentType | list[EmploymentType]
-        | list[Language] | bool | float | str | None
+        | list[Language] | bool | int | float | str | None
     ) = Field(default=None, description=_VALUE_HELP)
 
     @model_validator(mode="before")
@@ -174,37 +187,60 @@ def _stated_mapped(brief: Brief) -> list[BriefItem]:
     return [i for i in brief.locked() if i.field is not None]
 
 
+def stated_window(brief: Brief) -> BriefItem | None:
+    """The stated posting-window item, if the user stated one (at most one: one stated item per field)."""
+    return next((i for i in _stated_mapped(brief) if i.field == WINDOW_FIELD), None)
+
+
+def inferred_window(brief: Brief) -> BriefItem | None:
+    """The posting window the preference memory or the CV states, recorded as an inferred item: the
+    run's starting window, a preference that is neither a filter nor an eligibility rule."""
+    return next((i for i in brief.items if i.source == "inferred" and i.field == WINDOW_FIELD), None)
+
+
 def hard_filters(brief: Brief, *, lifted: str | None = None) -> SearchFilters | None:
     lifted_key = lifted.casefold() if lifted is not None else None
     values: dict = {}
     for item in _stated_mapped(brief):
-        if lifted_key is not None and item.text.casefold() == lifted_key:
+        if item.field == WINDOW_FIELD or (lifted_key is not None and item.text.casefold() == lifted_key):
             continue
         attr, value = _wanted(item)
         values[attr] = value
     if not values:
         return None
-    # The age window is applied by the soft filters; a hard set adds no second one.
+    # The age window (a stated one included) is the variant's max_age_hours; a hard set adds no second one.
     return SearchFilters(semantic_query="", max_age_hours=None, **values)
+
+
+def _actual(item: BriefItem, fields: dict):
+    actual = fields.get(item.field)
+    if actual is None and item.field == "company_country":
+        actual = fields.get("country")
+    return actual
+
+
+def _languages_beyond(required: list, spoken: list) -> list[str]:
+    """The languages a job requires that are not among `spoken`."""
+    allowed = {str(w).casefold() for w in spoken}
+    return [str(a) for a in required if str(a).casefold() not in allowed]
 
 
 def satisfies(item: BriefItem, fields: dict) -> bool | None:
     """Whether the job's fields positively meet the item; None when the value is unknown.
 
     A list value means any of its values. An empty language list is unknown, as the hard filter
-    treats it (it matches no `terms`).
+    treats it (it matches no `terms`). The posting window compares the job's age in days.
     """
     attr, wanted = _wanted(item)
-    actual = fields.get(item.field)
-    if actual is None and item.field == "company_country":
-        actual = fields.get("country")
+    actual = _actual(item, fields)
     if actual is None or wanted is None or actual == []:
         return None
     if attr == "languages_required":
-        allowed = {str(w).casefold() for w in wanted}
-        return all(str(a).casefold() in allowed for a in actual)
+        return not _languages_beyond(actual, wanted)
     if attr == "min_review_score":
         return float(actual) >= float(wanted)
+    if attr == WINDOW_FIELD:
+        return float(actual) <= float(wanted)
     if attr == "country":
         return same_country(str(actual), str(wanted))
     if isinstance(wanted, (str, list)) and isinstance(actual, str):
@@ -225,3 +261,47 @@ def unmet(brief: Brief, fields: dict) -> list[str]:
     held to it like every job found after.
     """
     return [i.text for i in _stated_mapped(brief) if i.field in fields and satisfies(i, fields) is not True]
+
+
+def _any(value) -> str:
+    return " or ".join(value) if isinstance(value, list) else str(value)
+
+
+def _shortfall(item: BriefItem, fields: dict) -> list[str]:
+    """How a job that does not meet `item` falls short, as short phrases; [] when it meets it or is unknown."""
+    if satisfies(item, fields) is not False:
+        return []
+    _, wanted = _wanted(item)
+    actual = _actual(item, fields)
+    if item.field == "languages_required":
+        return [f"requires {lang.capitalize()}" for lang in _languages_beyond(actual, wanted)]
+    if item.field == "is_consulting":
+        return ["a consultancy" if actual else "not a consultancy"]
+    if item.field == "is_startup":
+        return ["a startup" if actual else "not a startup"]
+    if item.field == "company_country":
+        return [f"company based in {canonical_country(str(actual)) or actual}, not {wanted}"]
+    if item.field == "min_review_score":
+        return [f"reviews {float(actual):.1f}, below {float(wanted):g}"]
+    if item.field == WINDOW_FIELD:
+        days = math.ceil(actual)
+        return [f"posted {days} day{'' if days == 1 else 's'} ago"]
+    level = " level" if item.field == "seniority" else ""
+    return [f"{actual}{level}, not {_any(wanted)}"]
+
+
+def inferred_shortfalls(brief: Brief, fields: dict) -> tuple[list[str], list[str]]:
+    """What the job's fields contradict among the inferred require items, as (gaps, trade_offs).
+
+    Inferred items are no hard filters, so a job may break one. A language the user does not list
+    is a gap (it requires Spanish, the CV lists Italian, English and German): the user cannot meet
+    it. Any other field is a preference given up, a trade-off ("on-site, not remote"). Unknown
+    values are neither.
+    """
+    gaps: dict[str, None] = {}
+    trade_offs: dict[str, None] = {}
+    for i in brief.items:
+        if i.source == "inferred" and i.kind == "require" and i.field is not None:
+            target = gaps if i.field == "languages_required" else trade_offs
+            target.update(dict.fromkeys(_shortfall(i, fields)))
+    return list(gaps), list(trade_offs)
