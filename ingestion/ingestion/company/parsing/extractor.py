@@ -4,7 +4,7 @@ import re
 from bs4 import BeautifulSoup
 
 from ingestion.company.models import CompanyExtraction
-from ingestion.llm import LLMPool
+from llmpool.llm import LLMPool
 
 logger = logging.getLogger(__name__)
 

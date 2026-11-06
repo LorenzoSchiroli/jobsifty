@@ -15,7 +15,7 @@ from datetime import datetime
 from tqdm import tqdm
 
 from ingestion.client import list_jobs, post_job
-from ingestion.llm import LLMPool, offer_pool
+from llmpool.llm import LLMPool, offer_pool
 from ingestion.offer.offer import derive
 from ingestion.offer.scraping.models import JobOffer
 

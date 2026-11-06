@@ -1,4 +1,4 @@
-"""Web search providers behind one interface, tried in order as a pool (`ingestion/pool.py`).
+"""Web search providers behind one interface, tried in order as a pool (`llmpool/pool.py`).
 
 Each adapter maps its API onto `SearchResult` (hits + an optional answer); the
 pool handles rate limits, exhausted credits and failures.
@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 import requests
 
-from ingestion.pool import Pool, Provider, order_from_env
+from llmpool.pool import Pool, Provider, order_from_env
 
 _TIMEOUT = 30
 DEFAULT_ORDER = ("tinyfish", "exa", "tavily")

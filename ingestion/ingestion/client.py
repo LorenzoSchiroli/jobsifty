@@ -10,11 +10,16 @@ def _base() -> str:
     return url.rstrip("/")
 
 
+def _write_headers() -> dict:
+    """The backend refuses job and company writes without the shared token."""
+    return {"X-Ingest-Token": os.environ.get("INGEST_TOKEN", "")}
+
+
 def post_job(offer: EnrichedOffer) -> tuple[int, dict]:
     """Upsert a job; the payload carries `chunks`."""
     payload = offer.model_dump(mode="json", exclude={"company_info"})
     payload["company_name"] = payload.pop("company")
-    resp = requests.post(f"{_base()}/jobs/", json=payload, timeout=30)
+    resp = requests.post(f"{_base()}/jobs/", json=payload, headers=_write_headers(), timeout=30)
     if not resp.ok:
         raise requests.HTTPError(f"{resp.status_code} — {resp.text}", response=resp)
     return resp.status_code, resp.json()
@@ -41,7 +46,7 @@ def list_jobs(after: str | None = None, limit: int = 500) -> tuple[list[dict], s
 
 
 def post_company(data: dict) -> tuple[int, dict]:
-    resp = requests.post(f"{_base()}/companies/", json=data, timeout=30)
+    resp = requests.post(f"{_base()}/companies/", json=data, headers=_write_headers(), timeout=30)
     if not resp.ok:
         raise requests.HTTPError(f"{resp.status_code} — {resp.text}", response=resp)
     return resp.status_code, resp.json()

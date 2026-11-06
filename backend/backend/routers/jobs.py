@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.auth.dependencies import require_ingest_token
 from backend.database import get_session
 from backend.live import live_since
 from backend.models import Company, Job, Outbox
@@ -24,7 +25,7 @@ _DERIVED_FIELDS = (
 )
 
 
-@router.post("/", response_model=JobResponse, status_code=201)
+@router.post("/", response_model=JobResponse, status_code=201, dependencies=[Depends(require_ingest_token)])
 async def upsert_job(body: JobRequest, response: Response, session: AsyncSession = Depends(get_session)):
     normalized_company = _normalize(body.company_name)
     company_result = await session.execute(select(Company).where(Company.name == normalized_company))

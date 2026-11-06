@@ -58,6 +58,16 @@ def test_post_job_hits_correct_url():
     assert mock_post.call_args.args[0] == "http://localhost:8000/jobs/"
 
 
+def test_writes_send_the_ingest_token(monkeypatch):
+    monkeypatch.setenv("INGEST_TOKEN", "tok")
+    with patch("ingestion.client.requests.post") as mock_post:
+        mock_post.return_value = _resp(201, {})
+        post_job(_offer())
+        post_company({"name": "Acme"})
+
+    assert [c.kwargs["headers"] for c in mock_post.call_args_list] == [{"X-Ingest-Token": "tok"}] * 2
+
+
 def test_post_company_sends_dict_and_returns_status():
     with patch("ingestion.client.requests.post") as mock_post:
         mock_post.return_value = _resp(201, {"id": "xyz", "name": "Acme"})

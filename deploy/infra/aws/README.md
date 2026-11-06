@@ -55,6 +55,8 @@ tofu output -raw alb_dns_name
 
 **ALB health ≠ bootstrap done.** A green `/health` on the ALB only means the API container is up; migrations and OpenSearch index setup still require the one-shot bootstrap RunTask (section 4).
 
+**Configuration.** Secrets (generated passwords, `SECRET_KEY`, `INGEST_TOKEN`, API keys) go in one Secrets Manager entry; the ingestion task gets only its token and the external API keys. Non-secrets are read from the repo's `.env.public` at plan time and passed as plain environment variables, so the stack follows the same file as Helm and compose.
+
 **Ingestion starts immediately.** The EventBridge ingestion schedule is created on this apply and begins firing every 2 hours. It posts to the internal Cloud Map address `http://api.<project>.local:8000`, so it always reaches **this** stack's API regardless of where public DNS points — it cannot write into Hetzner. Runs before the bootstrap RunTask (section 4) will fail against an unmigrated database; that is harmless and self-corrects once bootstrap has run.
 
 ## 4. Bootstrap (one-shot RunTask)

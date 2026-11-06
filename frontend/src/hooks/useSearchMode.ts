@@ -1,12 +1,13 @@
 import { useSyncExternalStore } from 'react'
 
-export type SearchMode = 'basic' | 'advanced'
+export type SearchMode = 'basic' | 'agent'
 
 const KEY = 'search_mode'
 const listeners = new Set<() => void>()
 
 function getSnapshot(): SearchMode {
-  return (localStorage.getItem(KEY) as SearchMode) || 'basic'
+  const stored = localStorage.getItem(KEY)
+  return stored === 'agent' || stored === 'advanced' ? 'agent' : 'basic'  // 'advanced' was the old name
 }
 
 function subscribe(cb: () => void) {

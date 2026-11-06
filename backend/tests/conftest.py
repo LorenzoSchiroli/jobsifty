@@ -4,6 +4,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@lo
 os.environ.setdefault("GROQ_MODEL_LARGE", "test-model")
 os.environ.setdefault("GROQ_MODEL_BASE", "test-model")
 os.environ.setdefault("SECRET_KEY", "test-secret")
+os.environ.setdefault("INGEST_TOKEN", "test-ingest-token")
 
 import pytest_asyncio
 from unittest.mock import patch, AsyncMock, MagicMock
@@ -56,6 +57,10 @@ async def client(engine):
     with patch("backend.main.init_models"), \
          patch("backend.main.init_opensearch", new_callable=AsyncMock), \
          patch("backend.main.AsyncPostgresSaver.from_conn_string", return_value=mock_saver_cm):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+            # ingestion's writes need the token; tests that check the refusal drop it
+            headers={"X-Ingest-Token": os.environ["INGEST_TOKEN"]},
+        ) as ac:
             yield ac
     app.dependency_overrides.clear()

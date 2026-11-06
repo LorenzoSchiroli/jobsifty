@@ -22,6 +22,12 @@ resource "random_password" "app_secret_key" {
   special = false
 }
 
+# Shared by the api and ingestion: the backend refuses job/company writes without it.
+resource "random_password" "ingest_token" {
+  length  = 48
+  special = false
+}
+
 resource "aws_secretsmanager_secret" "app" {
   name                    = "${var.project}/app"
   recovery_window_in_days = 0
@@ -30,23 +36,19 @@ resource "aws_secretsmanager_secret" "app" {
 resource "aws_secretsmanager_secret_version" "app" {
   secret_id = aws_secretsmanager_secret.app.id
   secret_string = jsonencode({
-    DATABASE_URL             = "postgresql+asyncpg://jobsifty:${random_password.db.result}@${aws_db_instance.main.address}:5432/jobsifty"
-    OPENSEARCH_URL           = "https://${aws_opensearch_domain.main.endpoint}"
-    OPENSEARCH_USER          = "jobsifty"
-    OPENSEARCH_PASSWORD      = random_password.opensearch.result
-    SECRET_KEY               = random_password.app_secret_key.result
-    GROQ_API_KEY             = var.groq_api_key
-    GROQ_MODEL_LARGE         = var.groq_model_large
-    GROQ_MODEL_BASE          = var.groq_model_base
-    CORS_ORIGINS             = "https://app.${var.domain}"
-    JOB_LIVE_DAYS            = tostring(var.job_live_days)
-    ACCESS_TOKEN_EXPIRE_DAYS = "7"
-    ADZUNA_APP_ID            = var.adzuna_app_id
-    ADZUNA_APP_KEY           = var.adzuna_app_key
-    TAVILY_API_KEY           = var.tavily_api_key
-    TINYFISH_API_KEY         = var.tinyfish_api_key
-    EXA_API_KEY              = var.exa_api_key
-    NVIDIA_NIM_API_KEY       = var.nvidia_nim_api_key
-    GEMINI_API_KEY           = var.gemini_api_key
+    DATABASE_URL        = "postgresql+asyncpg://jobsifty:${random_password.db.result}@${aws_db_instance.main.address}:5432/jobsifty"
+    OPENSEARCH_URL      = "https://${aws_opensearch_domain.main.endpoint}"
+    OPENSEARCH_USER     = "jobsifty"
+    OPENSEARCH_PASSWORD = random_password.opensearch.result
+    SECRET_KEY          = random_password.app_secret_key.result
+    INGEST_TOKEN        = random_password.ingest_token.result
+    GROQ_API_KEY        = var.groq_api_key
+    ADZUNA_APP_ID       = var.adzuna_app_id
+    ADZUNA_APP_KEY      = var.adzuna_app_key
+    TAVILY_API_KEY      = var.tavily_api_key
+    TINYFISH_API_KEY    = var.tinyfish_api_key
+    EXA_API_KEY         = var.exa_api_key
+    NVIDIA_NIM_API_KEY  = var.nvidia_nim_api_key
+    GEMINI_API_KEY      = var.gemini_api_key
   })
 }

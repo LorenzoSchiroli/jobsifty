@@ -3,7 +3,7 @@ import logging
 from ingestion.company.models import CompanyExtraction
 from ingestion.company.parsing import rules
 from ingestion.company.parsing.extractor import extract_jsonld, extract_with_llm, format_sources
-from ingestion.llm import LLMPool
+from llmpool.llm import LLMPool
 from ingestion.utils.text import clean_html
 
 logger = logging.getLogger(__name__)

@@ -1,8 +1,8 @@
 import json
 
 from ingestion.company.parsing.extractor import extract_jsonld, extract_with_llm, format_sources
-from ingestion.llm import ChatProvider, LLMPool
-from ingestion.pool import Unusable
+from llmpool.llm import ChatProvider, LLMPool
+from llmpool.pool import Unusable
 
 _HTML_WITH_JSONLD = """<html><head>
 <script type="application/ld+json">
@@ -65,7 +65,7 @@ class _Stub(ChatProvider):
         self.replies = list(replies)
         self.prompts = []
 
-    def complete(self, prompt):
+    def complete(self, prompt, *, system=None, json=True):
         self.prompts.append(prompt)
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):

@@ -17,7 +17,7 @@ Fargate**, from one command.
 | | |
 |---|---|
 | **Retrieval** | OpenSearch hybrid search — BM25 + HNSW k-NN, score-normalised in a single round trip, then reranked by a cross-encoder |
-| **Models** | `multilingual-e5-small` (384-d chunk embeddings) + `mmarco-mMiniLMv2-L12` (multilingual rerank), both CPU-only; LLMs only for company judgement fields (a free-tier pool: NVIDIA NIM, Gemini, Groq) and agents (Groq, the only private provider) |
+| **Models** | `multilingual-e5-small` (384-d chunk embeddings) + `mmarco-mMiniLMv2-L12` (multilingual rerank), both CPU-only; LLMs only for company judgement fields and offer summaries (a free-tier pool, `llmpool`: NVIDIA NIM, Gemini, Groq) and the agent (Groq through `ChatOpenAI`; it sees only the redacted CV) |
 | **Durability** | Postgres is the source of truth; the search index is derived and rebuildable, kept in sync by a transactional **outbox** |
 | **Agents** | LangGraph graphs checkpointed in Postgres — they interrupt, ask, and resume across HTTP requests |
 | **Infra** | OpenTofu + Helm (k3s on Hetzner) *and* OpenTofu + ECS Fargate (AWS), same images, same env contract, `deploy/scripts/run <target> up` |
@@ -72,7 +72,7 @@ a pool of free LLM providers in the same way).
 | **Ingestion talks to the public REST API, not to the database** | The pipeline holds no DB credentials and no ORM models. It is just another client, which is what lets it run as a CronJob on Kubernetes or a Fargate task on AWS with zero extra wiring — and what keeps validation in exactly one place. |
 | **LLMs only offline and on the opt-in agent path** | Parsing a posting is a batch job where a 2-second LLM call is free; a search request is not. The hot search path is regex + two small local models, so it is fast, cheap, deterministic and unit-testable. |
 | **CPU-only models** | `multilingual-e5-small` (384-d) and `mmarco-mMiniLMv2-L12` were benchmarked on CPU (e5-small embeds a 512-token chunk in ~57 ms, same as the previous `bge-small`; long-context and 0.5B+ models were 10–500× slower) and chosen to fit a demo budget with no GPU anywhere in the stack — the whole thing runs on a single small Hetzner x86 VPS and on `db.t4g.micro` / `t3.small.search`-class AWS resources. |
-| **uv workspace, two Python packages** | `backend` and `ingestion` share a lockfile and Python version but ship as separate images with separate dependency sets — the API image does not carry Playwright, the scraper does not carry SQLAlchemy models. |
+| **uv workspace, three Python packages** | `backend`, `ingestion` and the shared `llmpool` share a lockfile and Python version but ship as separate images with separate dependency sets — the API image does not carry Playwright, the scraper does not carry SQLAlchemy models. |
 
 ---
 
@@ -132,7 +132,18 @@ flowchart TB
 ### Advanced search — a tool-calling LangGraph agent (WIP)
 
 `POST /jobs/search/advanced` → optionally `POST /jobs/search/advanced/resume`
-with the answer to a question. Requires an uploaded CV.
+with the answer to a question. Requires a saved CV. On the `/cv` page you upload
+a file (PDF/DOCX/TXT, text extracted and not stored) or write the CV; "Remove
+private info" (`backend/cv/redact.py`) replaces obvious personal data with
+placeholders such as `[EMAIL]` and `[PHONE]`, and `PUT /users/cv` answers 409
+with the findings until you confirm (saving empty text deletes the CV). LLM
+calls see only the saved text. Basic search uses neither the CV nor the
+preference memory. The UI calls this mode **Agent**; choosing it on the search
+page without a saved CV asks whether to add one, and the preference memory is
+read and edited on the `/preferences` page. The agent calls the LLM through
+`langchain-openai` `ChatOpenAI` against Groq's OpenAI-compatible API
+(`ADVANCED_LLM_BASE_URL` / `ADVANCED_LLM_MODEL`, key `GROQ_API_KEY`), so the CV
+it sees is the redacted one.
 
 ```mermaid
 flowchart TB
@@ -159,7 +170,7 @@ flowchart TB
 | **A hard budget: 6 turns, 9 searches (2 probes), 2 questions, 4 minutes** | An agent loop is how a 3-second search becomes a 40-second one with an unbounded LLM bill. A spent budget goes straight to `finalize` and ends with a normal shortlist; every LLM call is cut at the deadline (45 s kept for finalize) and capped in output tokens. The answer is `partial` only when the assistant could not finish (an LLM error, an unparsed answer, a failed or timed-out finalize): the most relevant jobs found, without fit scores. |
 | **`finalize` scores the whole pool** | Fit score, rationale, gaps and trade-offs are written once over every job found, not only the last search, so an early good hit is not lost. |
 | **State in Postgres only while a question is open** | The agent interrupts to ask, so the run survives an HTTP round trip: checkpointed by `thread_id` (`durability="exit"`), `/resume` can land on any API replica. The thread is deleted when a run ends. The CV stays in the run context and out of the checkpoint. |
-| **Any OpenAI-compatible LLM** | Groq by default (the only private provider: it sees the CV); `ADVANCED_LLM_BASE_URL` / `_MODEL` / `_API_KEY` point it elsewhere. |
+| **Any OpenAI-compatible LLM** | Groq by default (it sees the saved, redacted CV); `ADVANCED_LLM_BASE_URL` / `_MODEL` point it elsewhere (the agent always sends `GROQ_API_KEY`). |
 | **Preference memory is distilled in a background task** | The user gets results at once; the LLM that merges this session into their long-term preference summary runs after the response. A `user_edited` flag protects a hand-written summary: the distiller may only append. |
 
 Not built yet: one active run per user, the sweep of abandoned threads, and a
@@ -336,9 +347,10 @@ cp .env.example .env      # then fill in the keys below
 
 | Variable | Where | Purpose |
 |----------|-------|---------|
-| `GROQ_API_KEY` | `.env` | Agents (the only private LLM provider); last in the company enrichment pool |
-| `NVIDIA_NIM_API_KEY` / `GEMINI_API_KEY` | `.env` | Offer summary and company enrichment LLM pools (public data only; Gemini's free tier trains on prompts) |
+| `GROQ_API_KEY` | `.env` | Advanced-search agent (`ChatOpenAI` against Groq); last in the company enrichment pool |
+| `NVIDIA_NIM_API_KEY` / `GEMINI_API_KEY` | `.env` | Offer summary and company enrichment LLM pools. Gemini's free tier trains on prompts; every provider is assumed to keep them, so the CV is cleaned before it is saved (`/cv` page) |
 | `SECRET_KEY` | `.env` | JWT signing |
+| `INGEST_TOKEN` | `.env` | Ingestion's job/company writes (`X-Ingest-Token`); refused while unset |
 | `TINYFISH_API_KEY` / `EXA_API_KEY` / `TAVILY_API_KEY` | `.env` | Company enrichment web search pool; any subset, missing keys are skipped |
 | `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | `.env` | Optional job source |
 | `BACKUP_SBOX_HOST` / `_USER` / `_RCLONE_PASS` | `.env` | Optional nightly Postgres backup |
@@ -412,6 +424,7 @@ Offer sources: `jobspy`, `adzuna`, `arbeitnow`, `freehire` (default: all); what 
 | Path | What it is |
 |------|------------|
 | `backend/` | FastAPI service — REST API, Postgres (SQLAlchemy async), OpenSearch hybrid search, outbox worker, LangGraph agents |
+| `llmpool/` | Shared provider pool and LLM chat providers (ingestion's LLM calls) |
 | `ingestion/` | Pipeline — job scraping, rule-based offer parsing, company enrichment, chunked embedding, POST to the backend |
 | `frontend/` | React (Vite) SPA, served by nginx in Docker/k8s |
 | `deploy/helm/` | Helm chart for the whole stack + `values-local` / `values-cloud` / `values-hetzner` |
@@ -420,18 +433,18 @@ Offer sources: `jobspy`, `adzuna`, `arbeitnow`, `freehire` (default: all); what 
 | `deploy/scripts/run` | Single entrypoint for `local` / `hetzner` / `aws`, `up` / `down` |
 | `tailor/` | Standalone CV-tailoring CLI scripts (gitignored, local only, not wired into the backend) |
 
-`backend/` and `ingestion/` are the two members of a `uv` workspace (Python 3.13).
+`backend/`, `ingestion/` and `llmpool/` are the members of a `uv` workspace (Python 3.13).
 
 ## API surface
 
 | Endpoint | Notes |
 |----------|-------|
 | `POST /auth/register`, `POST /auth/login`, `GET /auth/me` | JWT bearer tokens |
-| `POST /jobs/`, `GET /jobs/{id}` | Ingestion writes here |
-| `POST /companies/`, `GET /companies/{id}` | |
+| `POST /jobs/`, `GET /jobs/{id}` | Ingestion writes here (`X-Ingest-Token`) |
+| `POST /companies/`, `GET /companies/{id}` | Ingestion writes here (`X-Ingest-Token`) |
 | `POST /jobs/search` | Hybrid search + rerank |
 | `POST /jobs/search/advanced`, `.../resume` | Agent search (WIP) |
-| `POST /users/cv`, `GET /users/cv` | CV upload for fit scoring |
+| `POST /users/cv/extract`, `POST /users/cv/redact`, `PUT /users/cv`, `GET /users/cv` | CV text from a file, private-info removal, save with a confirm check (empty text deletes it), read |
 | `GET/PUT /me/preference-memory` | Per-user search preferences |
 | `GET /health` | Liveness probe for k8s and the ALB |
 
@@ -462,7 +475,7 @@ runs it before rollout; on AWS it is the one-shot bootstrap RunTask.
 | Vector search | opensearch-py[async] |
 | Bi-encoder (embed) | sentence-transformers (`intfloat/multilingual-e5-small`) |
 | Cross-encoder (rerank) | sentence-transformers (`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`) |
-| LLM | Ingestion: OpenAI-compatible pool (NVIDIA NIM / Gemini / Groq); agents: `langchain-openai` against Groq's OpenAI-compatible API |
+| LLM | Ingestion: `llmpool` OpenAI-compatible pool (NVIDIA NIM / Gemini / Groq); agent: `langchain-openai` `ChatOpenAI` against Groq's OpenAI-compatible API |
 | Agents / checkpointing | LangGraph + `langgraph-checkpoint-postgres` |
 | Auth | python-jose (JWT) + passlib[bcrypt] |
 | Scraping | python-jobspy, Playwright, trafilatura |

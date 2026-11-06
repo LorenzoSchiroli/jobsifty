@@ -7,7 +7,7 @@ from ingestion.offer.offer import enrich_all
 from ingestion.company.company import enrich as enrich_company
 from ingestion.client import get_pending_companies, get_stored_jobs, post_company, post_job
 from ingestion.company.scraping.searcher import pick_website, pool as search_pool
-from ingestion.llm import LLMPool, offer_pool
+from llmpool.llm import LLMPool, offer_pool
 from ingestion.offer.scraping.scopes import SCOPES, Scope, get_scope
 from ingestion.offer.scraping.stored import StoredJobs
 

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.auth.dependencies import require_ingest_token
 from backend.database import get_session
 from backend.models import Company, Job, Outbox
 from backend.live import job_date, live_since
@@ -34,7 +35,7 @@ def _is_empty(value) -> bool:
     return False
 
 
-@router.post("/", response_model=CompanyResponse, status_code=201)
+@router.post("/", response_model=CompanyResponse, status_code=201, dependencies=[Depends(require_ingest_token)])
 async def upsert_company(body: CompanyRequest, response: Response, session: AsyncSession = Depends(get_session)):
     normalized = _normalize(body.name)
     result = await session.execute(select(Company).where(Company.name == normalized))

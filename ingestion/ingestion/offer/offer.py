@@ -3,7 +3,7 @@ import time
 from tqdm import tqdm
 
 from ingestion.embedder import embed_chunks
-from ingestion.llm import LLMPool
+from llmpool.llm import LLMPool
 from ingestion.offer.models import EnrichedOffer
 from ingestion.offer.parsing.parsing import parse_with_text
 from ingestion.offer.parsing.summary import summarize

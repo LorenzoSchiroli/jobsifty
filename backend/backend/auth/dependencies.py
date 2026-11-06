@@ -1,4 +1,7 @@
-from fastapi import Depends, HTTPException, status
+import os
+import secrets
+
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -29,3 +32,13 @@ async def get_current_user(
     if user is None:
         raise exc
     return user
+
+
+def require_ingest_token(x_ingest_token: str | None = Header(None)) -> None:
+    """The writes only ingestion makes (jobs, companies) carry the shared `INGEST_TOKEN`;
+    without one configured they are refused."""
+    expected = os.environ.get("INGEST_TOKEN")
+    if not expected:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="INGEST_TOKEN is not configured")
+    if not x_ingest_token or not secrets.compare_digest(x_ingest_token, expected):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid ingest token")

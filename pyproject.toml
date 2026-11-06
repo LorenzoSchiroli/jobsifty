@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["backend", "ingestion"]
+members = ["backend", "ingestion", "llmpool"]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

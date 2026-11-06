@@ -42,4 +42,5 @@ async def distill_memory(existing: str, user_edited: bool, query: str, filters_s
             f"New session — query: {query}\nfilters: {filters_summary}\nclarifications:\n{qa}"
         )),
     ])
-    return resp.content.strip()
+    text = resp.content.strip()
+    return text or existing  # an empty answer must not overwrite the stored memory

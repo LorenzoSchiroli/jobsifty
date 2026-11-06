@@ -4,7 +4,7 @@ import time
 from ingestion.company.models import CompanyProfile
 from ingestion.company.scraping.scraping import scrape
 from ingestion.company.parsing.parsing import parse
-from ingestion.llm import LLMPool
+from llmpool.llm import LLMPool
 
 logger = logging.getLogger(__name__)
 

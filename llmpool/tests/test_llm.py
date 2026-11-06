@@ -4,10 +4,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from ingestion import pool as pool_module
-from ingestion.llm import Gemini, Groq, LLMPool, Nvidia
+from llmpool import pool as pool_module
+from llmpool.llm import Gemini, Groq, LLMPool, Nvidia
 
-_POST = "ingestion.llm.requests.post"
+_POST = "llmpool.llm.requests.post"
 
 
 @pytest.fixture(autouse=True)
@@ -30,11 +30,51 @@ def _all_keys(monkeypatch):
         monkeypatch.setenv(key, "k")
 
 
-def test_default_order_puts_the_private_provider_last(monkeypatch):
+def test_default_order(monkeypatch):
     _all_keys(monkeypatch)
+    assert [p.name for p in LLMPool.from_env().providers] == ["nvidia", "gemini", "groq"]
+    assert not hasattr(Groq, "private")
+
+
+def test_system_message_and_plain_text(monkeypatch):
+    monkeypatch.setenv("NVIDIA_NIM_API_KEY", "k")
+    with patch(_POST, return_value=_reply("hi")) as post:
+        assert LLMPool.from_env().complete("u", lambda c: c, system="s", json=False) == "hi"
+    body = post.call_args.kwargs["json"]
+    assert body["messages"] == [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+    assert "response_format" not in body
+
+
+def test_models_override(monkeypatch):
+    _all_keys(monkeypatch)
+    monkeypatch.setenv("GROQ_MODEL_BASE", "small")
+    llm = LLMPool.from_env(models={"groq": "large"})
+    assert {p.name: p.model for p in llm.providers}["groq"] == "large"
+
+
+def test_pace_false_never_sleeps(monkeypatch):
+    _all_keys(monkeypatch)
+    monkeypatch.setattr(Groq, "min_interval", 12.0)
+    assert all(p.min_interval == 0.0 for p in LLMPool.from_env(pace=False).providers)
+
+
+def test_unusable_provider_comes_back_after_an_hour(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(pool_module.time, "monotonic", lambda: now[0])
+    monkeypatch.setenv("NVIDIA_NIM_API_KEY", "k")
     llm = LLMPool.from_env()
-    assert [p.name for p in llm.providers] == ["nvidia", "gemini", "groq"]
-    assert [p.name for p in LLMPool.from_env(private_only=True).providers] == ["groq"]
+    with patch(_POST, return_value=_reply(status=401, text="bad key")):
+        assert llm.complete("x", lambda c: c) is None
+    nvidia = llm.providers[0]
+    assert nvidia.disabled and llm.down()
+    now[0] += 3600.0
+    assert not nvidia.disabled and nvidia.usable()
+
+
+async def test_acomplete(monkeypatch):
+    monkeypatch.setenv("NVIDIA_NIM_API_KEY", "k")
+    with patch(_POST, return_value=_reply('{"a": 1}')):
+        assert await LLMPool.from_env().acomplete("x", json.loads) == {"a": 1}
 
 
 def test_order_and_models_from_env(monkeypatch):
@@ -141,7 +181,7 @@ def test_stats_line(monkeypatch):
 
 
 def test_offer_pool_leaves_groq_out(monkeypatch):
-    from ingestion.llm import offer_pool
+    from llmpool.llm import offer_pool
     _all_keys(monkeypatch)
     assert [p.name for p in offer_pool().providers] == ["nvidia", "gemini"]
     monkeypatch.setenv("OFFER_LLM_PROVIDERS", "gemini")

@@ -40,6 +40,13 @@ async def test_distill_memory_returns_text():
     assert "remote" in out.lower()
 
 
+async def test_distill_memory_empty_answer_keeps_existing_memory():
+    from backend.search.advanced import llm
+    with patch.object(llm, "get_agent_llm", return_value=_mock_llm("   ")):
+        out = await llm.distill_memory("likes remote", True, "q", "", [])
+    assert out == "likes remote"
+
+
 async def test_update_memory_from_session_persists_distilled(db_session):
     from backend.search.advanced import preference_memory as svc
     user = User(id=uuid.uuid4(), username=f"u{uuid.uuid4().hex[:6]}", password_hash="x")

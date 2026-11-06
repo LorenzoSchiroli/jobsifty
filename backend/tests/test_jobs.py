@@ -17,6 +17,17 @@ async def test_create_job_returns_201(client):
     assert "company_id" in data
 
 
+@pytest.mark.parametrize("path, body", [
+    ("/jobs/", {"url": "https://example.com/job/x", "title": "ML Engineer", "company_name": "Stripe"}),
+    ("/companies/", {"name": "Stripe"}),
+])
+async def test_writes_need_the_ingest_token(client, monkeypatch, path, body):
+    assert (await client.post(path, json=body, headers={"X-Ingest-Token": ""})).status_code == 401
+    assert (await client.post(path, json=body, headers={"X-Ingest-Token": "wrong"})).status_code == 401
+    monkeypatch.delenv("INGEST_TOKEN")
+    assert (await client.post(path, json=body)).status_code == 503
+
+
 async def test_create_job_auto_creates_company_stub(client):
     resp = await client.post("/jobs/", json={
         "url": "https://example.com/job/2",

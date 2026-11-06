@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from backend.database import get_session
 from backend.models import ApplicantProfile, User
 from backend.auth.dependencies import get_current_user
+from backend.cv.redact import redact
 
 router = APIRouter(prefix="/users", tags=["cv"])
 
@@ -31,9 +32,22 @@ class CVResponse(BaseModel):
     has_cv: bool
 
 
-class CVUploadResponse(BaseModel):
-    message: str
-    char_count: int
+class ExtractResponse(BaseModel):
+    text: str
+
+
+class RedactRequest(BaseModel):
+    text: str
+
+
+class RedactResponse(BaseModel):
+    text: str
+    removed: dict[str, int]
+
+
+class SaveRequest(BaseModel):
+    text: str
+    confirm: bool = False
 
 
 async def _get_or_create_profile(session: AsyncSession, user_id) -> ApplicantProfile:
@@ -47,25 +61,51 @@ async def _get_or_create_profile(session: AsyncSession, user_id) -> ApplicantPro
     return profile
 
 
-@router.post("/cv", response_model=CVUploadResponse)
-async def upload_cv(
+@router.post("/cv/extract", response_model=ExtractResponse)
+async def extract_cv(
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
     filename = file.filename or ""
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in _ALLOWED:
         raise HTTPException(status_code=400, detail="Unsupported file type. Upload PDF, DOCX, or TXT.")
-    content = await file.read()
-    text = _extract_text(filename, content)
+    text = _extract_text(filename, await file.read())
     if not text.strip():
         raise HTTPException(status_code=400, detail="Could not extract text from file.")
+    return ExtractResponse(text=text)
+
+
+@router.post("/cv/redact", response_model=RedactResponse)
+async def redact_cv(
+    body: RedactRequest,
+    current_user: User = Depends(get_current_user),
+):
+    text, removed = redact(body.text)
+    return RedactResponse(text=text, removed=removed)
+
+
+@router.put("/cv", response_model=CVResponse)
+async def save_cv(
+    body: SaveRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    if not body.text.strip():
+        # An empty editor saves as no CV, so advanced search asks for one again.
+        profile = await _get_or_create_profile(session, current_user.id)
+        profile.cv_text = None
+        await session.commit()
+        return CVResponse(cv_text=None, has_cv=False)
+    if not body.confirm:
+        _, findings = redact(body.text)
+        if findings:
+            raise HTTPException(status_code=409, detail={"findings": findings})
     profile = await _get_or_create_profile(session, current_user.id)
-    profile.cv_text = text
+    profile.cv_text = body.text
     session.add(profile)
     await session.commit()
-    return CVUploadResponse(message="CV uploaded successfully", char_count=len(text))
+    return CVResponse(cv_text=body.text, has_cv=True)
 
 
 @router.get("/cv", response_model=CVResponse)

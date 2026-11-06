@@ -12,6 +12,7 @@ resolution-markers = [
 members = [
     "backend",
     "ingestion",
+    "llmpool",
 ]
 
 [[package]]
@@ -210,6 +211,7 @@ dependencies = [
     { name = "langchain-openai" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-postgres" },
+    { name = "llmpool" },
     { name = "opensearch-py", extra = ["async"] },
     { name = "passlib", extra = ["bcrypt"] },
     { name = "pdfplumber" },
@@ -243,6 +245,7 @@ requires-dist = [
     { name = "langchain-openai", specifier = ">=0.3.0" },
     { name = "langgraph", specifier = ">=0.3.0" },
     { name = "langgraph-checkpoint-postgres", specifier = ">=2.0.0" },
+    { name = "llmpool", editable = "llmpool" },
     { name = "opensearch-py", extras = ["async"], specifier = ">=2.7.0" },
     { name = "passlib", extras = ["bcrypt"], specifier = ">=1.7.4" },
     { name = "pdfplumber", specifier = ">=0.11.0" },
@@ -935,6 +938,7 @@ dependencies = [
     { name = "beautifulsoup4" },
     { name = "ftfy" },
     { name = "lingua-language-detector" },
+    { name = "llmpool" },
     { name = "playwright" },
     { name = "pydantic" },
     { name = "pyperclip" },
@@ -960,6 +964,7 @@ requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.14.3" },
     { name = "ftfy", specifier = ">=6.3.1" },
     { name = "lingua-language-detector", specifier = ">=2.2.0" },
+    { name = "llmpool", editable = "llmpool" },
     { name = "playwright", specifier = ">=1.58.0" },
     { name = "pydantic", specifier = ">=2.13.2" },
     { name = "pyperclip", specifier = ">=1.11.0" },
@@ -1253,6 +1258,29 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/89/69ea8b9de230b322ce8b60e9b95463cc4cbeed73476abd9214ab699ade73/lingua_language_detector-2.2.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:145a11d7b7f0c8bf666de411585f53011d530c541a2cd55c2f86b3cff499f77e", size = 170584476, upload-time = "2026-03-09T14:28:18.833Z" },
     { url = "https://files.pythonhosted.org/packages/5f/c1/2e55c62abc6653383917f9d008090820182d32b8e1f19213af1c06e16411/lingua_language_detector-2.2.0-cp314-cp314-win_amd64.whl", hash = "sha256:3423749db1861937443141e1871a726b8d70dc6e7fe4f6584c477eef5b87fc38", size = 170064682, upload-time = "2026-03-09T14:28:31.876Z" },
     { url = "https://files.pythonhosted.org/packages/44/5e/f73a74fb19c189c4070d66e9b15f1e4a032bf5e5203fb6bb6c622e16f9c0/lingua_language_detector-2.2.0-cp314-cp314-win_arm64.whl", hash = "sha256:0ec27bc67813372baba2e0a3df2b13cd559c64bc45c5af92f6137fe5b153a525", size = 169980726, upload-time = "2026-03-09T14:28:46.047Z" },
+]
+
+[[package]]
+name = "llmpool"
+version = "0.1.0"
+source = { editable = "llmpool" }
+dependencies = [
+    { name = "requests" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "requests", specifier = ">=2.33.1" }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=9.0.3" },
+    { name = "pytest-asyncio", specifier = ">=0.25.0" },
 ]
 
 [[package]]
