@@ -145,3 +145,14 @@ def test_job_doc_posted_at_falls_back_to_created_at():
     doc = _build_job_doc(job)
     assert doc["posted_at"] == created.isoformat()
     assert doc["chunks"][0]["posted_at"] == created.isoformat()
+
+
+def test_job_doc_carries_where_the_job_is():
+    created = datetime(2026, 10, 2, tzinfo=timezone.utc)
+    job = Job(id=uuid.uuid4(), company_id=uuid.uuid4(), url="u", title="t", location="München, BY, Germany",
+              created_at=created, chunks=[])
+    doc = _build_job_doc(job)
+    assert (doc["job_cities"], doc["job_countries"]) == (["munich"], ["Germany"])
+    office_only = Job(id=uuid.uuid4(), company_id=uuid.uuid4(), url="u", title="t", office="milan, italy",
+                      created_at=created, chunks=[])
+    assert _build_job_doc(office_only)["job_cities"] == ["milan"]  # the office when there is no location

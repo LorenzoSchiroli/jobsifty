@@ -79,12 +79,28 @@ def test_languages():
     assert set(parse_query("dev in english and german").languages_required) == {"English", "German"}
 
 
-def test_country():
+def test_country_is_where_the_job_is():
     f_de = parse_query("python jobs in germany")
-    assert f_de.country == "Germany"
-    # country word must remain in semantic_query so hybrid search still uses it
+    assert f_de.places == ["Germany"] and f_de.country is None  # the job's country, not the company's
+    # the place word must remain in semantic_query so hybrid search still uses it
     assert "germany" in f_de.semantic_query
-    assert parse_query("python jobs in the united kingdom").country == "United Kingdom"
+    assert parse_query("python jobs in the united kingdom").places == ["United Kingdom"]
+
+
+@pytest.mark.parametrize("query,places", [
+    ("ml engineer in Munich", ["Munich"]),
+    ("ml engineer in München or Austria", ["Munich", "Austria"]),
+    ("data jobs in frankfurt am main", ["Frankfurt"]),  # one city, not Frankfurt plus a stray word
+    ("jobs in luxembourg", ["Luxembourg"]),  # a city that is also a country is the country
+])
+def test_cities_and_several_places(query, places):
+    assert parse_query(query).places == places
+
+
+def test_company_country_only_when_asked_for():
+    f = parse_query("nlp engineer at a company based in Germany, in Munich")
+    assert (f.country, f.places) == ("Germany", ["Munich"])
+    assert parse_query("ml jobs, companies headquartered in the Netherlands").country == "Netherlands"
 
 
 @pytest.mark.parametrize("query,name", [
@@ -93,19 +109,19 @@ def test_country():
     ("data jobs in the Netherlands", "Netherlands"),
 ])
 def test_country_aliases(query, name):
-    assert parse_query(query).country == name
+    assert parse_query(query).places == [name]
 
 
 def test_iso_codes_are_not_countries_in_free_text():
-    assert parse_query("it support jobs, de-escalation").country is None
+    assert parse_query("it support jobs, de-escalation").places is None
 
 
 def test_country_case_insensitive():
-    assert parse_query("Python Jobs In GERMANY").country == "Germany"
+    assert parse_query("Python Jobs In GERMANY").places == ["Germany"]
 
 
 def test_country_absent_stays_none():
-    assert parse_query("python developer role").country is None
+    assert parse_query("python developer role").places is None
 
 
 def test_country_not_confused_with_similarly_spelled_language():
@@ -117,7 +133,7 @@ def test_country_not_confused_with_similarly_spelled_language():
 
 def test_country_combined_with_other_filters():
     f = parse_query("senior remote python developer in germany, last 3 days")
-    assert f.country == "Germany"
+    assert f.places == ["Germany"]
     assert f.seniority == "senior"
     assert f.location_type == "remote"
     assert f.max_age_hours == 72

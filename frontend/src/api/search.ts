@@ -24,6 +24,7 @@ export interface Job {
   fit_rationale?: string
   fit_gaps?: string
   trade_offs?: string[]
+  misses?: string[]  // agent mode, a closest job: the stated requirements it does not meet
 }
 
 // A request that reports its steps: the API answers one JSON object per line, {"status": "..."}
@@ -97,7 +98,8 @@ export interface SearchLog {
   matches: number | null
   // jobs of the window no earlier search of the run had found
   new_jobs: number
-  probe: string | null
+  // what a loosened search eased, in the filters panel's words ("in Munich → in Germany")
+  loosened: string[]
   // the posting window the search ran on; null when it had none
   max_age_hours: number | null
 }
@@ -110,7 +112,8 @@ export interface AdvancedResponse {
   brief: Partial<Brief>
   summary: string
   searches: SearchLog[]
-  results: Job[]
+  results: Job[]  // the matches: every stated requirement met
+  closest: Job[]  // the closest jobs filling the list up to 10, each with its misses
   usage: Record<string, unknown> | null
 }
 

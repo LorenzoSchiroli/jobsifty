@@ -2,13 +2,13 @@ from backend.search.advanced.budget import FINALIZE_CANDIDATES
 from backend.search.advanced.finalize import (
     FinalShortlist, filters_summary, finalize_candidates, partial_result, run_finalize,
 )
-from tests.search.advanced.conftest import JOB_A, JOB_B, JOB_C, NOW, PROBE_JOB_ID, item
+from tests.search.advanced.conftest import JOB_A, JOB_B, JOB_C, NOW, LOOSE_JOB_ID, item
 from tests.search.advanced.fakes import ScriptedChatModel
 from tests.search.advanced.samples import candidate
 
 
 async def test_finalize_drops_invented_and_violating_jobs(ctx_factory, pool_state):
-    llm = ScriptedChatModel(script=[], structured=[FinalShortlist(summary="s", shortlist=[
+    llm = ScriptedChatModel(script=[], structured=[FinalShortlist(summary="s", jobs=[
         item("a1f3", 90), item("zzzz", 80), item("b2c4", 70)])])   # b2c4 is on-site, brief says remote only
     out = await run_finalize(pool_state, ctx_factory(llm=llm), timeout=30)
     assert [r["job_id"] for r in out["shortlist"]] == [pool_state["short_ids"]["a1f3"]]
@@ -16,12 +16,14 @@ async def test_finalize_drops_invented_and_violating_jobs(ctx_factory, pool_stat
 
 
 async def test_finalize_prompt_carries_cv_rules_and_candidate_text(ctx_factory, pool_state):
-    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[])])
+    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", jobs=[])])
     await run_finalize({**pool_state, "notes": "my notes"}, ctx_factory(llm=llm, cv_text="PyTorch CV"), timeout=30)
     text = "\n".join(str(m.content) for m in llm.calls[0])
     assert "PyTorch CV" in text and "my notes" in text and "- remote only" in text
     assert "[a1f3]" in text and "Build ranking models" in text and 'search 1 "ml"' in text
-    assert "[b2c4]" not in text  # violating candidates never reach the model
+    matching, closest = text.split("\n\nClosest candidates")
+    assert "[b2c4]" not in matching  # a violating job reaches the model only as a closest one, with its misses
+    assert "[b2c4] ML Engineer" in closest and "misses: remote\n" in closest
 
 
 async def test_finalize_prompt_lists_stated_requirements_and_inferred_preferences_apart(ctx_factory, pool_state):
@@ -30,7 +32,7 @@ async def test_finalize_prompt_lists_stated_requirements_and_inferred_preference
 
     senior = BriefItem(text="mid-senior", kind="require", source="inferred", field="seniority", value=["mid", "senior"])
     state = {**pool_state, "brief": Brief(items=[REMOTE, NO_CONSULTING, senior, STARTUP]).model_dump()}
-    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[])])
+    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", jobs=[])])
     await run_finalize(state, ctx_factory(llm=llm), timeout=30)
     text = str(llm.calls[0][1].content)
     stated = text.split("Stated requirements (said by the user; every result must meet these; the only requirements):\n")[1]
@@ -46,6 +48,8 @@ def test_finalize_rules_keep_requirements_for_stated_items_and_forbid_ids():
     assert "never call them requirements" in RULES
     assert "inferred requirements" not in RULES  # the rules themselves never call them requirements
     assert "Never mention job ids or short ids" in RULES and "anywhere in the output text" in RULES
+    assert "Requirement labels (R1, R2, ...) go only in unmet" in RULES
+    assert "Assess every candidate" in RULES and "none left out" in RULES  # a verdict for every job
 
 
 def test_candidates_put_keep_first_and_cap_at_twelve(pool_state):
@@ -60,13 +64,13 @@ def test_candidates_skip_violating_jobs(pool_state):
     assert [c.job_id for c in finalize_candidates({**pool_state, "keep": [JOB_C]}, NOW)] == [JOB_A]
 
 
-def test_candidates_skip_probe_jobs_breaking_locked_items(pool_state_with_probe):
-    ids = [c.job_id for c in finalize_candidates(pool_state_with_probe, NOW)]
-    assert PROBE_JOB_ID not in ids and JOB_A in ids
+def test_candidates_skip_loosened_jobs_missing_a_stated_item(pool_state_loosened):
+    ids = [c.job_id for c in finalize_candidates(pool_state_loosened, NOW)]
+    assert LOOSE_JOB_ID not in ids and JOB_A in ids
 
 
-def test_candidates_include_probe_jobs_once_relaxed(pool_state_with_probe_relaxed):
-    assert PROBE_JOB_ID in [c.job_id for c in finalize_candidates(pool_state_with_probe_relaxed, NOW)]
+def test_candidates_include_loosened_jobs_once_the_user_relaxed_the_item(pool_state_loosened_relaxed):
+    assert LOOSE_JOB_ID in [c.job_id for c in finalize_candidates(pool_state_loosened_relaxed, NOW)]
 
 
 def test_partial_result_has_no_fit_fields(pool_state):
@@ -74,8 +78,8 @@ def test_partial_result_has_no_fit_fields(pool_state):
     assert out["status"] == "partial" and all(r["fit_score"] is None for r in out["shortlist"])
 
 
-def test_partial_result_skips_jobs_with_breaks(pool_state_with_probe):
-    out = partial_result(pool_state_with_probe, NOW)
+def test_partial_result_keeps_loosened_jobs_out_of_the_matches(pool_state_loosened):
+    out = partial_result(pool_state_loosened, NOW)
     assert [r["job_id"] for r in out["shortlist"]] == [JOB_A]
 
 
@@ -86,7 +90,7 @@ def test_filters_summary_lists_searches_that_found_shortlisted_jobs(pool_state):
 
 
 async def _run(ctx_factory, state, items):
-    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=items)])
+    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", jobs=items)])
     return await run_finalize(state, ctx_factory(llm=llm), timeout=30)
 
 
@@ -97,10 +101,17 @@ def _many_state(pool_state, n):
             "short_ids": {f"{i:04x}": j for i, j in enumerate(ids, 1)}}
 
 
-async def test_finalize_caps_at_ten_in_model_order_without_failing(ctx_factory, pool_state):
+async def test_finalize_ranks_by_fit_score_and_caps_at_ten(ctx_factory, pool_state):
     state = _many_state(pool_state, 12)
-    out = await _run(ctx_factory, state, [item(f"{i:04x}", 50) for i in range(1, 12)])
-    assert [r["job_id"] for r in out["shortlist"]] == [state["short_ids"][f"{i:04x}"] for i in range(1, 11)]
+    out = await _run(ctx_factory, state, [item(f"{i:04x}", 40 + i) for i in range(1, 13)])
+    assert [r["job_id"] for r in out["shortlist"]] == [state["short_ids"][f"{i:04x}"] for i in range(12, 2, -1)]
+
+
+async def test_a_job_the_model_leaves_out_comes_unscored_after_the_scored_ones(ctx_factory, pool_state):
+    pool = {**pool_state["pool"], JOB_B: candidate(JOB_B, 0.5).to_dict()}
+    state = {**pool_state, "pool": pool, "short_ids": {**pool_state["short_ids"], "9c02": JOB_B}}
+    out = await _run(ctx_factory, state, [item("9c02", 60)])  # JOB_A left out
+    assert [(r["job_id"], r["fit_score"]) for r in out["shortlist"]] == [(JOB_B, 60), (JOB_A, None)]
 
 
 async def test_finalize_clamps_fit_score(ctx_factory, pool_state):
@@ -117,17 +128,16 @@ def test_partial_result_drops_violating_jobs(pool_state):
     assert [r["job_id"] for r in partial_result(pool_state, NOW)["shortlist"]] == [JOB_A]
 
 
-def test_partial_result_includes_probe_jobs_once_relaxed(pool_state_with_probe_relaxed):
-    ids = [r["job_id"] for r in partial_result(pool_state_with_probe_relaxed, NOW)["shortlist"]]
-    assert PROBE_JOB_ID in ids
+def test_partial_result_includes_loosened_jobs_once_relaxed(pool_state_loosened_relaxed):
+    ids = [r["job_id"] for r in partial_result(pool_state_loosened_relaxed, NOW)["shortlist"]]
+    assert LOOSE_JOB_ID in ids
 
 
-def test_probe_break_in_other_casing_still_blocks_the_job(pool_state_with_probe):
-    pool = dict(pool_state_with_probe["pool"])
-    pool[PROBE_JOB_ID] = {**pool[PROBE_JOB_ID], "breaks": ["IN MILAN"]}  # remote: meets the other item
-    state = {**pool_state_with_probe, "pool": pool}
-    assert PROBE_JOB_ID not in [c.job_id for c in finalize_candidates(state, NOW)]
-    assert PROBE_JOB_ID not in [r["job_id"] for r in partial_result(state, NOW)["shortlist"]]
+def test_a_job_a_loosened_search_found_in_the_wanted_place_is_a_match(pool_state_loosened):
+    pool = dict(pool_state_loosened["pool"])
+    pool[LOOSE_JOB_ID] = {**pool[LOOSE_JOB_ID], "job_cities": ["munich", "milan"]}  # Milan among its places
+    state = {**pool_state_loosened, "pool": pool}
+    assert LOOSE_JOB_ID in [c.job_id for c in finalize_candidates(state, NOW)]
 
 
 def test_pool_job_with_unknown_field_is_not_eligible_once_the_item_is_stated(pool_state):
@@ -151,7 +161,7 @@ def _languages_state(pool_state, required: list[str]) -> dict:
 async def test_finalize_adds_a_gap_for_a_language_the_user_does_not_list(ctx_factory, pool_state):
     state = _languages_state(pool_state, ["spanish"])
     model_item = item("a1f3", 90).model_copy(update={"gaps": ["Requires Spanish", "no Kubernetes"]})
-    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[model_item])])
+    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", jobs=[model_item])])
     out = await run_finalize(state, ctx_factory(llm=llm), timeout=30)
     assert out["shortlist"][0]["gaps"] == ["requires Spanish", "no Kubernetes"]  # merged without the repeat
     text = "\n".join(str(m.content) for m in llm.calls[0])
@@ -195,7 +205,7 @@ def _seniority_state(pool_state) -> dict:
 
 async def test_other_inferred_contradictions_become_trade_offs_not_gaps(ctx_factory, pool_state):
     model_item = item("a1f3", 70).model_copy(update={"trade_offs": ["LEAD LEVEL, NOT MID", "long commute"]})
-    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[model_item])])
+    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", jobs=[model_item])])
     out = await run_finalize(_seniority_state(pool_state), ctx_factory(llm=llm), timeout=30)
     assert out["shortlist"][0]["trade_offs"] == ["lead level, not mid", "long commute"]
     assert out["shortlist"][0]["gaps"] == []
@@ -226,7 +236,7 @@ async def test_finalize_drops_a_returned_job_that_does_not_meet_a_stated_item(ct
 
 
 async def test_finalize_prompt_carries_the_questions_and_answers(ctx_factory, pool_state):
-    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[])])
+    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", jobs=[])])
     qa = [{"question": "Allow hybrid?", "options": ["Yes", "No"], "answer": "only if in Milan", "chosen": None}]
     await run_finalize({**pool_state, "qa": qa}, ctx_factory(llm=llm), timeout=30)
     text = "\n".join(str(m.content) for m in llm.calls[0])
@@ -236,27 +246,26 @@ async def test_finalize_prompt_carries_the_questions_and_answers(ctx_factory, po
 async def test_finalize_caps_output_tokens(ctx_factory, pool_state):
     from backend.search.advanced.budget import FINALIZE_MAX_TOKENS
 
-    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[])])
+    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", jobs=[])])
     await run_finalize(pool_state, ctx_factory(llm=llm), timeout=30)
     assert llm.structured_kwargs["max_tokens"] == FINALIZE_MAX_TOKENS
 
 
-def test_window_summary_says_where_the_regular_searches_started_and_widened_to():
+def test_window_summary_says_where_the_searches_started_and_widened_to():
     from backend.search.advanced.finalize import window_summary
 
-    def state(*runs):
-        return {"searches": [{"max_age_hours": h, "probe": p} for h, p in runs]}
+    def state(*hours):
+        return {"searches": [{"max_age_hours": h} for h in hours]}
 
     assert window_summary(state()) == "—"
-    assert window_summary(state((72, None), (72, None))) == "last 3d throughout"
-    assert window_summary(state((72, None), (168, None))) == "started at last 3d, widened to last 7d"
-    assert window_summary(state((72, None), (336, "remote only"))) == "last 3d throughout"  # a probe never widens
+    assert window_summary(state(72, 72)) == "last 3d throughout"
+    assert window_summary(state(72, 168)) == "started at last 3d, widened to last 7d"
 
 
 async def test_finalize_prompt_carries_the_posting_window(ctx_factory, pool_state):
-    state = {**pool_state, "searches": [{**pool_state["searches"][0], "max_age_hours": 72, "probe": None},
-                                        {"index": 2, "header": 'search 2 "ml"', "max_age_hours": 168, "probe": None}]}
-    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[])])
+    state = {**pool_state, "searches": [{**pool_state["searches"][0], "max_age_hours": 72},
+                                        {"index": 2, "header": 'search 2 "ml"', "max_age_hours": 168}]}
+    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", jobs=[])])
     await run_finalize(state, ctx_factory(llm=llm), timeout=30)
     assert "Posting window:\nstarted at last 3d, widened to last 7d" in str(llm.calls[0][1].content)
 
@@ -273,7 +282,7 @@ def _nlp_state(pool_state) -> dict:
 
 
 async def test_finalize_labels_only_the_stated_items_no_field_carries(ctx_factory, pool_state):
-    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[])])
+    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", jobs=[])])
     await run_finalize(_nlp_state(pool_state), ctx_factory(llm=llm), timeout=30)
     text = str(llm.calls[0][1].content)
     assert "- remote only (location_type: remote)\n- R1: NLP or search engineer role" in text

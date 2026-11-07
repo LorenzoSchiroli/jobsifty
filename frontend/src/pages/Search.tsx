@@ -35,6 +35,7 @@ export default function Search() {
   const abortRef = useRef<AbortController | null>(null)
 
   const pending = run?.status === 'question'
+  const closest = mode === 'agent' ? run?.closest ?? [] : []  // agent mode: jobs that miss a requirement, shown apart
 
   // Runs one request; a newer one (or a mode switch) aborts it, and a response
   // or error from a request that is no longer current is dropped.
@@ -75,7 +76,9 @@ export default function Search() {
     setFilters(r.filters)
   }
 
-  useEffect(() => {
+  // Aborts the running request and clears the page, as before the search; the server stops the
+  // work (and an agent run deletes its thread), so a question it had asked cannot be answered.
+  function stop() {
     abortRef.current?.abort()
     abortRef.current = null
     setRun(null)
@@ -84,7 +87,9 @@ export default function Search() {
     setError('')
     setLoading(false)
     setSearched(false)
-  }, [mode])
+  }
+
+  useEffect(stop, [mode])
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault()
@@ -111,10 +116,11 @@ export default function Search() {
       <form onSubmit={handleSearch} className={`search-form${mode === 'agent' ? ' agent' : ''}`}
             style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
         <input className="search-input" value={query} onChange={e => setQuery(e.target.value)} placeholder="e.g. machine learning engineer remote" required />
-        {/* Busy while a request runs, but still clickable: a new submit replaces the running one */}
-        <button type="submit" className="search-btn" aria-busy={loading} style={{ whiteSpace: 'nowrap', opacity: loading ? 0.6 : 1 }}>
-          {loading ? '...' : 'Search'}
-        </button>
+        {/* Stop while a request runs: closing it stops the work on the server too. Two keys, so two
+            elements: a reused one would be a submit button again by the end of the Stop click, and submit. */}
+        {loading
+          ? <button key="stop" type="button" className="search-btn" onClick={stop} style={{ whiteSpace: 'nowrap' }}>Stop</button>
+          : <button key="search" type="submit" className="search-btn" style={{ whiteSpace: 'nowrap' }}>Search</button>}
       </form>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
@@ -159,10 +165,24 @@ export default function Search() {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
         {results.map(job => <JobCard key={job.id} job={job} />)}
-        {searched && !pending && results.length === 0 && !loading && !error && (
+        {searched && !pending && results.length === 0 && !closest.length && !loading && !error && (
           <p style={{ opacity: 0.4 }}>No results found.</p>
         )}
       </div>
+
+      {closest.length > 0 && !loading && (
+        <div style={{ marginTop: '1.5rem' }}>
+          <h3 style={{ fontSize: '1rem', marginBottom: '0.25rem' }}>Closest jobs</h3>
+          <p style={{ fontSize: '0.85rem', opacity: 0.6, marginTop: 0, marginBottom: '0.75rem' }}>
+            {results.length === 0
+              ? 'No job meets all your requirements. These come closest; each says what it misses.'
+              : `Only ${results.length} job${results.length === 1 ? ' meets' : 's meet'} all your requirements. These come closest; each says what it misses.`}
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            {closest.map(job => <JobCard key={job.id} job={job} />)}
+          </div>
+        </div>
+      )}
 
       {mode === 'agent' && run && <AgentRun part="searches" run={run} running={loading} onAnswer={answer} />}
 

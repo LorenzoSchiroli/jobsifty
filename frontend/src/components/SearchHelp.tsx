@@ -4,9 +4,9 @@ const TIPS: [string, string[]][] = [
   ['Level', ['junior', 'mid-level', 'senior', 'lead']],
   ['Work mode', ['remote', 'hybrid', 'on-site']],
   ['Contract', ['full-time', 'part-time', 'internship', 'freelance']],
-  ['Country', ['in Germany', 'in the Netherlands', 'in France']],
+  ['Place', ['in Munich', 'in Germany', 'in Austria or Switzerland']],
   ['Language', ['German-speaking', 'fluent in French']],
-  ['Company', ['startup', 'no consulting']],
+  ['Company', ['startup', 'no consulting', 'company based in Germany']],
   ['Posted', ['today', 'last 24 hours', 'this week', 'last 2 weeks']],
 ]
 

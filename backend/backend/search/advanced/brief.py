@@ -7,6 +7,7 @@ A mapped item's value is in the index vocabulary (`vocabulary.py`): it is normal
 is built, so a value the index does not hold can never become a locked requirement.
 """
 import math
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -20,8 +21,10 @@ from backend.search.advanced.vocabulary import (
     normalise_choice,
     normalise_country,
     normalise_languages,
+    normalise_places,
 )
 from backend.search.countries import canonical_country, same_country
+from backend.search.places import city_name, split_places
 from backend.search.filters import SearchFilters, describe
 
 # A company-size requirement stays possible as a text-only item: employee_count is not in the index.
@@ -32,6 +35,7 @@ BriefField = Literal[
     "languages_required",
     "is_consulting",
     "is_startup",
+    "place",
     "company_country",
     "min_review_score",
     "posted_within_days",
@@ -46,7 +50,9 @@ _BOOL_FIELDS = ("is_consulting", "is_startup")
 _VALUE_HELP = (
     "With `field` only. location_type / seniority / employment_type: one value, or a list meaning any of "
     "them (\"remote or hybrid\" is [\"remote\", \"hybrid\"]); languages_required: a list of language names; "
-    "is_consulting / is_startup: true or false; company_country: a country name; min_review_score: 1-5; "
+    "is_consulting / is_startup: true or false; place: where the job is, a list of city and country names "
+    "(no regions) meaning any of them ([\"Munich\"], [\"Munich\", \"Austria\", \"Switzerland\"]); company_country: where the "
+    "company is based, a country name (not where the job is); min_review_score: 1-5; "
     "posted_within_days: the days of a posting window the user, the preference memory or the CV states "
     "(\"last 2 weeks\" 14, \"this week\" 7, "
     "\"today\" 1)."
@@ -59,6 +65,8 @@ def normalise_value(field: str, value):
         return normalise_choice(field, value)
     if field == "languages_required":
         return normalise_languages(value)
+    if field == "place":
+        return normalise_places(value)
     if field in _BOOL_FIELDS:
         if not isinstance(value, bool):
             raise ValueError(f"{field} needs true or false")
@@ -83,7 +91,7 @@ class BriefItem(BaseModel):
     field: BriefField | None = None
     value: (
         LocationType | list[LocationType] | Seniority | list[Seniority] | EmploymentType | list[EmploymentType]
-        | list[Language] | bool | int | float | str | None
+        | list[Language] | list[str] | bool | int | float | str | None
     ) = Field(default=None, description=_VALUE_HELP)
 
     @model_validator(mode="before")
@@ -139,6 +147,22 @@ class LockedRequirementError(ValueError):
         self.item = item
 
 
+MAX_ITEM_WORDS = 8
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"\w+", text.casefold())
+
+
+def bundled(item: BriefItem, request: str) -> bool:
+    """An item holding several requirements: a list (comma or semicolon), more than MAX_ITEM_WORDS
+    words, or the whole request of more than two words. A brief item is one requirement, in the
+    filters panel as in the filters, so "junior remote NLP engineer in Munich" is four items."""
+    words = _words(item.text)
+    return (any(ch in item.text for ch in ",;") or len(words) > MAX_ITEM_WORDS
+            or (len(_words(request)) > 2 and words == _words(request)))
+
+
 def _norm(value):
     if isinstance(value, str) and value:
         return [value]
@@ -176,7 +200,7 @@ def relax(brief: Brief, texts: list[str]) -> Brief:
 
 def _wanted(item: BriefItem) -> tuple[str, object]:
     """The SearchFilters attribute and value the item asks for (avoid flips a bool)."""
-    attr = "country" if item.field == "company_country" else item.field
+    attr = {"company_country": "country", "place": "places"}.get(item.field, item.field)
     value = item.value
     if item.kind == "avoid" and isinstance(value, bool):
         value = not value
@@ -198,12 +222,18 @@ def inferred_window(brief: Brief) -> BriefItem | None:
     return next((i for i in brief.items if i.source == "inferred" and i.field == WINDOW_FIELD), None)
 
 
-def hard_filters(brief: Brief, *, lifted: str | None = None) -> SearchFilters | None:
-    lifted_key = lifted.casefold() if lifted is not None else None
+def hard_filters(brief: Brief, *, loosened: dict | None = None) -> SearchFilters | None:
+    """The stated items with a field, as the hard filters of a search. `loosened` maps a field to
+    the value a loosened search uses instead (already normalised), or to None to drop the filter."""
+    loosened = loosened or {}
     values: dict = {}
     for item in _stated_mapped(brief):
-        if item.field == WINDOW_FIELD or (lifted_key is not None and item.text.casefold() == lifted_key):
+        if item.field == WINDOW_FIELD:
             continue
+        if item.field in loosened:
+            if loosened[item.field] is None:
+                continue
+            item = item.model_copy(update={"value": loosened[item.field]})
         attr, value = _wanted(item)
         values[attr] = value
     if not values:
@@ -254,6 +284,9 @@ def satisfies(item: BriefItem, fields: dict) -> bool | None:
         return float(actual) <= float(wanted)
     if attr == "country":
         return same_country(str(actual), str(wanted))
+    if attr == "places":  # the job's {"cities", "countries"}: met when it is in any wanted place
+        cities, countries = split_places(wanted)
+        return bool(set(actual["cities"]) & set(cities) or set(actual["countries"]) & set(countries))
     if isinstance(wanted, (str, list)) and isinstance(actual, str):
         options = [wanted] if isinstance(wanted, str) else wanted
         return actual.casefold() in {o.casefold() for o in options}
@@ -265,13 +298,21 @@ def violations(brief: Brief, fields: dict) -> list[str]:
     return [i.text for i in _stated_mapped(brief) if satisfies(i, fields) is False]
 
 
-def unmet(brief: Brief, fields: dict) -> list[str]:
-    """Stated hard items the job does not positively meet, among the fields `fields` carries.
+def misses(brief: Brief, fields: dict) -> list[str]:
+    """The stated items a job does not positively meet, worded as the filters panel words them
+    (filter_label): the hard items among the fields `fields` carries, "(unknown)" added when the
+    job does not say.
 
-    Unknown counts as unmet, as the hard filter does: a job found before an item was stated is
-    held to it like every job found after.
+    Unknown counts as missed, as the hard filter does: a job found before an item was stated, or
+    by a loosened search, is held to it like every other job. Empty: the job meets every stated
+    item code can check.
     """
-    return [i.text for i in _stated_mapped(brief) if i.field in fields and satisfies(i, fields) is not True]
+    out = []
+    for i in brief.locked():
+        met = satisfies(i, fields) if i.field is not None and i.field in fields else True
+        if met is not True:
+            out.append(filter_label(i) + (" (unknown)" if met is None else ""))
+    return out
 
 
 def _any(value) -> str:
@@ -292,6 +333,9 @@ def _shortfall(item: BriefItem, fields: dict) -> list[str]:
         return ["a startup" if actual else "not a startup"]
     if item.field == "company_country":
         return [f"company based in {canonical_country(str(actual)) or actual}, not {wanted}"]
+    if item.field == "place":
+        where = city_name(actual["cities"][0]).title() if actual["cities"] else actual["countries"][0]
+        return [f"in {where}, not {_any(wanted)}"]
     if item.field == "min_review_score":
         return [f"reviews {float(actual):.1f}, below {float(wanted):g}"]
     if item.field == WINDOW_FIELD:

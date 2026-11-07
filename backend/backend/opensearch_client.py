@@ -3,10 +3,10 @@ from opensearchpy import AsyncOpenSearch
 
 _client: AsyncOpenSearch | None = None
 
-INDEX_NAME = "jobs_v3"
-# Earlier indexes: `jobs` (single `embedding` vector), `jobs_v2` (no `posted_at`).
+INDEX_NAME = "jobs_v4"
+# Earlier indexes: `jobs` (single `embedding` vector), `jobs_v2` (no `posted_at`), `jobs_v3` (no job place).
 # Bootstrap drops them and reconcile repopulates INDEX_NAME from Postgres.
-LEGACY_INDEX_NAMES = ("jobs", "jobs_v2")
+LEGACY_INDEX_NAMES = ("jobs", "jobs_v2", "jobs_v3")
 PIPELINE_NAME = "hybrid-pipeline"
 
 _INDEX_BODY = {
@@ -39,7 +39,10 @@ _INDEX_BODY = {
             "is_consulting":            {"type": "boolean"},
             "is_startup":               {"type": "boolean"},
             "industry":                 {"type": "keyword"},
-            "country":                  {"type": "keyword"},
+            "country":                  {"type": "keyword"},  # the company's
+            # where the job is, from its location (search/places.py): city keys and country names
+            "job_cities":               {"type": "keyword"},
+            "job_countries":            {"type": "keyword"},
             "review_score":             {"type": "float"},
             "financial_health_score":   {"type": "integer"},
             "created_at":               {"type": "date"},

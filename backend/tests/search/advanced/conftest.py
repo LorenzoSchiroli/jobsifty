@@ -123,8 +123,16 @@ def patched_run_variant():
         yield mock
 
 
+@pytest.fixture(autouse=True)
+def patched_closest_search():
+    """finalize.closest_search finds nothing unless a test sets `return_value`: no test reaches OpenSearch."""
+    mock = AsyncMock(return_value=[])
+    with patch("backend.search.advanced.finalize.closest_search", mock):
+        yield mock
+
+
 JOB_C = "b2c40000-0000-4000-8000-000000000003"
-PROBE_JOB_ID = "d4e50000-0000-4000-8000-000000000004"
+LOOSE_JOB_ID = "d4e50000-0000-4000-8000-000000000004"
 
 
 def item(short: str, score: int):
@@ -151,30 +159,31 @@ def pool_state() -> dict:
     }
 
 
-def _with_probe(brief) -> dict:
+def _with_loose_job(brief) -> dict:
+    """JOB_A is remote in Milan; LOOSE_JOB_ID is remote in Rome, as a search loosening "in Milan" finds it."""
     return {
         "brief": brief.model_dump(),
         "pool": {
-            JOB_A: candidate(JOB_A, 0.91).to_dict(),
-            PROBE_JOB_ID: candidate(PROBE_JOB_ID, 0.99, breaks=["in Milan"]).to_dict(),
+            JOB_A: candidate(JOB_A, 0.91, job_cities=["milan"], job_countries=["Italy"]).to_dict(),
+            LOOSE_JOB_ID: candidate(LOOSE_JOB_ID, 0.99, job_cities=["rome"], job_countries=["Italy"]).to_dict(),
         },
-        "short_ids": {"a1f3": JOB_A, "d4e5": PROBE_JOB_ID},
+        "short_ids": {"a1f3": JOB_A, "d4e5": LOOSE_JOB_ID},
     }
 
 
 @pytest.fixture
-def pool_state_with_probe() -> dict:
-    """A probe job breaking the still-stated "in Milan"."""
+def pool_state_loosened() -> dict:
+    """A job in Rome, found by a search loosening the still-stated "in Milan"."""
     from backend.search.advanced.brief import Brief
-    from tests.search.advanced.samples import IN_MILAN, REMOTE
+    from tests.search.advanced.samples import MILAN, REMOTE
 
-    return _with_probe(Brief(items=[REMOTE, IN_MILAN]))
+    return _with_loose_job(Brief(items=[REMOTE, MILAN]))
 
 
 @pytest.fixture
-def pool_state_with_probe_relaxed() -> dict:
+def pool_state_loosened_relaxed() -> dict:
     """The same pool after the user relaxed "in Milan"."""
     from backend.search.advanced.brief import Brief, relax
-    from tests.search.advanced.samples import IN_MILAN, REMOTE
+    from tests.search.advanced.samples import MILAN, REMOTE
 
-    return _with_probe(relax(Brief(items=[REMOTE, IN_MILAN]), ["in Milan"]))
+    return _with_loose_job(relax(Brief(items=[REMOTE, MILAN]), ["in Milan"]))

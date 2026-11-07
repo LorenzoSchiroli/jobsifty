@@ -21,7 +21,7 @@ from backend.models import ApplicantProfile, Job, User
 from backend.opensearch_client import get_opensearch
 from backend.progress import Report, ignore, stream_progress, wants_progress
 from backend.schemas import JobSearchResponse
-from backend.search.advanced.brief import WINDOW_FIELD, Brief, filter_label
+from backend.search.advanced.brief import WINDOW_FIELD, Brief, filter_label, stated_window
 from backend.search.advanced.budget import WALL_CLOCK_SECONDS
 from backend.search.advanced.context import AgentContext
 from backend.search.advanced.finalize import filters_summary as summarize_filters
@@ -44,7 +44,7 @@ class SearchLog(BaseModel):
     filters: dict
     matches: int | None = None  # jobs of the window meeting every soft filter; None without soft filters
     new_jobs: int = 0  # jobs of the window not found by an earlier search of the run
-    probe: str | None = None
+    loosened: list[str] = []  # what a loosened search eased: "in Munich → in Germany"
     max_age_hours: int | None = None  # the posting window the search ran on
 
 
@@ -53,6 +53,7 @@ class AdvancedJobResult(JobSearchResponse):
     fit_rationale: str
     fit_gaps: str
     trade_offs: list[str]
+    misses: list[str] = []  # a closest job's stated requirements it does not meet ("remote (unknown)")
 
 
 class AdvancedSearchResponse(BaseModel):
@@ -63,7 +64,8 @@ class AdvancedSearchResponse(BaseModel):
     brief: dict
     summary: str = ""
     searches: list[SearchLog] = []
-    results: list[AdvancedJobResult] = []
+    results: list[AdvancedJobResult] = []  # the matches: every stated requirement met
+    closest: list[AdvancedJobResult] = []  # the closest jobs filling the list up to 10, each with its misses
     usage: dict | None = None
 
 
@@ -133,18 +135,20 @@ async def _results(session: AsyncSession, shortlist: list[dict]) -> list[Advance
         out.append(AdvancedJobResult(
             **base.model_dump(), fit_score=r.get("fit_score"), fit_rationale=r.get("fits", ""),
             fit_gaps="; ".join(r.get("gaps") or []), trade_offs=list(r.get("trade_offs") or []),
+            misses=list(r.get("misses") or []),
         ))
     return out
 
 
 def _active_filters(values: dict) -> ActiveFilters:
     """The run's filters in basic search's terms: what the user stated is required, and so is the
-    widest posting window its searches used (probes left out); what the agent inferred is preferred.
-    The brief's window items are left out: the window used says it."""
+    posting window the matches meet (a stated one, else the widest the searches used); what the
+    agent inferred is preferred. The brief's window items are left out: the window line says it."""
     brief = Brief.model_validate(values.get("brief") or {})
     items = [i for i in brief.items if i.field != WINDOW_FIELD]
-    hours = [s["max_age_hours"] for s in values.get("searches") or []
-             if s.get("probe") is None and s.get("max_age_hours")]
+    stated = stated_window(brief)
+    hours = [stated.value * 24] if stated else [s["max_age_hours"] for s in values.get("searches") or []
+                                                if s.get("max_age_hours")]
     window = [f"posted in the {window_label(max(hours))}"] if hours else []
     return ActiveFilters(required=[*(filter_label(i) for i in items if i.source == "stated"), *window],
                          preferred=[filter_label(i) for i in items if i.source == "inferred"])
@@ -187,13 +191,14 @@ async def run_agent(graph, checkpointer, ctx: AgentContext, payload, thread_id: 
 
         status = values.get("status", "partial")
         results = await _results(session, values.get("shortlist") or [])
+        closest = await _results(session, values.get("closest") or [])
         searches = [SearchLog(query=s["query"], filters=s.get("filters") or {}, matches=s.get("matches"),
-                              new_jobs=s.get("new_jobs", 0), probe=s.get("probe"),
+                              new_jobs=s.get("new_jobs", 0), loosened=s.get("loosened") or [],
                               max_age_hours=s.get("max_age_hours"))
                     for s in values.get("searches") or []]
         response = AdvancedSearchResponse(
             status=status, thread_id=thread_id, brief=brief, filters=filters, summary=values.get("summary", ""),
-            searches=searches, results=results, usage=values.get("usage"),
+            searches=searches, results=results, closest=closest, usage=values.get("usage"),
         )
         if status == "done":
             qa = [(q["question"], q["answer"]) for q in values.get("qa") or []]

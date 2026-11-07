@@ -6,7 +6,9 @@ an agent call still running then is cut), tools go to finalize once `finish` ran
 what is left to the deadline, at least the reserve.
 Each call goes through `ctx.llm`, which tries the pool's providers in order (search/advanced/llm.py).
 An LLM failure never raises: when no provider answers, the agent step ends the run as partial, so
-does a failed or timed-out finalize. Every call's output is capped (AGENT_MAX_TOKENS, FINALIZE_MAX_TOKENS).
+does a failed or timed-out finalize. Before finalize or a partial end, when the pool cannot fill the
+10 results, one more search finds the closest jobs (finalize.gather_closest). Every call's output is
+capped (AGENT_MAX_TOKENS, FINALIZE_MAX_TOKENS).
 """
 import logging
 import time
@@ -19,7 +21,7 @@ from langgraph.types import Command
 
 from backend.search.advanced.budget import AGENT_MAX_TOKENS, FINALIZE_RESERVE_SECONDS, MAX_TURNS
 from backend.search.advanced.context import AgentContext
-from backend.search.advanced.finalize import partial_result, run_finalize
+from backend.search.advanced.finalize import gather_closest, partial_result, run_finalize
 from backend.search.advanced.prompt import compact_history, system_prompt
 from backend.search.advanced.state import AgentState
 from backend.search.advanced.tools import TOOLS, tools_step
@@ -37,6 +39,12 @@ def _agent_time_left(ctx: AgentContext) -> float:
     return ctx.deadline - time.monotonic() - FINALIZE_RESERVE_SECONDS
 
 
+async def _partial(state: AgentState, runtime: Runtime[AgentContext]) -> dict:
+    """The partial result, with the closest jobs (gather_closest) when too few match."""
+    view, update = await gather_closest(state, runtime.context, runtime.stream_writer)
+    return {**update, **partial_result(view, runtime.context.now)}
+
+
 async def agent_node(state: AgentState, runtime: Runtime[AgentContext]) -> Command:
     ctx = runtime.context
     left = _agent_time_left(ctx)
@@ -51,30 +59,31 @@ async def agent_node(state: AgentState, runtime: Runtime[AgentContext]) -> Comma
         return Command(goto="finalize")
     except Exception:
         logger.exception("advanced agent LLM call failed; the run ends partial")
-        return Command(goto=END, update=partial_result(state, ctx.now))
+        return Command(goto=END, update=await _partial(state, runtime))
     update = {"messages": [message], "turns": 1, "usage": _usage(message)}
     if message.invalid_tool_calls and not message.tool_calls:
         # Names and errors only: the arguments may quote the CV.
         logger.warning("advanced agent tool call did not parse; the run ends partial: %s",
                        [(c.get("name"), c.get("error")) for c in message.invalid_tool_calls])
-        return Command(goto=END, update={**update, **partial_result(state, ctx.now)})
+        return Command(goto=END, update={**update, **await _partial(state, runtime)})
     return Command(goto="tools" if message.tool_calls else "finalize", update=update)
 
 
 async def finalize_node(state: AgentState, runtime: Runtime[AgentContext]) -> dict:
     ctx = runtime.context
+    view, update = await gather_closest(state, ctx, runtime.stream_writer)
     timeout = max(ctx.deadline - time.monotonic(), FINALIZE_RESERVE_SECONDS)
     runtime.stream_writer({"status": "Scoring the jobs found and writing the summary"})
     try:
-        result = await run_finalize(state, ctx, timeout)
+        result = await run_finalize(view, ctx, timeout)
     except TimeoutError:
         logger.warning("advanced finalize timed out; the run ends partial")
-        return partial_result(state, ctx.now)
+        return {**update, **partial_result(view, ctx.now)}
     except Exception:
         logger.exception("advanced finalize failed; the run ends partial")
-        return partial_result(state, ctx.now)
+        return {**update, **partial_result(view, ctx.now)}
     # The structured output does not expose token counts: only the call is counted.
-    return {**result, "usage": {"llm_calls": 1}}
+    return {**update, **result, "usage": {"llm_calls": 1}}
 
 
 def _after_tools(state: AgentState) -> str:

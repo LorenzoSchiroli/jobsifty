@@ -53,8 +53,24 @@ def test_hard_filters_map_stated_items_and_skip_inferred():
     assert f.max_age_hours is None and f.semantic_query == ""
 
 
-def test_hard_filters_skip_the_lifted_item():
-    assert hard_filters(Brief(items=[REMOTE]), lifted="remote only") is None
+def test_hard_filters_drop_or_replace_a_loosened_item():
+    assert hard_filters(Brief(items=[REMOTE]), loosened={"location_type": None}) is None
+    assert hard_filters(Brief(items=[REMOTE]), loosened={"location_type": ["remote", "hybrid"]}).location_type == [
+        "remote", "hybrid"]
+
+
+def test_a_place_item_names_cities_and_countries_and_reads_the_job_place():
+    from backend.search.advanced.brief import filter_label, misses, satisfies
+
+    place = BriefItem(text="near Munich", kind="require", source="stated", field="place",
+                      value="München, Schweiz or Austria")
+    assert place.value == ["Munich", "Switzerland", "Austria"]
+    assert hard_filters(Brief(items=[place])).places == ["Munich", "Switzerland", "Austria"]
+    assert filter_label(place) == "in Munich, Switzerland or Austria"
+    assert satisfies(place, {"place": {"cities": ["munich"], "countries": ["Germany"]}}) is True
+    assert satisfies(place, {"place": {"cities": ["vienna"], "countries": ["Austria"]}}) is True
+    assert satisfies(place, {"place": {"cities": ["hamburg"], "countries": ["Germany"]}}) is False
+    assert misses(Brief(items=[place]), {"place": None}) == ["in Munich, Switzerland or Austria (unknown)"]
 
 
 def test_hard_filters_map_country():

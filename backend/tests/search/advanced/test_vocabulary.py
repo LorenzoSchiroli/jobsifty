@@ -5,7 +5,7 @@ import pytest
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import ValidationError
 
-from backend.search.advanced.brief import Brief, BriefItem, hard_filters, merge_brief, satisfies, unmet, violations
+from backend.search.advanced.brief import Brief, BriefItem, hard_filters, merge_brief, misses, satisfies, violations
 from backend.search.advanced.observation import render_observation
 from backend.search.advanced.search import SearchVariant, VariantFilters, matches_soft, soft_matches
 from backend.search.advanced.tools import search_jobs, update_brief
@@ -135,19 +135,20 @@ def test_stated_country_matches_iso_coded_companies():
     assert violations(Brief(items=[item]), {"company_country": "DE"}) == []
 
 
-def test_unmet_counts_unknown_as_unmet_but_only_for_carried_fields():
+def test_misses_count_unknown_as_missed_but_only_for_carried_fields():
     brief = Brief(items=[stated("location_type", "remote", "remote only"),
                          stated("min_review_score", 4, "good reviews")])
-    assert unmet(brief, {"location_type": "remote"}) == []  # review score not carried: not checked
-    assert unmet(brief, {"location_type": None}) == ["remote only"]
-    assert unmet(brief, {"location_type": "remote", "min_review_score": None}) == ["good reviews"]
+    assert misses(brief, {"location_type": "remote"}) == []  # review score not carried: not checked
+    assert misses(brief, {"location_type": None}) == ["remote (unknown)"]
+    assert misses(brief, {"location_type": "on-site"}) == ["remote"]
+    assert misses(brief, {"location_type": "remote", "min_review_score": None}) == ["reviews ≥ 4 (unknown)"]
     assert violations(brief, {"location_type": None}) == []  # a contradiction needs a known value
 
 
 def test_observation_counts_english_as_english():
     window = [candidate(f"{i:04x}0000-0000-4000-8000-000000000000", languages=langs)
               for i, langs in enumerate([["english"], ["english", "german"], ["french"]], 1)]
-    obs = render_observation(1, SearchVariant(query="ml"), None, window, {}, pool_size=3, now=NOW)
+    obs = render_observation(1, SearchVariant(query="ml"), None, window, {}, pool_size=3, now=NOW, strict=3)
     line = next(l for l in obs.splitlines() if "other than English" in l)
     assert "EN" not in line and "DE 1" in line and "FR 1" in line
     assert "EN/DE" in obs  # job lines show language codes
@@ -157,7 +158,7 @@ def test_no_soft_filters_reports_the_jobs_returned():
     window = [candidate(f"{i:04x}0000-0000-4000-8000-000000000000") for i in range(1, 4)]
     plain = SearchVariant(query="ml")
     assert soft_matches(plain, window) is None
-    assert "no soft filters: 3 jobs returned" in render_observation(1, plain, None, window, {}, 3, NOW)
+    assert "no soft filters: 3 jobs returned" in render_observation(1, plain, None, window, {}, 3, NOW, 3)
     filtered = SearchVariant(query="ml", filters=VariantFilters(seniority="junior"))
     assert soft_matches(filtered, window) == 0
-    assert "matching all soft filters: 0" in render_observation(1, filtered, None, window, {}, 3, NOW)
+    assert "matching all soft filters: 0" in render_observation(1, filtered, None, window, {}, 3, NOW, 3)

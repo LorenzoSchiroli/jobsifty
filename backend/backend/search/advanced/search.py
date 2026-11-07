@@ -1,16 +1,15 @@
 """One search variant: retrieval, rerank and a Postgres lookup, as candidates."""
 import asyncio
 import uuid
-from datetime import datetime
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 
 from backend.live import job_live_days
 from backend.models import Job
-from backend.search.advanced.brief import Brief, BriefItem, hard_filters, satisfies
+from backend.search.advanced.brief import WINDOW_FIELD, Brief, BriefField, BriefItem, hard_filters, normalise_value, satisfies
 from backend.search.advanced.budget import CANDIDATE_WINDOW
-from backend.search.advanced.observation import Candidate, job_country
+from backend.search.advanced.observation import Candidate
 from backend.search.advanced.vocabulary import (
     CHOICE_FIELDS,
     EmploymentType,
@@ -20,6 +19,7 @@ from backend.search.advanced.vocabulary import (
     normalise_choice,
     normalise_country,
     normalise_languages,
+    normalise_places,
 )
 from backend.search.countries import same_country
 from backend.search.filters import SearchFilters
@@ -31,6 +31,7 @@ from backend.search.reranker import rerank_scored
 class VariantFilters(BaseModel):
     """Soft filters of one variant: they rank matches higher but exclude nothing. Values as in the brief."""
 
+    place: list[str] | None = None  # where the job is: cities and countries, any of them
     company_country: str | None = None
     location_type: LocationType | list[LocationType] | None = None
     seniority: Seniority | list[Seniority] | None = None
@@ -53,20 +54,44 @@ class VariantFilters(BaseModel):
             data["languages_required"] = normalise_languages(data["languages_required"])
         if data.get("company_country") is not None:
             data["company_country"] = normalise_country(data["company_country"])
+        if data.get("place") is not None:
+            data["place"] = normalise_places(data["place"])
         return data
 
     def to_search_filters(self, query: str, max_age_hours: int | None) -> SearchFilters:
         values = self.model_dump(exclude_none=True)
         if "company_country" in values:
             values["country"] = values.pop("company_country")
+        if "place" in values:
+            values["places"] = values.pop("place")
         return SearchFilters(semantic_query=query, max_age_hours=max_age_hours, **values)
+
+
+class Loosen(BaseModel):
+    """One stated requirement a loosened search eases: searched on a nearer value, or dropped."""
+
+    field: BriefField = Field(description="the field of a stated brief item")
+    value: BriefItem.model_fields["value"].annotation = Field(
+        default=None, description="the nearer value to search on, as in the brief; leave it out to drop the filter")
+
+    @model_validator(mode="after")
+    def _check(self):
+        if self.field == WINDOW_FIELD:
+            raise ValueError("widen the posting window with max_age_hours, not loosen")
+        if self.value is not None:
+            self.value = normalise_value(self.field, self.value)
+        return self
 
 
 class SearchVariant(BaseModel):
     query: str
     filters: VariantFilters = VariantFilters()
     max_age_hours: int | None = None  # None: the run's window (search_jobs sets the window every search runs on)
-    probe: str | None = None  # text of the stated item this search lifts
+    loosen: list[Loosen] = []  # stated items this search eases; its jobs that miss one are shown apart
+
+    def loosened(self) -> dict:
+        """field -> the value searched instead (None: dropped), for brief.hard_filters."""
+        return {l.field: l.value for l in self.loosen}
 
     @field_validator("max_age_hours", mode="after")
     @classmethod
@@ -97,6 +122,9 @@ def matches_soft(c: Candidate, variant: SearchVariant) -> bool:
             return False
     if f.company_country is not None and not same_country(c.company_country, f.company_country):
         return False
+    if f.place is not None and satisfies(BriefItem(text="place", kind="require", source="inferred", field="place",
+                                                   value=f.place), {"place": c.place()}) is not True:
+        return False
     if f.min_review_score is not None and (c.review_score is None or c.review_score < f.min_review_score):
         return False
     if f.languages_required:
@@ -113,10 +141,6 @@ def soft_matches(variant: SearchVariant, candidates: list[Candidate]) -> int | N
     return sum(matches_soft(c, variant) for c in candidates)
 
 
-def _probed_item(brief: Brief, probe: str) -> BriefItem | None:
-    return next((i for i in brief.locked() if i.field is not None and i.text.casefold() == probe.casefold()), None)
-
-
 async def run_variant(
     *,
     variant: SearchVariant,
@@ -126,22 +150,37 @@ async def run_variant(
     reranker,
     os_client,
     session_factory,
-    now: datetime,
 ) -> list[Candidate]:
-    item = _probed_item(brief, variant.probe) if variant.probe else None
-    if variant.probe and item is None:
-        raise ValueError(f"probe {variant.probe!r} matches no locked requirement of the brief")
-    hard = hard_filters(brief, lifted=variant.probe)
-    filters = variant.filters.to_search_filters(variant.query, variant.max_age_hours)
-    embedding = await asyncio.to_thread(encode_query, biencoder, variant.query)
-    hits = await hybrid_retrieve(os_client, embedding, filters, size=CANDIDATE_WINDOW, hard=hard)
-    ranked = await asyncio.to_thread(
-        rerank_scored, reranker, hits, variant.query, embedding, CANDIDATE_WINDOW
+    return await _retrieve(
+        variant.filters.to_search_filters(variant.query, variant.max_age_hours),
+        hard_filters(brief, loosened=variant.loosened()), search_index=search_index, biencoder=biencoder,
+        reranker=reranker, os_client=os_client, session_factory=session_factory,
     )
+
+
+async def closest_search(*, query: str, brief: Brief, max_age_hours: int, biencoder, reranker, os_client,
+                         session_factory) -> list[Candidate]:
+    """The search for the jobs closest to the brief: the stated requirements as soft filters (as
+    basic search applies a query's filters without "strictly"), so the nearest jobs surface even
+    when none meets them all. Its jobs carry search_index 0: no logged search found them."""
+    stated = hard_filters(brief)
+    filters = (stated.model_copy(update={"semantic_query": query, "max_age_hours": max_age_hours}) if stated
+               else SearchFilters(semantic_query=query, max_age_hours=max_age_hours))
+    return await _retrieve(filters, None, search_index=0, biencoder=biencoder, reranker=reranker,
+                           os_client=os_client, session_factory=session_factory)
+
+
+async def _retrieve(filters: SearchFilters, hard: SearchFilters | None, *, search_index: int, biencoder, reranker,
+                    os_client, session_factory) -> list[Candidate]:
+    """Retrieval, rerank and a Postgres lookup of one search, as candidates."""
+    query = filters.semantic_query
+    embedding = await asyncio.to_thread(encode_query, biencoder, query)
+    hits = await hybrid_retrieve(os_client, embedding, filters, size=CANDIDATE_WINDOW, hard=hard)
+    ranked = await asyncio.to_thread(rerank_scored, reranker, hits, query, embedding, CANDIDATE_WINDOW)
     ids = [uuid.UUID(hit["_source"]["job_id"]) for hit, _ in ranked]
     async with session_factory() as session:
         rows = await session.execute(
-            select(Job.id, Job.location, Job.office, Job.salary_range).where(Job.id.in_(ids))
+            select(Job.id, Job.location, Job.salary_range).where(Job.id.in_(ids))
         )
         extra = {str(r.id): r for r in rows}
 
@@ -159,7 +198,8 @@ async def run_variant(
             title=src.get("title") or "",
             company=src.get("company_name"),
             location=row.location if row else None,
-            job_country=job_country(row.location, row.office) if row else None,
+            job_cities=list(src.get("job_cities") or []),
+            job_countries=list(src.get("job_countries") or []),
             company_country=src.get("country"),
             location_type=src.get("location_type"),
             seniority=src.get("seniority"),
@@ -173,7 +213,5 @@ async def run_variant(
             text=text,
             search_index=search_index,
         )
-        if item is not None and satisfies(item, c.fields(now)) is not True:
-            c.breaks = [item.text]  # the brief's own text, not the probe as the agent typed it
         candidates.append(c)
     return candidates

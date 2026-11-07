@@ -46,7 +46,7 @@ export default function AgentRun({ run, running, onAnswer, part }: Props) {
           const count = s.matches === null ? newJobs : `${s.matches} matching its filters, ${newJobs}`
           return (
             <div key={i} style={{ fontSize: '0.78rem', opacity: 0.6, marginBottom: '0.15rem' }}>
-              {s.probe ? `what if ${s.probe}: ` : ''}"{s.query}" — {count}{windowText(s.max_age_hours)}
+              {s.loosened.length ? `loosened (${s.loosened.join('; ')}): ` : ''}"{s.query}" — {count}{windowText(s.max_age_hours)}
             </div>
           )
         })}

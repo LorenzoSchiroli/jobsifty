@@ -9,6 +9,7 @@ import re
 from typing import Literal, get_args
 
 from backend.search.countries import canonical_country
+from backend.search.places import city_name
 
 LocationType = Literal["remote", "hybrid", "on-site"]
 Seniority = Literal["junior", "mid", "senior", "staff", "lead", "principal", "director"]
@@ -97,3 +98,16 @@ def normalise_country(value) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"company_country needs a country name, got {value!r}")
     return canonical_country(value) or value.strip()
+
+
+def normalise_places(value) -> list[str]:
+    """Places a job may be in, as the page names them: canonical countries and English city names
+    ("München" is "Munich"); a city the table does not know is kept as written."""
+    places = []
+    for v in _parts(value):
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(f"place needs city or country names, got {v!r}")
+        places.append(canonical_country(v) or city_name(v))
+    if not places:
+        raise ValueError("place needs a value")
+    return list(dict.fromkeys(places))

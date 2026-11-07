@@ -71,6 +71,9 @@ export default function JobCard({ job }: { job: Job }) {
       }}
     >
       <div style={{ fontWeight: 600 }}>{job.title} — {job.company.name}</div>
+      {(job.misses?.length ?? 0) > 0 && (
+        <div style={{ fontSize: '0.8rem', color: '#f87171', marginTop: '0.3rem' }}>Misses: {job.misses!.join(', ')}</div>
+      )}
       {(typeof job.fit_score === 'number' || job.fit_rationale || job.fit_gaps || (job.trade_offs?.length ?? 0) > 0) && (
         <div style={{ marginTop: '0.4rem' }}>
           {typeof job.fit_score === 'number' && (

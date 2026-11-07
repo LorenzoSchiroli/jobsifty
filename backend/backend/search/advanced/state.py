@@ -6,23 +6,11 @@ from langgraph.graph.message import add_messages
 
 
 def merge_pool(left: dict[str, dict] | None, right: dict[str, dict] | None) -> dict[str, dict]:
-    """Pool entries by job_id; a job found twice keeps its higher-scored entry.
-
-    breaks stays only while every search that found the job was a probe breaking something:
-    one normal search (empty breaks) clears it, two probes give the union. Clearing is consistent
-    because every search applies all the other stated requirements as hard filters: a normal
-    search's job meets them all, and a probe's job with empty breaks met the lifted one too.
-    """
+    """Pool entries by job_id; a job found twice keeps its higher-scored entry."""
     merged = dict(left or {})
     for job_id, new in (right or {}).items():
         old = merged.get(job_id)
-        if old is None:
-            merged[job_id] = new
-            continue
-        best = new if new["score"] > old["score"] else old
-        old_breaks, new_breaks = old.get("breaks") or [], new.get("breaks") or []
-        breaks = [] if not (old_breaks and new_breaks) else list(dict.fromkeys([*old_breaks, *new_breaks]))
-        merged[job_id] = {**best, "breaks": breaks}
+        merged[job_id] = new if old is None or new["score"] > old["score"] else old
     return merged
 
 
@@ -48,8 +36,7 @@ class AgentState(TypedDict, total=False):
     short_ids: Annotated[dict[str, str], merge_dicts]  # short id -> job_id
     searches: Annotated[list[dict], operator.add]
     searches_run: Annotated[int, operator.add]
-    probes_run: Annotated[int, operator.add]
-    window_hours: int  # the run's window: the widest a regular search used (from the remembered window, if any); one step above it is allowed
+    window_hours: int  # the widest posting window a search of the run used (tools.run_window)
     questions_asked: Annotated[int, operator.add]
     turns: Annotated[int, operator.add]
     unlock_turn: int  # the turn of a free-text answer; the next turn may change locked items
@@ -58,7 +45,8 @@ class AgentState(TypedDict, total=False):
     notes: str
     finished: bool
     status: str
-    shortlist: list[dict]
+    shortlist: list[dict]  # the matches: jobs meeting every stated requirement
+    closest: list[dict]  # the closest jobs filling the result up to MAX_SHORTLIST, each with its misses
     summary: str
     usage: Annotated[dict, add_usage]  # {"llm_calls", "input_tokens", "output_tokens"}
 

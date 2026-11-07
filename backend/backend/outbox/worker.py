@@ -12,6 +12,7 @@ from backend.database import get_session_factory
 from backend.live import job_date, job_live_days, live_since
 from backend.models import Outbox, Job, Company
 from backend.opensearch_client import get_opensearch, get_existing_job_ids, INDEX_NAME
+from backend.search.places import places
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,10 @@ RECONCILE_SLICE_SIZE = 250
 def _build_job_doc(job: Job) -> dict:
     c = job.company
     posted_at = (job.posted_at or job.created_at).isoformat()
+    cities, countries = places(job.location or job.office)
     return {
+        "job_cities": cities,
+        "job_countries": countries,
         "job_id": str(job.id),
         "company_id": str(job.company_id),
         "company_name": c.name if c else None,

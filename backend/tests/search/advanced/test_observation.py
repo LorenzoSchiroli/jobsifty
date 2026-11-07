@@ -6,7 +6,6 @@ from backend.search.advanced.observation import (
     Candidate,
     assign_short_ids,
     header_line,
-    job_country,
     job_line,
     render_observation,
 )
@@ -19,9 +18,9 @@ NOW = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
 def _cand(job_id, **kw) -> Candidate:
     base = dict(
         job_id=job_id, score=0.9, title="ML Engineer", company="Acme", location=None,
-        job_country=None, company_country=None, location_type=None, seniority=None,
+        job_cities=[], job_countries=[], company_country=None, location_type=None, seniority=None,
         employment_type=None, languages=[], salary=None, is_startup=None, is_consulting=None,
-        posted_at="2026-11-01T12:00:00+00:00", text="", search_index=1, breaks=[],
+        posted_at="2026-11-01T12:00:00+00:00", text="", search_index=1,
     )
     return Candidate(**(base | kw))
 
@@ -31,23 +30,10 @@ def sample_candidates():
     return [
         _cand("a1f3aaaa-0000", location_type="remote", location="Remote", seniority="senior"),
         _cand("b2c4bbbb-0000", location_type="remote", location="Berlin, Germany",
-              job_country="Germany", salary="€85–100k", is_startup=True),
+              job_cities=["berlin"], job_countries=["Germany"], salary="€85–100k", is_startup=True),
         _cand("c3d5cccc-0000", location_type="hybrid", languages=["en", "de"]),
         _cand("d4e6dddd-0000", location_type=None, posted_at="2026-10-20T12:00:00+00:00"),
     ]
-
-
-@pytest.mark.parametrize("location,office,expected", [
-    ("Berlin, Germany", None, "Germany"),
-    ("Milan, IT", None, "Italy"),
-    (None, "Remote, Netherlands", "Netherlands"),
-    ("Anywhere", None, None),
-    ("San Francisco, CA", None, None),
-    ("Wilmington, DE", None, None),
-    ("Berlin, Germany", "Remote, CA", "Germany"),
-])
-def test_job_country(location, office, expected):
-    assert job_country(location, office) == expected
 
 
 def test_short_ids_are_unique_prefixes():
@@ -68,24 +54,22 @@ def test_short_ids_do_not_reuse_a_taken_prefix():
 def test_observation_shows_counts_lines_and_pool(sample_candidates):
     obs = render_observation(1, SearchVariant(query="ml engineer"), None, sample_candidates,
                              assign_short_ids([c.job_id for c in sample_candidates], {}),
-                             pool_size=41, now=NOW)
+                             pool_size=41, now=NOW, strict=3)
     assert obs.splitlines()[0].startswith('search 1 "ml engineer"')
     assert "remote 2" in obs and "job in: Germany 1" in obs and "unknown 1" in obs
+    assert "cities: Berlin 1" in obs and "meeting every stated requirement: 3 of 4" in obs
     assert obs.rstrip().endswith("pool: 41 distinct jobs")
     assert sum(1 for line in obs.splitlines() if line.lstrip().startswith("[")) == min(8, len(sample_candidates))
     assert header_line(obs) == obs.splitlines()[0]
 
 
-def test_probe_header_and_breaks(sample_candidates):
-    sample_candidates[0].breaks = ["remote only"]
-    variant = SearchVariant(query="ml", probe="remote only")
-    locked = SearchFilters(semantic_query="", max_age_hours=None, seniority="senior")
-    obs = render_observation(2, variant, locked, sample_candidates,
+def test_loosened_header(sample_candidates):
+    locked = SearchFilters(semantic_query="", max_age_hours=None, seniority="senior", places=["Munich", "Austria"])
+    obs = render_observation(2, SearchVariant(query="ml"), locked, sample_candidates,
                              assign_short_ids([c.job_id for c in sample_candidates], {}),
-                             pool_size=4, now=NOW)
-    assert '· probe: lifts "remote only"' in obs.splitlines()[0]
-    assert "seniority=senior" in obs.splitlines()[0]
-    assert "· breaks: remote only" in obs
+                             pool_size=4, now=NOW, strict=1, loosened=["in Munich → in Munich or Austria"])
+    assert "· loosened: in Munich → in Munich or Austria" in obs.splitlines()[0]
+    assert "seniority=senior" in obs.splitlines()[0] and "place=Munich/Austria" in obs.splitlines()[0]
 
 
 def test_job_line_format_and_unknown_salary():
@@ -97,7 +81,7 @@ def test_job_line_format_and_unknown_salary():
 
 
 def test_candidate_dict_round_trip():
-    c = _cand("a1f3aaaa-0000", languages=["en"], breaks=["x"], salary="€1k")
+    c = _cand("a1f3aaaa-0000", languages=["en"], job_cities=["munich"], salary="€1k")
     assert Candidate.from_dict(c.to_dict()) == c
 
 
@@ -106,7 +90,7 @@ def test_missing_or_naive_posted_at_does_not_break_rendering(sample_candidates):
     sample_candidates[1].posted_at = "2026-11-01T12:00:00"
     obs = render_observation(1, SearchVariant(query="ml"), None, sample_candidates,
                              assign_short_ids([c.job_id for c in sample_candidates], {}),
-                             pool_size=4, now=NOW)
+                             pool_size=4, now=NOW, strict=4)
     assert "age unknown 1" in obs
     assert "·  ·" not in obs
 
@@ -114,5 +98,5 @@ def test_missing_or_naive_posted_at_does_not_break_rendering(sample_candidates):
 def test_soft_country_is_described_as_company_country():
     from backend.search.advanced.search import VariantFilters
     v = SearchVariant(query="ml", filters=VariantFilters(company_country="DE"))
-    obs = render_observation(1, v, None, [], {}, pool_size=0, now=NOW)
+    obs = render_observation(1, v, None, [], {}, pool_size=0, now=NOW, strict=0)
     assert "company_country=Germany" in obs.splitlines()[0]  # an ISO code is normalised to the name

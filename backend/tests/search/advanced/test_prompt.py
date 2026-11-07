@@ -38,7 +38,7 @@ def test_system_prompt_carries_rules_budget_and_pool_digest(ctx_factory):
              "short_ids": {"a1f3": JOB_A}}
     prompt = system_prompt(state, ctx_factory(preference_memory="likes startups"))
     assert "One tool call per turn" in prompt and "up to 3 variants" in prompt
-    assert "turns 4, searches 8, probes 2, questions 2" in prompt
+    assert "turns 4, searches 8, questions 2" in prompt
     assert "pool: 1 jobs, best: [a1f3] ML Engineer (0.91)" in prompt
     assert "likes startups" in prompt
 
@@ -49,22 +49,28 @@ def test_system_prompt_asks_for_the_cv_languages_as_an_inferred_item(ctx_factory
     assert "inferred require item on languages_required" in prompt
 
 
-def test_window_rule_takes_the_first_step_from_the_ladder(ctx_factory, monkeypatch):
-    monkeypatch.setenv("JOB_LIVE_DAYS", "2")  # the ladder is only the live window: 48 hours
+def test_the_starting_window_is_never_wider_than_the_live_window(ctx_factory, monkeypatch):
+    monkeypatch.setenv("JOB_LIVE_DAYS", "2")
     prompt = system_prompt({"turns": 0}, ctx_factory())
-    assert "which starts at 48 (2 days)" in prompt and "instead of 2 days" in prompt
+    assert "starting at 48 (2 days)" in prompt and "instead of 2 days" in prompt
     assert "72 (3 days)" not in prompt
 
 
-def test_system_prompt_states_the_gradual_window_rule_with_the_live_maximum(ctx_factory, monkeypatch):
+def test_system_prompt_leaves_widening_to_the_agent_up_to_the_live_window(ctx_factory, monkeypatch):
     monkeypatch.setenv("JOB_LIVE_DAYS", "10")
     prompt = system_prompt({"turns": 0}, ctx_factory())
-    assert "too few or unsatisfying" in prompt and "one step per search" in prompt
-    assert "72 (3 days) -> 168 (7 days) -> 240 (10 days)" in prompt
+    assert "too few or unsatisfying, as far as you judge" in prompt and "one step per search" not in prompt
+    assert "nothing older than 240 hours (10 days)" in prompt
     assert "that the preference memory or the CV states (only then: never invent one)" in prompt
     assert "inferred posted_within_days item" in prompt and "The run then starts at that window" in prompt
     assert "never call it a requirement" in prompt and "it wins over a remembered one" in prompt
-    assert "start at 3 days anyway" not in prompt  # the remembered window now sets the start
-    assert "posted_within_days" in prompt and "Never change it yourself" in prompt
+    assert "A wider max_age_hours loosens it" in prompt
     assert "finish notes say so" in prompt
-    assert "at most 336" not in prompt and "you may widen max_age_hours" not in prompt  # the old wording is gone
+
+
+def test_system_prompt_explains_the_ten_results_and_loosening(ctx_factory):
+    prompt = system_prompt({"turns": 0}, ctx_factory())
+    assert "A ranked list of 10 jobs" in prompt and "fill it up" in prompt
+    assert "loosen stated items (`loosen`)" in prompt and "then Austria and Switzerland" in prompt and "never regions" in prompt
+    assert "never matches" in prompt and "ask_user instead" in prompt
+    assert "probe" not in prompt

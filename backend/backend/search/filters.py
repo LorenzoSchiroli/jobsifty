@@ -2,6 +2,7 @@ from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel
 
 from backend.search.countries import canonical_country, country_values
+from backend.search.places import split_places
 
 _BOOST = 2.0
 
@@ -18,6 +19,8 @@ class SearchFilters(BaseModel):
     location_type: str | list[str] | None = None
     seniority: str | list[str] | None = None
     languages_required: list[str] | None = None
+    # Where the job is: cities and countries, any of them (search/places.py); `country` is the company's
+    places: list[str] | None = None
     # Jobs posted within this many hours, a hard limit; the query can widen it ("last 2 weeks")
     max_age_hours: int | None = 72
     semantic_query: str
@@ -59,6 +62,11 @@ def build_clauses(filters: SearchFilters) -> list[dict]:
                 if strict
                 else {"terms": {"country": values, "boost": _BOOST}}
             )
+    if filters.places:
+        cities, countries = split_places(filters.places)
+        either = [{"terms": {field: values}} for field, values in (("job_cities", cities), ("job_countries", countries))
+                  if values]
+        clauses.append({"bool": {"should": either, "minimum_should_match": 1} | ({} if strict else {"boost": _BOOST})})
     if filters.min_review_score is not None:
         clauses.append(rng("review_score", filters.min_review_score))
     if filters.min_financial_health_score is not None:
@@ -106,6 +114,7 @@ def describe(filters: SearchFilters) -> ActiveFilters:
         ("location_type", lambda v: _any(v)),
         ("employment_type", lambda v: _any(v)),
         ("languages_required", lambda v: ", ".join(lang.capitalize() for lang in v) + " required"),
+        ("places", lambda v: "in " + (", ".join(v[:-1]) + " or " + v[-1] if len(v) > 1 else v[0])),
         ("country", lambda v: f"company in {canonical_country(v) or v}"),
         ("is_startup", lambda v: "startup" if v else "not a startup"),
         ("is_consulting", lambda v: "consulting" if v else "no consulting"),

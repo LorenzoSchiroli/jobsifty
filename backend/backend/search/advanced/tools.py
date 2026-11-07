@@ -20,10 +20,14 @@ from pydantic import BaseModel, Field, ValidationError
 from backend.search.advanced.brief import (
     Brief,
     BriefItem,
+    MAX_ITEM_WORDS,
     LockedRequirementError,
+    bundled,
+    filter_label,
     hard_filters,
     merge_brief,
     inferred_window,
+    misses,
     relax,
     stated_window,
 )
@@ -31,19 +35,18 @@ from backend.search.advanced.budget import (
     CANDIDATE_WINDOW,
     INSPECT_CHARS,
     MAX_INSPECT,
-    MAX_PROBES,
     MAX_QUESTIONS,
     MAX_SEARCHES,
     MAX_TURNS,
     MAX_VARIANTS,
-    window_limit,
-    window_steps,
+    START_WINDOW_HOURS,
+    live_window_hours,
 )
 from backend.search.advanced.context import AgentContext
-from backend.search.advanced.observation import assign_short_ids, header_line, render_observation, window_note
+from backend.search.advanced.observation import assign_short_ids, brief_names, header_line, render_observation
 from backend.search.advanced.search import SearchVariant, run_variant, soft_matches
 from backend.search.advanced.state import AgentState, merge_pool
-from backend.search.filters import SearchFilters, window_label
+from backend.search.filters import window_label
 
 logger = logging.getLogger(__name__)
 
@@ -58,20 +61,13 @@ def _reply(runtime: Runtime, content: str, **update) -> Command:
     return Command(update={**update, "messages": [ToolMessage(content, tool_call_id=runtime.tool_call_id)]})
 
 
-def _locked_dict(locked: SearchFilters | None) -> dict:
-    if locked is None:
-        return {}
-    values = locked.model_dump(exclude_none=True, exclude={"semantic_query", "strict", "max_age_hours"})
-    if "country" in values:
-        values["company_country"] = values.pop("country")
-    return values
-
-
 @tool
 def update_brief(items: list[BriefItem], runtime: Runtime, notes: str = "") -> Command | str:
     """Write the whole brief: every requirement you work with, replacing the previous brief.
 
-    Each item is a short phrase (`text`), `kind` require / prefer / avoid, and `source`: "stated"
+    Each item is one requirement in a few words (`text`): never a list or the whole request.
+    "junior remote NLP engineer in Munich, no consulting" is five items: junior, remote, an NLP
+    role, in Munich, no consulting. Each has `kind` require / prefer / avoid, and `source`: "stated"
     when the user said it (in the request or an answer), "inferred" when you read it into the CV,
     the preference memory or the request. When unsure, it is stated, except a `prefer` item, which
     is always inferred: preferences are never locked. Give `field` and `value`
@@ -85,6 +81,9 @@ def update_brief(items: list[BriefItem], runtime: Runtime, notes: str = "") -> C
         proposed = Brief(items=items, notes=notes)
     except ValidationError as e:
         return "Refused: " + "; ".join(err["msg"].removeprefix("Value error, ") for err in e.errors())
+    if lumped := [i.text for i in proposed.items if bundled(i, state.get("query", ""))]:
+        return ("Refused: " + "; ".join(f"'{t}'" for t in lumped) + " holds several requirements. Give one item "
+                f"per requirement, at most {MAX_ITEM_WORDS} words and no commas: 'junior', 'remote', 'in Munich'.")
     current = _brief(state)
     unlock_allowed = state.get("unlock_turn") == state.get("turns", 0) - 1
     try:
@@ -95,58 +94,40 @@ def update_brief(items: list[BriefItem], runtime: Runtime, notes: str = "") -> C
     return _reply(runtime, "ok", brief=brief.model_dump(), brief_written=True)
 
 
-def _refusal(variant: SearchVariant, brief: Brief, searches: int, probes: int) -> str | None:
+def _refusal(variant: SearchVariant, brief: Brief, searches: int) -> str | None:
     if searches >= MAX_SEARCHES:
         return f"search budget of {MAX_SEARCHES} is spent"
-    if variant.probe is None:
-        return None
-    if probes >= MAX_PROBES:
-        return f"probe budget of {MAX_PROBES} is spent"
-    item = next((i for i in brief.locked() if i.text.casefold() == variant.probe.casefold()), None)
-    if item is None:
-        return (f'probe "{variant.probe}" is not a stated requirement of the brief; '
-                "a probe lifts one stated item, named by its exact text")
-    if item.field is None:
-        return (f'"{item.text}" maps to no index field, so no search can lift it; '
-                "check it on the job lines instead")
+    stated = {i.field for i in brief.locked() if i.field is not None}
+    if missing := [l.field for l in variant.loosen if l.field not in stated]:
+        return (f"nothing stated on {', '.join(missing)} to loosen; loosen names the field of a stated item "
+                "(a soft filter ranks by anything else)")
     return None
 
 
-def _widest(state: AgentState, brief: Brief) -> int:
-    """The run's window so far: the widest its regular searches used, at least the starting window.
-
-    The run starts at the first ladder step, or at the window the preference memory or the CV
-    states (the brief's inferred posted_within_days item, up to the live window). An inferred item
-    written after the first search counts from the next one, and never narrows a window already used.
-    """
-    widest = state.get("window_hours") or window_steps()[0]
-    if (remembered := inferred_window(brief)) is not None:
-        widest = max(widest, min(remembered.value * 24, window_steps()[-1]))
-    return widest
+def run_window(state: AgentState, brief: Brief) -> int:
+    """The posting window of a search whose variant gives none: the user's stated window, else the
+    widest window the run has used, at least the starting one (the window the preference memory
+    or the CV states, else START_WINDOW_HOURS). Never wider than the live window."""
+    if (stated := stated_window(brief)) is not None:
+        return min(stated.value * 24, live_window_hours())
+    remembered = inferred_window(brief)
+    start = min(remembered.value * 24 if remembered else START_WINDOW_HOURS, live_window_hours())
+    return max(start, state.get("window_hours") or 0)
 
 
-def _window(variant: SearchVariant, brief: Brief, widest: int) -> tuple[int, str]:
-    """The max_age_hours a variant runs on, and the rule behind it (a key of WINDOW_REASONS), so
-    that no search (a probe included) reaches older jobs than the run has agreed to.
-
-    A window the user stated is used as is (up to the live window); a probe lifting it asks what one
-    step wider would give, so it is cut to the step above the stated window. Without a stated window
-    a search is cut to one step above `widest` (the run's window, see _widest), and a probe to
-    `widest` itself: it differs from a regular search only by the item it lifts. A variant without
-    max_age_hours asks for the run's window (a window probe: the step above the stated one).
-    """
+def _loosened(variant: SearchVariant, brief: Brief) -> list[str]:
+    """What the variant eases, in the filters panel's words: "in Munich → in Munich, Austria or
+    Switzerland", "without remote", and a window wider than the stated one."""
+    by_field = {i.field: i for i in brief.locked() if i.field is not None}
+    out = []
+    for l in variant.loosen:
+        item = by_field[l.field]
+        out.append(f"without {filter_label(item)}" if l.value is None
+                   else f"{filter_label(item)} → {filter_label(item.model_copy(update={'value': l.value}))}")
     stated = stated_window(brief)
-    if stated is None:
-        cut, reason = (widest, "probe") if variant.probe is not None else (window_limit(widest), "ladder")
-        default = widest
-    else:
-        stated_hours = min(stated.value * 24, window_steps()[-1])
-        if variant.probe is None or variant.probe.casefold() != stated.text.casefold():
-            return stated_hours, "stated"
-        cut, reason = window_limit(stated_hours), "window_probe"
-        default = cut
-    asked = default if variant.max_age_hours is None else variant.max_age_hours
-    return min(asked, cut), reason
+    if stated is not None and variant.max_age_hours > stated.value * 24:
+        out.append(f"posted in the {window_label(stated.value * 24)} → {window_label(variant.max_age_hours)}")
+    return out
 
 
 @tool
@@ -154,13 +135,15 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
     """Run 1-3 searches; each returns counts over its top 30 jobs and the top 8 job lines.
 
     Per variant: `query` (semantic text), `filters` (soft: they rank matches higher but do not
-    exclude), `max_age_hours` (posting age window; leave it out for the run's window, which starts
-    at 72 or the remembered window and widens one step per search, 72 -> 168 -> the live window;
-    a window the user stated is used as is) and `probe`. The brief's stated
-    requirements are added as hard filters to every variant; do not repeat them. `probe` names
-    one stated item's exact text to lift it, for a what-if count to ask the user about; probe
-    jobs are flagged with what they break. `company_country` is where the company is based, not
-    the job: check job locations in the lines.
+    exclude), `max_age_hours` (posting age window, up to the live window; leave it out for the
+    run's window: the user's stated one, else the widest used so far, starting at 72 or the
+    remembered window) and `loosen`. The brief's stated requirements are added as hard filters to
+    every variant; do not repeat them. `loosen` eases stated items for this one search: each names
+    a stated item's field and the nearer value to search on (place ["Munich"] -> ["Munich",
+    "Augsburg", "Austria", "Switzerland"]), or no value to drop the filter; a max_age_hours wider
+    than a stated window loosens it too. A job that misses a stated item is never a match: it
+    fills the result among the closest jobs. `place` is where the job is; `company_country` is
+    where the company is based.
     """
     ctx, state = runtime.context, runtime.state
     if not state.get("brief_written"):
@@ -169,30 +152,29 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
     if not 1 <= len(variants) <= MAX_VARIANTS:
         return f"Refused: give 1 to {MAX_VARIANTS} variants (at most {MAX_VARIANTS} per call)."
     brief = _brief(state)
-    searches_run, probes_run = state.get("searches_run", 0), state.get("probes_run", 0)
+    searches_run = state.get("searches_run", 0)
     index = len(state.get("searches", []))
     pool = dict(state.get("pool") or {})
     short_ids = dict(state.get("short_ids") or {})
     new_pool: dict[str, dict] = {}
     new_short: dict[str, str] = {}
     log: list[dict] = []
-    widest = _widest(state, brief)
-    new_widest = widest
-    ran = probes = 0
+    default_hours = run_window(state, brief)
+    widest = default_hours
+    ran = 0
     parts: list[str] = []
     for variant in variants:
-        if refusal := _refusal(variant, brief, searches_run + ran, probes_run + probes):
+        if refusal := _refusal(variant, brief, searches_run + ran):
             parts.append(f'Refused "{variant.query}": {refusal}.')
             continue
-        hours, reason = _window(variant, brief, widest)
-        asked = hours if variant.max_age_hours is None else variant.max_age_hours  # left out: the run's window
-        variant = variant.model_copy(update={"max_age_hours": hours})
-        what_if = f' without "{variant.probe}"' if variant.probe else ""
-        runtime.stream_writer({"status": f'Searching "{variant.query}"{what_if} · {window_label(hours)}'})
-        try:  # the probe is already checked: any error here is unexpected
+        variant = variant.model_copy(update={"max_age_hours": variant.max_age_hours or default_hours})
+        loosened = _loosened(variant, brief)
+        eased = " · loosened" if loosened else ""
+        runtime.stream_writer({"status": f'Searching "{variant.query}"{eased} · {window_label(variant.max_age_hours)}'})
+        try:  # the loosened fields are already checked: any error here is unexpected
             candidates = await run_variant(
                 variant=variant, brief=brief, search_index=index + 1, biencoder=ctx.biencoder,
-                reranker=ctx.reranker, os_client=ctx.os_client, session_factory=ctx.session_factory, now=ctx.now,
+                reranker=ctx.reranker, os_client=ctx.os_client, session_factory=ctx.session_factory,
             )
         except Exception as e:  # a failed search is reported, the others still run
             logger.exception("advanced search variant failed")
@@ -200,9 +182,7 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
             continue
         index += 1
         ran += 1
-        probes += variant.probe is not None
-        if variant.probe is None:  # a what-if search does not widen the run's window
-            new_widest = max(new_widest, variant.max_age_hours)
+        widest = max(widest, variant.max_age_hours)
         found = {c.job_id: c.to_dict() for c in candidates}
         new_jobs = sum(c.job_id not in pool for c in candidates[:CANDIDATE_WINDOW])  # before this search
         new_pool = merge_pool(new_pool, found)
@@ -210,24 +190,24 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
         added = assign_short_ids([c.job_id for c in candidates], short_ids)
         short_ids |= added
         new_short |= added
-        locked = hard_filters(brief, lifted=variant.probe)
-        note = window_note(asked, variant.max_age_hours, reason)
-        observation = render_observation(index, variant, locked, candidates, short_ids, len(pool), ctx.now, note)
-        header = header_line(observation)
+        locked = hard_filters(brief, loosened=variant.loosened())
+        strict = sum(not misses(brief, c.fields(ctx.now)) for c in candidates[:CANDIDATE_WINDOW])
+        observation = render_observation(index, variant, locked, candidates, short_ids, len(pool), ctx.now,
+                                         strict, loosened)
         log.append({
             "index": index,
             "query": variant.query,
-            "filters": variant.filters.model_dump(exclude_none=True) | {"locked": _locked_dict(locked)},
+            "filters": variant.filters.model_dump(exclude_none=True) | {"locked": brief_names(locked)},
             "max_age_hours": variant.max_age_hours,
-            "probe": variant.probe,
+            "loosened": loosened,
             # jobs of the window meeting every soft filter; None when the search set none
             "matches": soft_matches(variant, candidates[:CANDIDATE_WINDOW]),
             "new_jobs": new_jobs,  # jobs of the window not in the pool before this search
-            "header": header,
+            "header": header_line(observation),
         })
         parts.append(observation)
     return _reply(runtime, "\n\n".join(parts), pool=new_pool, short_ids=new_short, searches=log,
-                  searches_run=ran, probes_run=probes, window_hours=new_widest)
+                  searches_run=ran, window_hours=widest)
 
 
 @tool
@@ -271,9 +251,11 @@ def _answer_text(value) -> str:
 def ask_user(question: str, options: list[QuestionOption], runtime: Runtime) -> Command | str:
     """Ask the user one question and wait for the answer: a chosen option or free text.
 
-    Only to relax a stated requirement that keeps results thin or weak (with numbers from a
-    probe, and always an option that keeps it), or to settle a trade-off between inferred
-    preferences that the evidence cannot. Never at the start, never twice on the same point.
+    To relax a stated requirement when results are thin and the way to ease it is not obvious
+    (giving up remote, another seniority or language; a nearer place or a wider window you may
+    try yourself with a loosened search), with numbers from a loosened search and always an
+    option that keeps it; or to settle a trade-off between inferred preferences that the
+    evidence cannot. Never at the start, never twice on the same point.
     A chosen option's `relax` is applied for you; after a free-text answer you may change
     stated items in your next update_brief.
     """

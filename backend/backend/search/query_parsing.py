@@ -1,6 +1,7 @@
 import re
 
 from backend.search.countries import COUNTRY_NAMES
+from backend.search.places import CITY_NAMES
 from backend.search.filters import SearchFilters
 
 _NUM_WORDS = {
@@ -49,8 +50,9 @@ _LANGS = [
 ]
 _LANG_ALT = "|".join(_LANGS)
 
-# longest first so multi-word countries win
+# longest first so multi-word names win; a city that is also a country (Luxembourg) is the country
 _COUNTRY_KEYS = sorted(COUNTRY_NAMES, key=len, reverse=True)
+_CITY_KEYS = sorted((k for k in CITY_NAMES if k not in COUNTRY_NAMES), key=len, reverse=True)
 
 _NEG = r"\b(?:(?:no|not|without|excluding)\s+|non[\s-]?)"
 _OP = r"(?:>=|≥|above|over|at least|min(?:imum)?|greater than|more than)\s*"
@@ -121,12 +123,22 @@ def parse_query(query: str) -> SearchFilters:
         strip(r"\b(?:in|fluent in|speaks?|speaking|knowledge of)\s+((?:" + _LANG_ALT +
               r")(?:\s*(?:,|and|&)\s*(?:" + _LANG_ALT + r"))*)\b")
 
-    # --- country ---
-    # Keep country in semantic_query too — BM25 still benefits from the place name.
-    for key in _COUNTRY_KEYS:
-        if re.search(r"\b" + re.escape(key) + r"\b", text):
-            fields["country"] = COUNTRY_NAMES[key]
-            break
+    # --- places ---
+    # Where the job is: every city and country the query names ("in Munich or Austria"), as the
+    # advanced agent's place filter. "company based in X" / "headquartered in X" is the company's
+    # country instead. Place words stay in semantic_query: BM25 still benefits from them.
+    company = re.search(r"\b(?:compan(?:y|ies)\s+(?:based\s+)?in|headquartered in|hq in)\s+(?:the\s+)?(.+)", text)
+    company_key = next((k for k in _COUNTRY_KEYS if company and re.match(re.escape(k) + r"\b", company.group(1))), None)
+    if company_key:
+        fields["country"] = COUNTRY_NAMES[company_key]
+    places: list[tuple[int, str]] = []
+    taken = re.sub(r"\b" + re.escape(company_key) + r"\b", " ", text, count=1) if company_key else text
+    for key, name in [*((k, COUNTRY_NAMES[k]) for k in _COUNTRY_KEYS), *((k, CITY_NAMES[k]) for k in _CITY_KEYS)]:
+        if m := re.search(r"\b" + re.escape(key) + r"\b", taken):
+            places.append((m.start(), name))
+            taken = taken[:m.start()] + " " * len(key) + taken[m.end():]  # "frankfurt am main" is one place
+    if places:
+        fields["places"] = list(dict.fromkeys(name for _, name in sorted(places)))
 
     # --- enum filters (first per field wins) ---
     for pattern, field, value, do_strip in _ENUM_RULES:

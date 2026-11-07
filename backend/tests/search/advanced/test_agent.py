@@ -52,7 +52,7 @@ async def test_full_run_searches_then_finalizes(graph, ctx_factory):
         script=[tool_call("update_brief", {"items": [REMOTE.model_dump()]}),
                 tool_call("search_jobs", {"variants": [{"query": "ml engineer"}]}),
                 tool_call("finish", {"keep": [], "notes": "ok"})],
-        structured=[FinalShortlist(summary="Two good remote roles.", shortlist=[item(FIRST_SHORT_ID, 88)])])
+        structured=[FinalShortlist(summary="Two good remote roles.", jobs=[item(FIRST_SHORT_ID, 88)])])
     out = await graph.ainvoke(initial("remote ml"), config(), context=ctx_factory(llm=llm), durability="exit")
     assert out["status"] == "done" and out["summary"] == "Two good remote roles."
     assert out["shortlist"][0]["fit_score"] == 88 and out["turns"] == 3
@@ -60,13 +60,13 @@ async def test_full_run_searches_then_finalizes(graph, ctx_factory):
 
 async def test_turn_budget_forces_finalize(graph, ctx_factory):
     llm = ScriptedChatModel(script=[tool_call("inspect_job", {"ids": ["zzzz"]})] * 6,
-                            structured=[FinalShortlist(summary="s", shortlist=[])])
+                            structured=[FinalShortlist(summary="s", jobs=[])])
     out = await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=llm), durability="exit")
     assert out["turns"] == 6 and out["status"] == "done"
 
 
 async def test_deadline_forces_finalize(graph, ctx_factory):
-    llm = ScriptedChatModel(script=[], structured=[FinalShortlist(summary="late", shortlist=[])])
+    llm = ScriptedChatModel(script=[], structured=[FinalShortlist(summary="late", jobs=[])])
     ctx = ctx_factory(llm=llm, deadline=time.monotonic() - 1)
     out = await graph.ainvoke(initial("x"), config(), context=ctx, durability="exit")
     assert (out["status"], out["summary"], out.get("turns", 0)) == ("done", "late", 0)
@@ -75,7 +75,7 @@ async def test_deadline_forces_finalize(graph, ctx_factory):
 async def test_no_agent_call_inside_the_finalize_reserve(graph, ctx_factory):
     from backend.search.advanced.budget import FINALIZE_RESERVE_SECONDS
 
-    llm = ScriptedChatModel(script=[], structured=[FinalShortlist(summary="reserved", shortlist=[])])
+    llm = ScriptedChatModel(script=[], structured=[FinalShortlist(summary="reserved", jobs=[])])
     ctx = ctx_factory(llm=llm, deadline=time.monotonic() + FINALIZE_RESERVE_SECONDS - 1)
     out = await graph.ainvoke(initial("x"), config(), context=ctx, durability="exit")
     assert (out["status"], out["summary"], out.get("turns", 0)) == ("done", "reserved", 0)
@@ -84,7 +84,7 @@ async def test_no_agent_call_inside_the_finalize_reserve(graph, ctx_factory):
 async def test_slow_agent_call_is_cut_and_the_run_finalizes(graph, ctx_factory, monkeypatch):
     monkeypatch.setattr("backend.search.advanced.agent.FINALIZE_RESERVE_SECONDS", 0.3)
     llm = ScriptedChatModel(script=[Delayed(5, brief())],
-                            structured=[FinalShortlist(summary="cut short", shortlist=[])])
+                            structured=[FinalShortlist(summary="cut short", jobs=[])])
     ctx = ctx_factory(llm=llm, deadline=time.monotonic() + 0.5)  # 0.2 s for the agent, then finalize
     started = time.monotonic()
     out = await graph.ainvoke(initial("x"), config(), context=ctx, durability="exit")
@@ -95,7 +95,7 @@ async def test_slow_agent_call_is_cut_and_the_run_finalizes(graph, ctx_factory, 
 async def test_slow_finalize_is_cut_and_the_run_ends_partial(graph, ctx_factory, monkeypatch):
     monkeypatch.setattr("backend.search.advanced.agent.FINALIZE_RESERVE_SECONDS", 0.2)
     llm = ScriptedChatModel(script=[tool_call("finish", {"keep": [], "notes": ""})],
-                            structured=[Delayed(5, FinalShortlist(summary="too late", shortlist=[]))])
+                            structured=[Delayed(5, FinalShortlist(summary="too late", jobs=[]))])
     ctx = ctx_factory(llm=llm, deadline=time.monotonic() + 0.5)
     started = time.monotonic()
     out = await graph.ainvoke(initial("x"), config(), context=ctx, durability="exit")
@@ -107,7 +107,7 @@ async def test_agent_model_is_bound_one_call_at_a_time_with_capped_output(graph,
     from backend.search.advanced.budget import AGENT_MAX_TOKENS
 
     llm = ScriptedChatModel(script=[tool_call("finish", {"keep": [], "notes": ""})],
-                            structured=[FinalShortlist(summary="s", shortlist=[])])
+                            structured=[FinalShortlist(summary="s", jobs=[])])
     await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=llm), durability="exit")
     assert llm.bound_kwargs == {"parallel_tool_calls": False, "max_tokens": AGENT_MAX_TOKENS}
 
@@ -124,7 +124,7 @@ async def test_unparsed_tool_call_log_leaves_out_the_arguments(graph, ctx_factor
 
 async def test_plain_text_reply_goes_to_finalize(graph, ctx_factory):
     llm = ScriptedChatModel(script=[AIMessage(content="I think we're done")],
-                            structured=[FinalShortlist(summary="s", shortlist=[])])
+                            structured=[FinalShortlist(summary="s", jobs=[])])
     out = await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=llm), durability="exit")
     assert out["status"] == "done"
 
@@ -140,7 +140,7 @@ async def test_unparsed_tool_call_ends_partial(graph, ctx_factory):
 async def test_no_hits_ends_done_with_empty_results(graph, ctx_factory, run_variant_empty):
     llm = ScriptedChatModel(script=[brief(), search(),
                                     tool_call("finish", {"keep": [], "notes": "nothing"})],
-                            structured=[FinalShortlist(summary="Nothing matches this week.", shortlist=[])])
+                            structured=[FinalShortlist(summary="Nothing matches this week.", jobs=[])])
     out = await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=llm), durability="exit")
     assert (out["status"], out["shortlist"]) == ("done", [])
 
@@ -155,7 +155,7 @@ async def test_llm_error_ends_partial(graph, ctx_factory):
 async def test_a_rate_limited_provider_gives_way_to_the_next_within_a_run(graph, ctx_factory):
     first = ScriptedChatModel(script=[api_error(429, headers={"Retry-After": "60"})])
     second = ScriptedChatModel(script=[brief(), search(), tool_call("finish", {"keep": [], "notes": ""})],
-                               structured=[FinalShortlist(summary="from the second", shortlist=[])])
+                               structured=[FinalShortlist(summary="from the second", jobs=[])])
     llm = agent_llm(first, second)
     out = await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=llm), durability="exit")
     assert (out["status"], out["summary"]) == ("done", "from the second")
@@ -184,7 +184,7 @@ async def test_finalize_error_ends_partial(graph, ctx_factory):
 async def test_tool_raising_runtime_error_is_reported_to_the_agent(graph, ctx_factory):
     llm = ScriptedChatModel(script=[brief(), search(),
                                     tool_call("finish", {"keep": [], "notes": ""})],
-                            structured=[FinalShortlist(summary="s", shortlist=[])])
+                            structured=[FinalShortlist(summary="s", jobs=[])])
     with patch("backend.search.advanced.tools.render_observation", side_effect=RuntimeError("boom")):
         out = await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=llm), durability="exit")
     errors = [m for m in out["messages"] if isinstance(m, ToolMessage) and m.status == "error"]
@@ -195,14 +195,14 @@ async def test_tool_raising_runtime_error_is_reported_to_the_agent(graph, ctx_fa
 async def test_usage_adds_up_every_llm_call(graph, ctx_factory):
     step = tool_call("finish", {"keep": [], "notes": ""})
     step.usage_metadata = {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}
-    llm = ScriptedChatModel(script=[step], structured=[FinalShortlist(summary="s", shortlist=[])])
+    llm = ScriptedChatModel(script=[step], structured=[FinalShortlist(summary="s", jobs=[])])
     out = await graph.ainvoke(initial("x"), config(), context=ctx_factory(llm=llm), durability="exit")
     assert out["usage"] == {"llm_calls": 2, "input_tokens": 100, "output_tokens": 20}
 
 
 async def test_agent_sees_system_prompt_with_cv_then_history(graph, ctx_factory):
     llm = ScriptedChatModel(script=[tool_call("finish", {"keep": [], "notes": ""})],
-                            structured=[FinalShortlist(summary="s", shortlist=[])])
+                            structured=[FinalShortlist(summary="s", jobs=[])])
     await graph.ainvoke(initial("remote ml"), config(), context=ctx_factory(llm=llm, cv_text="CV-TEXT"),
                         durability="exit")
     first = llm.calls[0]
@@ -214,7 +214,7 @@ async def test_ask_user_pauses_and_resumes(graph, ctx_factory):
         script=[brief(), search(),
                 tool_call("ask_user", {"question": "Hybrid ok?", "options": [{"label": "Yes"}, {"label": "No"}]}),
                 tool_call("finish", {"keep": [], "notes": ""})],
-        structured=[FinalShortlist(summary="s", shortlist=[])])
+        structured=[FinalShortlist(summary="s", jobs=[])])
     ctx = ctx_factory(llm=llm)
     await graph.ainvoke(initial("x"), config("t1"), context=ctx, durability="exit")
     snap = await graph.aget_state(config("t1"))

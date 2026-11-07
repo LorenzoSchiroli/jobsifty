@@ -106,3 +106,19 @@ def test_describe_puts_everything_in_required_when_strict_and_skips_what_is_not_
                       industry="fintech", strict=True, max_age_hours=None)
     out = describe(f)
     assert (out.required, out.preferred) == (["full-time"], [])  # "a|b" and industry filter nothing
+
+
+def test_build_clauses_places_match_any_city_or_country():
+    soft = build_clauses(SearchFilters(semantic_query="x", places=["München", "Austria"]))
+    assert soft == [{"bool": {"should": [{"terms": {"job_cities": ["munich"]}},
+                                         {"terms": {"job_countries": ["Austria"]}}],
+                              "minimum_should_match": 1, "boost": 2.0}}]
+    strict = build_clauses(SearchFilters(semantic_query="x", places=["Munich"], strict=True))
+    assert strict == [{"bool": {"should": [{"terms": {"job_cities": ["munich"]}}], "minimum_should_match": 1}}]
+
+
+def test_describe_words_places_as_in():
+    from backend.search.filters import describe
+
+    assert describe(SearchFilters(semantic_query="x", places=["Munich", "Austria", "Switzerland"])).preferred == [
+        "in Munich, Austria or Switzerland"]

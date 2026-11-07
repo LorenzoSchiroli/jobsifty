@@ -39,7 +39,7 @@ ASK_THEN_SEARCH_THEN_FINISH = [BRIEF, SEARCH, ASK, tool_call("search_jobs", {"va
 
 
 def shortlist_of(score: int) -> FinalShortlist:
-    return FinalShortlist(summary="Good match.", shortlist=[ShortlistItem(
+    return FinalShortlist(summary="Good match.", jobs=[ShortlistItem(
         job_id=SHORT, unmet=[], fit_score=score, fits="remote ML", trade_offs=["not a startup"], gaps=["no k8s", "no Go"])])
 
 
@@ -126,6 +126,20 @@ async def test_run_without_question_returns_done(adv_client):
     # the same shape basic search returns: what the user stated is required, with the window used
     assert body["filters"] == {"required": ["remote", "posted in the last 3 days"], "preferred": []}
     assert body["summary"] == "Good match."
+    assert result["misses"] == [] and body["closest"] == []
+
+
+async def test_a_job_missing_a_requirement_comes_back_among_the_closest(adv_client):
+    from backend.search.advanced.brief import BriefItem
+
+    nlp = BriefItem(text="an NLP role", kind="require", source="stated")
+    brief = tool_call("update_brief", {"items": [REMOTE.model_dump(), nlp.model_dump()]})
+    missed = FinalShortlist(summary="No job fully matches.", jobs=[ShortlistItem(
+        job_id=SHORT, unmet=["R1"], fit_score=60, fits="ML, not NLP", trade_offs=[], gaps=[])])
+    ac, _ = adv_client([brief, SEARCH, FINISH], [missed])
+    body = (await ac.post("/jobs/search/advanced", json={"query": "remote NLP role"})).json()
+    assert body["status"] == "done" and body["results"] == []
+    assert [(r["id"], r["misses"], r["fit_score"]) for r in body["closest"]] == [(JOB_A, ["an NLP role"], 60)]
 
 
 async def test_done_run_leaves_no_checkpoint(adv_client, saver):
@@ -189,6 +203,7 @@ async def test_advanced_streams_status_lines_then_the_result(adv_client):
     statuses = [line["status"] for line in lines[:-1]]
     assert statuses == ["Reading your request", "Noting what you asked for", "Thinking about the next step",
                         'Searching "ml engineer" · last 3 days', "Thinking about the next step",
+                        "Looking for the closest jobs",  # one job matches: fewer than 5
                         "Scoring the jobs found and writing the summary"]
     assert lines[-1]["result"]["status"] == "done" and lines[-1]["result"]["results"][0]["fit_score"] == 88
 
