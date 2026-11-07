@@ -1,10 +1,11 @@
 """Finalize: the pool becomes the shortlist with one structured LLM call."""
+import re
 from datetime import datetime
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from backend.search.advanced.brief import Brief, BriefItem, inferred_shortfalls, unmet
+from backend.search.advanced.brief import Brief, BriefItem, inferred_shortfalls, missing_languages, unmet
 from backend.search.advanced.budget import (
     CV_CHARS,
     FINALIZE_CANDIDATES,
@@ -13,7 +14,7 @@ from backend.search.advanced.budget import (
     MAX_SHORTLIST,
 )
 from backend.search.advanced.context import AgentContext
-from backend.search.advanced.observation import Candidate, job_line
+from backend.search.advanced.observation import Candidate, job_line, window_text
 from backend.search.advanced.state import AgentState
 
 RULES = """You write the final shortlist of jobs for one user from the candidates below.
@@ -21,15 +22,18 @@ RULES = """You write the final shortlist of jobs for one user from the candidate
 - Return up to 10 jobs, best fit first. Fewer is fine; never pad the list with jobs that break what the user asked for.
 - job_id is the id in square brackets. fit_score is 0-100. fits: what aligns, one line. trade_offs: what the user gives up, short phrases (may be empty); name only inferred preferences, never a stated requirement. gaps: requirements the user does not meet, short phrases (may be empty).
 - The stated requirements are rules every job in the shortlist must meet.
+- unmet: the labels (R1, R2, ...) of the labelled stated requirements a job does not meet, judged from its text (no field carries them, so only you can check them; for an avoid item, the job is what the user avoids); empty when it meets them all or none is labelled. Code removes every job with an unmet label, so the summary counts and names only the jobs it leaves.
 - Only the stated requirements are requirements. The inferred preferences (read from the CV, the preference memory or the request) are preferences: in the summary and everywhere else, never call them requirements, and say that jobs meet "the requirements" only of the stated ones.
 - Never mention job ids or short ids (the codes in square brackets) anywhere in the output text: summary, fits, trade_offs and gaps name a job by its title and company. Only job_id carries the id.
 - A candidate's "known gaps" and "known trade-offs" lines list what its fields contradict among the inferred preferences: a language the CV does not list is a gap, another work mode, seniority or company type is a trade-off. Code adds them to the job's gaps and trade_offs: do not repeat them, but weigh them in fit_score and never explain them away.
 - Judge by the job text, not the title alone.
-- summary: two or three sentences on what was tried and concluded, honest about trade-offs and about how few good jobs there were, if so."""
+- summary: two or three sentences on what was tried and concluded, honest about trade-offs and about how few good jobs there were, if so. When the posting window says it widened, the summary says so and how far back the jobs go (older postings have more applicants already)."""
 
 
 class ShortlistItem(BaseModel):
     job_id: str = Field(description="the short id in square brackets")
+    # before fit_score, so the model decides it first
+    unmet: list[str] = Field(description="labels (R1, ...) of the labelled stated requirements it does not meet")
     fit_score: int = Field(description="0 to 100")
     fits: str
     trade_offs: list[str]
@@ -70,14 +74,23 @@ def finalize_candidates(state: AgentState, now: datetime) -> list[Candidate]:
     return out
 
 
-def _item_lines(items: list[BriefItem]) -> str:
-    """One line per brief item: its text, its kind when it is not require, and its field and value."""
+def to_judge(brief: Brief) -> dict[str, BriefItem]:
+    """The stated items no field carries ("an NLP or search role"), by label: code cannot check
+    them, so finalize has the model judge each job against them and drops the jobs it says miss one."""
+    return {f"R{n}": i for n, i in enumerate((i for i in brief.locked() if i.field is None), start=1)}
+
+
+def _item_lines(items: list[BriefItem], labels: dict[str, BriefItem] | None = None) -> str:
+    """One line per brief item: its label (to_judge) if it has one, its text, its kind when it is
+    not require, and its field and value."""
+    label_of = {i.text: label for label, i in (labels or {}).items()}
     lines = []
     for i in items:
         details = [] if i.kind == "require" else [i.kind]
         if i.field is not None:
             details.append(f"{i.field}: {'/'.join(map(str, i.value)) if isinstance(i.value, list) else i.value}")
-        lines.append(f"- {i.text}" + (f" ({'; '.join(details)})" if details else ""))
+        label = f"{label_of[i.text]}: " if i.text in label_of else ""
+        lines.append(f"- {label}{i.text}" + (f" ({'; '.join(details)})" if details else ""))
     return "\n".join(lines) or "—"
 
 
@@ -91,13 +104,29 @@ def _candidate_block(c: Candidate, short_id: str, brief: Brief, now: datetime) -
     return block
 
 
-def _merge(code: list[str], model: list[str]) -> list[str]:
-    """The code's phrases, then the model's, without repeats (case-insensitive) or blanks."""
+def _merge(code: list[str], model: list[str], owned: list[str] = ()) -> list[str]:
+    """The code's phrases, then the model's, without repeats (case-insensitive) or blanks.
+
+    `owned` are the languages the code's gaps already cover: a model phrase naming one says the
+    same thing again in other words ("Spanish required" next to "requires Spanish"), so it is dropped."""
+    owned_words = re.compile(r"\b(" + "|".join(map(re.escape, owned)) + r")\b", re.I) if owned else None
     merged: dict[str, str] = {}
-    for phrase in [*code, *model]:
+    for phrase in [*code, *(m for m in model if not (owned_words and owned_words.search(m)))]:
         if phrase.strip():
             merged.setdefault(phrase.strip().casefold(), phrase.strip())
     return list(merged.values())
+
+
+def window_summary(state: AgentState) -> str:
+    """How far back the regular searches looked: one window, or where they started and how far
+    they widened (probes left out: they never widen the run)."""
+    hours = [s["max_age_hours"] for s in state.get("searches") or []
+             if s.get("probe") is None and s.get("max_age_hours") is not None]
+    if not hours:
+        return "—"
+    if max(hours) == hours[0]:
+        return f"last {window_text(hours[0])} throughout"
+    return f"started at last {window_text(hours[0])}, widened to last {window_text(max(hours))}"
 
 
 def finalize_prompt(state: AgentState, ctx: AgentContext, candidates: list[Candidate]) -> list[BaseMessage]:
@@ -109,13 +138,14 @@ def finalize_prompt(state: AgentState, ctx: AgentContext, candidates: list[Candi
         f"CV:\n{ctx.cv_text[:CV_CHARS]}",
         f"Preference memory (inferred):\n{ctx.preference_memory or '—'}",
         "Stated requirements (said by the user; every result must meet these; the only requirements):\n"
-        + _item_lines(stated),
+        + _item_lines(stated, to_judge(brief)),
         "Inferred preferences (not requirements; you may trade them):\n" + _item_lines(inferred),
         f"Brief notes:\n{brief.notes or '—'}",
         f"Agent notes:\n{state.get('notes') or '—'}",
         "Candidates:\n" + "\n".join(_candidate_block(c, by_job.get(c.job_id, c.job_id[:4]), brief, ctx.now)
                                       for c in candidates),
         "Searches:\n" + ("\n".join(s["header"] for s in state.get("searches") or []) or "—"),
+        "Posting window:\n" + window_summary(state),
         # A free-text answer the agent did not write into the brief still counts.
         "Questions and the user's answers:\n" + (
             "\n".join(f"- Q: {q['question']} A: {q['answer']}" for q in state.get("qa") or []) or "—"),
@@ -128,6 +158,7 @@ async def run_finalize(state: AgentState, ctx: AgentContext, timeout: float) -> 
     candidates = finalize_candidates(state, ctx.now)
     by_job = {c.job_id: c for c in candidates}
     short_ids = state.get("short_ids") or {}
+    labels = set(to_judge(brief))
     result: FinalShortlist = await ctx.llm.structured(finalize_prompt(state, ctx, candidates), FinalShortlist,
                                                       FINALIZE_MAX_TOKENS, timeout=timeout)
     shortlist = []
@@ -136,9 +167,13 @@ async def run_finalize(state: AgentState, ctx: AgentContext, timeout: float) -> 
         c = by_job.get(job_id) if job_id else None
         if c is None or not _eligible(c, brief, ctx.now) or any(r["job_id"] == job_id for r in shortlist):
             continue
-        gaps, trade_offs = inferred_shortfalls(brief, c.fields(ctx.now))
-        shortlist.append({**item.model_dump(), "job_id": job_id, "fit_score": max(0, min(100, item.fit_score)),
-                          "gaps": _merge(gaps, item.gaps), "trade_offs": _merge(trade_offs, item.trade_offs)})
+        if labels & {u.strip().strip("[]").upper() for u in item.unmet}:  # unknown labels are ignored
+            continue
+        fields = c.fields(ctx.now)
+        gaps, trade_offs = inferred_shortfalls(brief, fields)
+        owned = missing_languages(brief, fields)
+        shortlist.append({**item.model_dump(exclude={"unmet"}), "job_id": job_id, "fit_score": max(0, min(100, item.fit_score)),
+                          "gaps": _merge(gaps, item.gaps, owned), "trade_offs": _merge(trade_offs, item.trade_offs, owned)})
         if len(shortlist) == MAX_SHORTLIST:
             break
     return {"status": "done", "shortlist": shortlist, "summary": result.summary}

@@ -20,6 +20,14 @@ function Items({ title, items }: { title: string; items: BriefItem[] }) {
   )
 }
 
+// The posting window a search ran on, e.g. " · last 7 days"
+function windowText(hours: number | null): string {
+  if (hours === null) return ''
+  if (hours < 24) return ` · last ${hours} hours`
+  const days = Math.round(hours / 24)
+  return ` · last ${days} day${days === 1 ? '' : 's'}`
+}
+
 interface Props {
   run: AdvancedResponse | null
   running: boolean
@@ -35,6 +43,8 @@ export default function AgentRun({ run, running, onAnswer, part }: Props) {
   const kept = [...(run?.brief?.stated ?? []), ...avoid.filter(i => i.source === 'stated')]
   const fromYou = [...(run?.brief?.inferred ?? []), ...avoid.filter(i => i.source === 'inferred')]
   const hasBrief = kept.length > 0 || fromYou.length > 0
+  // Stated items no field carries are judged by the LLM at the end; a partial run never got there.
+  const unchecked = kept.filter(i => i.field === null).map(i => `"${i.text}"`)
   const question = run?.status === 'question' ? run.question : null
 
   function send(answer: string) {
@@ -55,7 +65,7 @@ export default function AgentRun({ run, running, onAnswer, part }: Props) {
           const count = s.matches === null ? newJobs : `${s.matches} matching its filters, ${newJobs}`
           return (
             <div key={i} style={{ fontSize: '0.78rem', opacity: 0.6, marginBottom: '0.15rem' }}>
-              {s.probe ? `what if ${s.probe}: ` : ''}"{s.query}" — {count}
+              {s.probe ? `what if ${s.probe}: ` : ''}"{s.query}" — {count}{windowText(s.max_age_hours)}
             </div>
           )
         })}
@@ -96,6 +106,7 @@ export default function AgentRun({ run, running, onAnswer, part }: Props) {
           {run.status === 'partial' && (
             <div style={{ fontSize: '0.8rem', color: '#fbbf24', marginBottom: '0.4rem' }}>
               The assistant could not finish (an LLM error or timeout): these are the most relevant jobs found so far, without fit scores.
+              {unchecked.length > 0 && ` They were not checked against ${unchecked.join(', ')}.`}
             </div>
           )}
           {run.summary && <div style={{ fontSize: '0.9rem' }}>{run.summary}</div>}

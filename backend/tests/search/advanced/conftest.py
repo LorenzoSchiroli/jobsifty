@@ -130,7 +130,7 @@ PROBE_JOB_ID = "d4e50000-0000-4000-8000-000000000004"
 def item(short: str, score: int):
     from backend.search.advanced.finalize import ShortlistItem
 
-    return ShortlistItem(job_id=short, fit_score=score, fits="fits", trade_offs=[], gaps=[])
+    return ShortlistItem(job_id=short, unmet=[], fit_score=score, fits="fits", trade_offs=[], gaps=[])
 
 
 @pytest.fixture

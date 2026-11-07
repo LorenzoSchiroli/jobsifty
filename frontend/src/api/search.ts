@@ -57,6 +57,8 @@ export interface SearchLog {
   // jobs of the window no earlier search of the run had found
   new_jobs: number
   probe: string | null
+  // the posting window the search ran on; null when it had none
+  max_age_hours: number | null
 }
 
 export interface AdvancedResponse {

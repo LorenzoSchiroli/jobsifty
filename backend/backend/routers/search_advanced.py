@@ -42,6 +42,7 @@ class SearchLog(BaseModel):
     matches: int | None = None  # jobs of the window meeting every soft filter; None without soft filters
     new_jobs: int = 0  # jobs of the window not found by an earlier search of the run
     probe: str | None = None
+    max_age_hours: int | None = None  # the posting window the search ran on
 
 
 class AdvancedJobResult(JobSearchResponse):
@@ -167,7 +168,8 @@ async def run_agent(graph, checkpointer, ctx: AgentContext, payload, thread_id: 
         status = values.get("status", "partial")
         results = await _results(session, values.get("shortlist") or [])
         searches = [SearchLog(query=s["query"], filters=s.get("filters") or {}, matches=s.get("matches"),
-                              new_jobs=s.get("new_jobs", 0), probe=s.get("probe"))
+                              new_jobs=s.get("new_jobs", 0), probe=s.get("probe"),
+                              max_age_hours=s.get("max_age_hours"))
                     for s in values.get("searches") or []]
         response = AdvancedSearchResponse(
             status=status, thread_id=thread_id, brief=brief, summary=values.get("summary", ""),

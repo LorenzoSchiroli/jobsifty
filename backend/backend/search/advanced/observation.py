@@ -131,7 +131,7 @@ def _describe(filters: SearchFilters | None, skip: tuple[str, ...] = ()) -> str:
     return ", ".join(items) or "none"
 
 
-def _last(hours: int | None) -> str:
+def window_text(hours: int | None) -> str:
     if hours is None:
         return "any time"
     return f"{hours}h" if hours < 24 else f"{hours // 24}d"
@@ -150,7 +150,7 @@ def window_note(asked: int | None, used: int | None, reason: str) -> str | None:
     """The observation line saying why a search ran on another window; None when it ran on the one asked."""
     if asked == used:
         return None
-    return f"window: last {_last(used)} (asked {_last(asked)}); {WINDOW_REASONS[reason]}"
+    return f"window: last {window_text(used)} (asked {window_text(asked)}); {WINDOW_REASONS[reason]}"
 
 
 def header_line(observation: str) -> str:
@@ -182,7 +182,7 @@ def render_observation(
 
     soft = _describe(variant.filters.to_search_filters(variant.query, variant.max_age_hours))
     header = (f'search {index} "{variant.query}" · locked: {_describe(locked)} · soft: {soft}'
-              f" · last {_last(variant.max_age_hours)}")
+              f" · last {window_text(variant.max_age_hours)}")
     if variant.probe:
         header += f' · probe: lifts "{variant.probe}"'
     window = candidates[:CANDIDATE_WINDOW]

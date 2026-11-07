@@ -158,6 +158,21 @@ async def test_finalize_adds_a_gap_for_a_language_the_user_does_not_list(ctx_fac
     assert "known gaps: requires Spanish" in text
 
 
+async def test_finalize_drops_model_phrases_restating_a_code_language_gap(ctx_factory, pool_state):
+    model_item = item("a1f3", 60).model_copy(update={
+        "gaps": ["Spanish required", "no Kubernetes"],
+        "trade_offs": ["SPANISH language likely needed locally", "Spain-based team"]})
+    out = await _run(ctx_factory, _languages_state(pool_state, ["spanish"]), [model_item])
+    assert out["shortlist"][0]["gaps"] == ["requires Spanish", "no Kubernetes"]
+    assert out["shortlist"][0]["trade_offs"] == ["Spain-based team"]  # Spain is not the language
+
+
+async def test_finalize_keeps_language_phrases_when_code_flagged_none(ctx_factory, pool_state):
+    model_item = item("a1f3", 60).model_copy(update={"trade_offs": ["English-only team"]})
+    out = await _run(ctx_factory, _languages_state(pool_state, ["english"]), [model_item])
+    assert out["shortlist"][0]["trade_offs"] == ["English-only team"]
+
+
 async def test_finalize_adds_no_gap_for_english_or_unknown_languages(ctx_factory, pool_state):
     for required in (["english"], []):
         out = await _run(ctx_factory, _languages_state(pool_state, required), [item("a1f3", 90)])
@@ -224,3 +239,56 @@ async def test_finalize_caps_output_tokens(ctx_factory, pool_state):
     llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[])])
     await run_finalize(pool_state, ctx_factory(llm=llm), timeout=30)
     assert llm.structured_kwargs["max_tokens"] == FINALIZE_MAX_TOKENS
+
+
+def test_window_summary_says_where_the_regular_searches_started_and_widened_to():
+    from backend.search.advanced.finalize import window_summary
+
+    def state(*runs):
+        return {"searches": [{"max_age_hours": h, "probe": p} for h, p in runs]}
+
+    assert window_summary(state()) == "—"
+    assert window_summary(state((72, None), (72, None))) == "last 3d throughout"
+    assert window_summary(state((72, None), (168, None))) == "started at last 3d, widened to last 7d"
+    assert window_summary(state((72, None), (336, "remote only"))) == "last 3d throughout"  # a probe never widens
+
+
+async def test_finalize_prompt_carries_the_posting_window(ctx_factory, pool_state):
+    state = {**pool_state, "searches": [{**pool_state["searches"][0], "max_age_hours": 72, "probe": None},
+                                        {"index": 2, "header": 'search 2 "ml"', "max_age_hours": 168, "probe": None}]}
+    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[])])
+    await run_finalize(state, ctx_factory(llm=llm), timeout=30)
+    assert "Posting window:\nstarted at last 3d, widened to last 7d" in str(llm.calls[0][1].content)
+
+
+def _nlp_state(pool_state) -> dict:
+    """Stated: remote only (a field, code checks it) and an NLP role (no field: the model judges it)."""
+    from backend.search.advanced.brief import Brief, BriefItem
+    from tests.search.advanced.samples import REMOTE
+
+    nlp = BriefItem(text="NLP or search engineer role", kind="require", source="stated")
+    pool = {**pool_state["pool"], JOB_B: candidate(JOB_B, 0.8).to_dict()}
+    return {**pool_state, "brief": Brief(items=[REMOTE, nlp]).model_dump(), "pool": pool,
+            "short_ids": {**pool_state["short_ids"], "9c02": JOB_B}}
+
+
+async def test_finalize_labels_only_the_stated_items_no_field_carries(ctx_factory, pool_state):
+    llm = ScriptedChatModel(structured=[FinalShortlist(summary="s", shortlist=[])])
+    await run_finalize(_nlp_state(pool_state), ctx_factory(llm=llm), timeout=30)
+    text = str(llm.calls[0][1].content)
+    assert "- remote only (location_type: remote)\n- R1: NLP or search engineer role" in text
+
+
+async def test_finalize_drops_a_job_the_model_marks_unmet(ctx_factory, pool_state):
+    malware = item("9c02", 55).model_copy(update={"unmet": ["R1"]})
+    out = await _run(ctx_factory, _nlp_state(pool_state), [item("a1f3", 85), malware])
+    assert [r["job_id"] for r in out["shortlist"]] == [JOB_A]
+    assert "unmet" not in out["shortlist"][0]
+
+
+async def test_finalize_matches_labels_loosely_and_ignores_unknown_ones(ctx_factory, pool_state):
+    out = await _run(ctx_factory, _nlp_state(pool_state), [
+        item("a1f3", 85).model_copy(update={"unmet": ["R7"]}),       # no such label: kept
+        item("9c02", 55).model_copy(update={"unmet": [" [r1] "]}),   # R1 in another spelling: dropped
+    ])
+    assert [r["job_id"] for r in out["shortlist"]] == [JOB_A]

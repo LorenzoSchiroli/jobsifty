@@ -40,7 +40,7 @@ ASK_THEN_SEARCH_THEN_FINISH = [BRIEF, SEARCH, ASK, tool_call("search_jobs", {"va
 
 def shortlist_of(score: int) -> FinalShortlist:
     return FinalShortlist(summary="Good match.", shortlist=[ShortlistItem(
-        job_id=SHORT, fit_score=score, fits="remote ML", trade_offs=["not a startup"], gaps=["no k8s", "no Go"])])
+        job_id=SHORT, unmet=[], fit_score=score, fits="remote ML", trade_offs=["not a startup"], gaps=["no k8s", "no Go"])])
 
 
 @pytest_asyncio.fixture
@@ -122,6 +122,7 @@ async def test_run_without_question_returns_done(adv_client):
     assert result["trade_offs"] == ["not a startup"] and result["fit_gaps"] == "no k8s; no Go"
     assert result["fit_rationale"] == "remote ML" and body["searches"][0]["query"] == "ml engineer"
     assert (body["searches"][0]["matches"], body["searches"][0]["new_jobs"]) == (None, 2)
+    assert body["searches"][0]["max_age_hours"] == 72  # the run's first window
     assert body["summary"] == "Good match."
 
 

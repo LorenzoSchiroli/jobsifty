@@ -290,6 +290,17 @@ def _shortfall(item: BriefItem, fields: dict) -> list[str]:
     return [f"{actual}{level}, not {_any(wanted)}"]
 
 
+def missing_languages(brief: Brief, fields: dict) -> list[str]:
+    """The languages the job requires that the user's inferred languages item does not list
+    (the gaps "requires Spanish" are worded from these); [] without such an item or when unknown."""
+    missing: dict[str, None] = {}
+    for i in brief.items:
+        if (i.source, i.kind, i.field) == ("inferred", "require", "languages_required") \
+                and satisfies(i, fields) is False:
+            missing.update(dict.fromkeys(_languages_beyond(_actual(i, fields), i.value)))
+    return list(missing)
+
+
 def inferred_shortfalls(brief: Brief, fields: dict) -> tuple[list[str], list[str]]:
     """What the job's fields contradict among the inferred require items, as (gaps, trade_offs).
 
