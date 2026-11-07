@@ -1,22 +1,34 @@
 import { useEffect, useRef, useState } from 'react'
 import axios from 'axios'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { me } from '../api/auth'
-import { searchJobs, startAdvancedSearch, resumeAdvancedSearch, Job, AdvancedResponse } from '../api/search'
+import { searchJobs, startAdvancedSearch, resumeAdvancedSearch, Job, AdvancedResponse, ActiveFilters as Filters } from '../api/search'
 import { useSearchMode } from '../hooks/useSearchMode'
 import JobCard from '../components/JobCard'
 import AgentRun from '../components/AgentRun'
+import ActiveFilters from '../components/ActiveFilters'
 import SearchHelp from '../components/SearchHelp'
 import type { SearchMode } from '../hooks/useSearchMode'
+
+// A spinner and the step the search is on; each new step replaces the last.
+function Progress({ status }: { status: string }) {
+  return (
+    <div role="status" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', margin: '0.75rem 0', opacity: 0.75 }}>
+      <span className="spinner" aria-hidden />
+      <span style={{ fontSize: '0.9rem' }}>{status}…</span>
+    </div>
+  )
+}
 
 export default function Search() {
   const { mode, setMode } = useSearchMode()
   const navigate = useNavigate()
   const [cvPrompt, setCvPrompt] = useState(false)
-  const [noCvError, setNoCvError] = useState(false)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<Job[]>([])
+  const [filters, setFilters] = useState<Filters | null>(null)  // what the last answer filtered on
   const [loading, setLoading] = useState(false)
+  const [status, setStatus] = useState('')  // the step the running request is on
   const [error, setError] = useState('')
   const [searched, setSearched] = useState(false)
   const [run, setRun] = useState<AdvancedResponse | null>(null)
@@ -26,27 +38,26 @@ export default function Search() {
 
   // Runs one request; a newer one (or a mode switch) aborts it, and a response
   // or error from a request that is no longer current is dropped.
-  async function track<T>(fetch: (signal: AbortSignal) => Promise<T>, apply: (data: T) => void) {
+  async function track<T>(fetch: (signal: AbortSignal, onStatus: (s: string) => void) => Promise<T>,
+                          apply: (data: T) => void) {
     abortRef.current?.abort()
     const ctrl = new AbortController()
     abortRef.current = ctrl
     setError('')
-    setNoCvError(false)
+    setStatus('Starting')
     setLoading(true)
     try {
-      const data = await fetch(ctrl.signal)
+      const data = await fetch(ctrl.signal, s => { if (abortRef.current === ctrl) setStatus(s) })
       if (abortRef.current === ctrl) apply(data)
     } catch (err: any) {
       if (abortRef.current !== ctrl || ctrl.signal.aborted || axios.isCancel(err)) return
-      const detail = err.response?.data?.detail
-      if (err.response?.status === 400 && typeof detail === 'string' && detail.startsWith('No CV saved')) setNoCvError(true)
-      else setError(detail || 'Search failed')
+      setError(err.response?.data?.detail || 'Search failed')
     } finally {
       if (abortRef.current === ctrl) setLoading(false)
     }
   }
 
-  // A stored "agent" choice can outlive the CV (e.g. after it was deleted): ask again.
+  // Agent mode works without a CV, but matches better with one: say so, also for a stored "agent" choice.
   useEffect(() => {
     if (mode !== 'agent') return
     me().then(u => { if (!u.has_cv) setCvPrompt(true) }).catch(() => {})
@@ -54,16 +65,14 @@ export default function Search() {
 
   const chooseMode = async (m: SearchMode) => {
     setCvPrompt(false)
-    if (m === 'agent') {
-      const hasCv = await me().then(u => u.has_cv).catch(() => true)
-      if (!hasCv) { setCvPrompt(true); return }
-    }
     setMode(m)
+    if (m === 'agent' && !(await me().then(u => u.has_cv).catch(() => true))) setCvPrompt(true)
   }
 
   function applyRun(r: AdvancedResponse) {
     setRun(r)
     setResults(r.results)
+    setFilters(r.filters)
   }
 
   useEffect(() => {
@@ -71,8 +80,8 @@ export default function Search() {
     abortRef.current = null
     setRun(null)
     setResults([])
+    setFilters(null)
     setError('')
-    setNoCvError(false)
     setLoading(false)
     setSearched(false)
   }, [mode])
@@ -80,16 +89,19 @@ export default function Search() {
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault()
     setResults([])
+    setFilters(null)
     setRun(null)
     setSearched(true)
-    if (mode === 'basic') await track(signal => searchJobs(query, signal), setResults)
-    else await track(signal => startAdvancedSearch(query, signal), applyRun)
+    if (mode === 'basic') {
+      await track((signal, onStatus) => searchJobs(query, onStatus, signal), r => { setResults(r.results); setFilters(r.filters) })
+    }
+    else await track((signal, onStatus) => startAdvancedSearch(query, onStatus, signal), applyRun)
   }
 
   async function answer(a: string) {
     if (!run) return
     const threadId = run.thread_id
-    await track(signal => resumeAdvancedSearch(threadId, a, signal), applyRun)
+    await track((signal, onStatus) => resumeAdvancedSearch(threadId, a, onStatus, signal), applyRun)
   }
 
   return (
@@ -127,11 +139,11 @@ export default function Search() {
 
       {cvPrompt && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', padding: '0.75rem 1rem', marginBottom: '1rem', border: '1px solid #2a2a2a', borderRadius: 8, background: '#141414' }}>
-          <span style={{ flex: 1, fontSize: '0.9rem' }}>No CV saved. Agent mode needs one. Do you want to add it?</span>
-          <button type="button" onClick={() => { setCvPrompt(false); setMode('basic') }} style={{ fontSize: '0.85rem', padding: '0.3rem 0.8rem' }}>
+          <span style={{ flex: 1, fontSize: '0.9rem' }}>No CV saved: the agent works from your request and past searches only. Add one to have jobs matched to your profile.</span>
+          <button type="button" onClick={() => setCvPrompt(false)} style={{ fontSize: '0.85rem', padding: '0.3rem 0.8rem' }}>
             Not now
           </button>
-          <button type="button" onClick={() => { setMode('agent'); navigate('/cv') }}
+          <button type="button" onClick={() => navigate('/cv')}
                   style={{ fontSize: '0.85rem', padding: '0.3rem 0.8rem', background: '#3b82f6', border: 'none', color: '#fff' }}>
             Add CV
           </button>
@@ -139,17 +151,15 @@ export default function Search() {
       )}
 
       {error && <p style={{ color: '#f87171' }}>{error}</p>}
-      {noCvError && (
-        <p style={{ color: '#f87171' }}>
-          No CV saved. <Link to="/cv" className="text-link">Add your CV</Link> to use agent mode.
-        </p>
-      )}
+      {loading && <Progress status={status} />}
+
+      {filters && !loading && <ActiveFilters filters={filters} />}
 
       {mode === 'agent' && (run || loading) && <AgentRun part="top" run={run} running={loading} onAnswer={answer} />}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
         {results.map(job => <JobCard key={job.id} job={job} />)}
-        {searched && !pending && results.length === 0 && !loading && !error && !noCvError && (
+        {searched && !pending && results.length === 0 && !loading && !error && (
           <p style={{ opacity: 0.4 }}>No results found.</p>
         )}
       </div>

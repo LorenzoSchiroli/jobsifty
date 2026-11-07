@@ -88,3 +88,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) {
   .search-form.agent .search-input { animation: none; }
 }
+
+/* The loading spinner next to the search's progress line */
+.spinner {
+  width: 14px; height: 14px; flex: none;
+  border: 2px solid #444; border-top-color: #8b5cf6; border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }

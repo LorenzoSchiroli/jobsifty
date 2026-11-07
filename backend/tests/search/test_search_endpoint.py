@@ -71,10 +71,29 @@ async def test_search_returns_200_with_ranked_jobs(search_client):
 
     resp = await ac.post("/jobs/search", json={"query": "ml engineer"})
     assert resp.status_code == 200
-    data = resp.json()
+    data = resp.json()["results"]
     assert len(data) == 1
     assert data[0]["id"] == str(job_id)
     assert data[0]["company"]["name"] == "acme"
+
+
+async def test_search_streams_its_steps_then_the_jobs(search_client):
+    import json
+
+    ac, mock_os, factory = search_client
+    job_id = uuid.uuid4()
+    async with factory() as session:
+        company = Company(name="acme")
+        session.add(company)
+        await session.flush()
+        session.add(Job(id=job_id, url="https://ex.com/1", title="ML Engineer", company_id=company.id))
+        await session.commit()
+    mock_os.search.return_value = {"hits": {"hits": [{"_source": {"job_id": str(job_id), "title": "ml engineer"}}]}}
+
+    resp = await ac.post("/jobs/search", json={"query": "ml engineer"}, headers={"Accept": "application/x-ndjson"})
+    lines = [json.loads(line) for line in resp.text.splitlines()]
+    assert lines[:-1] == [{"status": "Searching jobs"}, {"status": "Ranking 1 match"}, {"status": "Loading results"}]
+    assert [j["id"] for j in lines[-1]["result"]["results"]] == [str(job_id)]
 
 
 async def test_search_returns_empty_list_when_no_hits(search_client):
@@ -82,7 +101,16 @@ async def test_search_returns_empty_list_when_no_hits(search_client):
     mock_os.search.return_value = {"hits": {"hits": []}}
     resp = await ac.post("/jobs/search", json={"query": "q"})
     assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.json()["results"] == []
+
+
+async def test_search_returns_the_active_filters(search_client):
+    ac, mock_os, _ = search_client
+    mock_os.search.return_value = {"hits": {"hits": []}}
+    soft = (await ac.post("/jobs/search", json={"query": "senior remote ml engineer"})).json()["filters"]
+    assert soft == {"required": ["posted in the last 3 days"], "preferred": ["senior", "remote"]}
+    strict = (await ac.post("/jobs/search", json={"query": "strictly remote ml engineer"})).json()["filters"]
+    assert strict == {"required": ["remote", "posted in the last 3 days"], "preferred": []}
 
 
 async def test_search_works_without_cv(engine):
@@ -122,7 +150,7 @@ async def test_search_works_without_cv(engine):
 
     app.dependency_overrides.clear()
     assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.json()["results"] == []
 
 
 async def test_search_runs_cpu_work_in_thread(search_client):

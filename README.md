@@ -138,8 +138,9 @@ private info" (`backend/cv/redact.py`) replaces obvious personal data with
 placeholders such as `[EMAIL]` and `[PHONE]`, and `PUT /users/cv` answers 409
 with the findings until you confirm (saving empty text deletes the CV). LLM
 calls see only the saved text. Basic search uses neither the CV nor the
-preference memory. The UI calls this mode **Agent**; choosing it on the search
-page without a saved CV asks whether to add one, and the preference memory is
+preference memory. The UI calls this mode **Agent**; the CV is optional: without
+one the agent works from the request and the preference memory, and choosing
+Agent on the search page suggests adding one. The preference memory is
 read and edited on the `/preferences` page. The agent calls the LLM through
 `langchain-openai` `ChatOpenAI`, one per provider of the shared `llmpool` pool
 (`LLM_PROVIDERS` order, Groq on `GROQ_MODEL_LARGE`): a 429, an error or a
@@ -176,8 +177,21 @@ flowchart TB
 | **The shared provider pool, not one LLM** | Free tiers rate-limit and gpt-oss sometimes emits a malformed tool call, so one provider would end many runs `partial`. The agent tries the `llmpool` providers in `LLM_PROVIDERS` order with the pool's own pause state; since the CV is redacted before it is saved, any provider may see it. |
 | **Preference memory is distilled in a background task** | The user gets results at once; the LLM that merges this session into their long-term preference summary runs after the response. A `user_edited` flag protects a hand-written summary: the distiller may only append. |
 
-Not built yet: one active run per user, the sweep of abandoned threads, and a
-progress stream (the page waits on the JSON call).
+While a search runs, basic or agent, the page shows a spinner and the step it
+is on ("Searching "NLP engineer" · last 3 days", "Scoring the jobs found…"),
+each step replacing the last: asked with `Accept: application/x-ndjson`, the
+search endpoints answer one JSON line per step, then the result
+(`backend/progress.py`; the agent's steps come from LangGraph's custom stream).
+Without that header they answer plain JSON as before.
+
+Above the results both modes list the active filters the same way: **required**
+(every result matches) and **preferred** (ranked higher, not required). Basic
+search's soft filters are preferred and its posting window required (all of
+them required with "strictly"); in agent mode what you stated is required, in
+the same words basic search uses ("remote", "no consulting"), with the window
+the run used, and what the agent inferred is preferred.
+
+Not built yet: one active run per user and the sweep of abandoned threads.
 
 ---
 

@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field
 
 from backend.search.advanced.brief import Brief, BriefItem, inferred_shortfalls, missing_languages, unmet
 from backend.search.advanced.budget import (
-    CV_CHARS,
     FINALIZE_CANDIDATES,
     FINALIZE_MAX_TOKENS,
     FINALIZE_TEXT_CHARS,
@@ -135,7 +134,7 @@ def finalize_prompt(state: AgentState, ctx: AgentContext, candidates: list[Candi
     stated = [i for i in brief.items if i.source == "stated"]
     inferred = [i for i in brief.items if i.source == "inferred"]
     blocks = [
-        f"CV:\n{ctx.cv_text[:CV_CHARS]}",
+        ctx.cv_section(),
         f"Preference memory (inferred):\n{ctx.preference_memory or '—'}",
         "Stated requirements (said by the user; every result must meet these; the only requirements):\n"
         + _item_lines(stated, to_judge(brief)),

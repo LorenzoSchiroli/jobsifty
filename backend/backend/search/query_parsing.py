@@ -7,7 +7,7 @@ _NUM_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
 }
-_UNIT_HOURS = {"hour": 1, "day": 24, "week": 168}
+_UNIT_HOURS = {"hour": 1, "day": 24, "week": 168, "month": 720}
 
 # (regex, field, value, strip?) — first match per field wins.
 _ENUM_RULES = [
@@ -76,9 +76,10 @@ def parse_query(query: str) -> SearchFilters:
 
     # --- time window ---
     num = r"(\d+|" + "|".join(_NUM_WORDS) + r")"
-    m = re.search(r"\b(?:last|past|previous|within|in the last)\s+" + num + r"\s+(hour|day|week)s?\b", text)
+    # The number is optional: "last week" is one week, as "last 2 weeks" is two.
+    m = re.search(r"\b(?:last|past|previous|within|in the last)\s+(?:" + num + r"\s+)?(hour|day|week|month)s?\b", text)
     if m:
-        n = int(m.group(1)) if m.group(1).isdigit() else _NUM_WORDS[m.group(1)]
+        n = 1 if m.group(1) is None else int(m.group(1)) if m.group(1).isdigit() else _NUM_WORDS[m.group(1)]
         fields["max_age_hours"] = n * _UNIT_HOURS[m.group(2)]
         strip(m.re.pattern)
     elif re.search(r"\btoday\b", text):

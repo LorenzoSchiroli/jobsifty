@@ -43,7 +43,7 @@ from backend.search.advanced.context import AgentContext
 from backend.search.advanced.observation import assign_short_ids, header_line, render_observation, window_note
 from backend.search.advanced.search import SearchVariant, run_variant, soft_matches
 from backend.search.advanced.state import AgentState, merge_pool
-from backend.search.filters import SearchFilters
+from backend.search.filters import SearchFilters, window_label
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,7 @@ def update_brief(items: list[BriefItem], runtime: Runtime, notes: str = "") -> C
         brief = merge_brief(current, proposed, unlock_allowed=unlock_allowed)
     except LockedRequirementError as e:
         return f"Refused: '{e.item.text}' was stated by the user; only the user can relax it (ask_user)."
-    runtime.stream_writer({"type": "brief", "brief": brief.to_api()})
+    runtime.stream_writer({"status": "Noting what you asked for"})
     return _reply(runtime, "ok", brief=brief.model_dump(), brief_written=True)
 
 
@@ -187,6 +187,8 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
         hours, reason = _window(variant, brief, widest)
         asked = hours if variant.max_age_hours is None else variant.max_age_hours  # left out: the run's window
         variant = variant.model_copy(update={"max_age_hours": hours})
+        what_if = f' without "{variant.probe}"' if variant.probe else ""
+        runtime.stream_writer({"status": f'Searching "{variant.query}"{what_if} · {window_label(hours)}'})
         try:  # the probe is already checked: any error here is unexpected
             candidates = await run_variant(
                 variant=variant, brief=brief, search_index=index + 1, biencoder=ctx.biencoder,
@@ -223,7 +225,6 @@ async def search_jobs(variants: list[SearchVariant], runtime: Runtime) -> Comman
             "new_jobs": new_jobs,  # jobs of the window not in the pool before this search
             "header": header,
         })
-        runtime.stream_writer({"type": "search", "line": header})
         parts.append(observation)
     return _reply(runtime, "\n\n".join(parts), pool=new_pool, short_ids=new_short, searches=log,
                   searches_run=ran, probes_run=probes, window_hours=new_widest)
@@ -245,7 +246,7 @@ def inspect_job(ids: list[str], runtime: Runtime) -> Command | str:
         parts.append(f"[{short}] {head}\n{(job.get('text') or '')[:INSPECT_CHARS]}")
         shown.append(short)
     if shown:
-        runtime.stream_writer({"type": "inspect", "ids": shown})
+        runtime.stream_writer({"status": f"Reading {len(shown)} job description{'s' if len(shown) > 1 else ''}"})
     return _reply(runtime, "\n\n".join(parts))
 
 
@@ -304,7 +305,6 @@ def ask_user(question: str, options: list[QuestionOption], runtime: Runtime) -> 
     update = {}
     if chosen.relax:
         brief = relax(brief, chosen.relax)
-        runtime.stream_writer({"type": "brief", "brief": brief.to_api()})
         update["brief"] = brief.model_dump()
     return _reply(runtime, f"User chose: {chosen.label}", questions_asked=1, qa=[qa], **update)
 

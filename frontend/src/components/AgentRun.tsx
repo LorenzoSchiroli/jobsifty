@@ -1,24 +1,8 @@
 import { useState } from 'react'
-import { AdvancedResponse, BriefItem } from '../api/search'
+import { AdvancedResponse } from '../api/search'
 
 const box = { margin: '1rem 0', padding: '1rem', border: '1px solid #2a2a2a', borderRadius: 8 } as const
 const heading = { fontSize: '0.85rem', opacity: 0.7, marginBottom: '0.4rem' } as const
-
-function Items({ title, items }: { title: string; items: BriefItem[] }) {
-  if (items.length === 0) return null
-  return (
-    <div style={{ marginBottom: '0.6rem' }}>
-      <div style={{ fontSize: '0.8rem', opacity: 0.6, marginBottom: '0.25rem' }}>{title}</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
-        {items.map((it, i) => (
-          <span key={i} style={{ fontSize: '0.75rem', background: '#2a2a2a', padding: '0.15rem 0.5rem', borderRadius: 4 }}>
-            {it.kind === 'avoid' ? 'avoid: ' : ''}{it.text}
-          </span>
-        ))}
-      </div>
-    </div>
-  )
-}
 
 // The posting window a search ran on, e.g. " · last 7 days"
 function windowText(hours: number | null): string {
@@ -38,11 +22,8 @@ interface Props {
 
 export default function AgentRun({ run, running, onAnswer, part }: Props) {
   const [text, setText] = useState('')
-  const avoid = run?.brief?.avoid ?? []
-  // Stated requires and avoids are kept in every result.
-  const kept = [...(run?.brief?.stated ?? []), ...avoid.filter(i => i.source === 'stated')]
-  const fromYou = [...(run?.brief?.inferred ?? []), ...avoid.filter(i => i.source === 'inferred')]
-  const hasBrief = kept.length > 0 || fromYou.length > 0
+  // Stated requires and avoids are kept in every result (the page shows them as required filters).
+  const kept = [...(run?.brief?.stated ?? []), ...(run?.brief?.avoid ?? []).filter(i => i.source === 'stated')]
   // Stated items no field carries are judged by the LLM at the end; a partial run never got there.
   const unchecked = kept.filter(i => i.field === null).map(i => `"${i.text}"`)
   const question = run?.status === 'question' ? run.question : null
@@ -75,16 +56,6 @@ export default function AgentRun({ run, running, onAnswer, part }: Props) {
 
   return (
     <div>
-      {running && <p style={{ opacity: 0.6 }}>Searching… this can take a couple of minutes</p>}
-
-      {run && hasBrief && (
-        <div style={box}>
-          <div style={heading}>What I understood</div>
-          <Items title="You asked for (kept in every result)" items={kept} />
-          <Items title="From your CV and past searches" items={fromYou} />
-        </div>
-      )}
-
       {question && !running && (
         <div style={box}>
           <div style={{ fontSize: '0.9rem', marginBottom: '0.6rem' }}>{question.text}</div>

@@ -45,9 +45,16 @@ def test_strict_flag():
     ("python jobs today", 24),
     ("python jobs yesterday", 48),
     ("python jobs this week", 168),
+    ("machine learning engineer, last week", 168),
+    ("python jobs in the past day", 24),
+    ("python jobs last month", 720),
 ])
 def test_time_window(query, hours):
     assert parse_query(query).max_age_hours == hours
+
+
+def test_a_window_without_a_number_leaves_the_semantic_query():
+    assert parse_query("machine learning engineer, last week").semantic_query.strip(" ,") == "machine learning engineer"
 
 
 def test_startup_positive_and_negative():

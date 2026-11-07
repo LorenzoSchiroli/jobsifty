@@ -1,7 +1,7 @@
 from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel
 
-from backend.search.countries import country_values
+from backend.search.countries import canonical_country, country_values
 
 _BOOST = 2.0
 
@@ -71,6 +71,54 @@ def build_clauses(filters: SearchFilters) -> list[dict]:
             else {"terms": {"languages_required": langs, "boost": _BOOST}}
         )
     return clauses
+
+
+class ActiveFilters(BaseModel):
+    """What a search filtered on, as short labels for the page: `required` every result meets,
+    `preferred` ranks matching jobs higher without excluding others."""
+    required: list[str] = []
+    preferred: list[str] = []
+
+
+def window_label(hours: int) -> str:
+    """A posting window as the user reads it: "last 3 days"."""
+    days = round(hours / 24)
+    return f"last {hours} hours" if hours < 24 else f"last {days} day{'' if days == 1 else 's'}"
+
+
+def _any(value: str | list[str]) -> str:
+    return " or ".join(value) if isinstance(value, list) else value
+
+
+def _usable(value) -> bool:
+    """A value build_clauses filters on: an alternative "a|b" string is ignored there, so here too."""
+    if isinstance(value, list):
+        return bool(value)
+    return value is not None and (not isinstance(value, str) or "|" not in value)
+
+
+def describe(filters: SearchFilters) -> ActiveFilters:
+    """The labels of what `filters` applies: the field filters are required when strict, otherwise
+    preferred (build_clauses); the posting window is always required (age_cutoff)."""
+    labels = []
+    for field, label in [
+        ("seniority", lambda v: _any(v)),
+        ("location_type", lambda v: _any(v)),
+        ("employment_type", lambda v: _any(v)),
+        ("languages_required", lambda v: ", ".join(lang.capitalize() for lang in v) + " required"),
+        ("country", lambda v: f"company in {canonical_country(v) or v}"),
+        ("is_startup", lambda v: "startup" if v else "not a startup"),
+        ("is_consulting", lambda v: "consulting" if v else "no consulting"),
+        ("min_review_score", lambda v: f"reviews ≥ {v:g}"),
+        ("min_financial_health_score", lambda v: f"financial health ≥ {v}"),
+    ]:
+        value = getattr(filters, field)
+        if _usable(value):
+            labels.append(label(value))
+    window = [f"posted in the {window_label(filters.max_age_hours)}"] if filters.max_age_hours else []
+    if filters.strict:
+        return ActiveFilters(required=[*labels, *window])
+    return ActiveFilters(required=window, preferred=labels)
 
 
 def age_cutoff(filters: SearchFilters) -> str | None:

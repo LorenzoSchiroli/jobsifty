@@ -42,6 +42,7 @@ async def agent_node(state: AgentState, runtime: Runtime[AgentContext]) -> Comma
     left = _agent_time_left(ctx)
     if state.get("turns", 0) >= MAX_TURNS or left <= 0:
         return Command(goto="finalize")
+    runtime.stream_writer({"status": "Thinking about the next step" if state.get("turns") else "Reading your request"})
     try:
         prompt = [SystemMessage(system_prompt(state, ctx)), *compact_history(state["messages"])]
         message = await ctx.llm.tool_turn(prompt, TOOLS, AGENT_MAX_TOKENS, timeout=left)
@@ -63,6 +64,7 @@ async def agent_node(state: AgentState, runtime: Runtime[AgentContext]) -> Comma
 async def finalize_node(state: AgentState, runtime: Runtime[AgentContext]) -> dict:
     ctx = runtime.context
     timeout = max(ctx.deadline - time.monotonic(), FINALIZE_RESERVE_SECONDS)
+    runtime.stream_writer({"status": "Scoring the jobs found and writing the summary"})
     try:
         result = await run_finalize(state, ctx, timeout)
     except TimeoutError:

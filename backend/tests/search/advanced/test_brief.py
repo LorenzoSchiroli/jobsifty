@@ -221,3 +221,14 @@ def test_window_is_met_by_the_jobs_age_in_days():
     assert satisfies(_window(7), {"posted_within_days": 6.5}) is True
     assert satisfies(_window(7), {"posted_within_days": 9.0}) is False
     assert satisfies(_window(7), {"posted_within_days": None}) is None
+
+
+def test_filter_label_words_stated_field_items_as_basic_search_does():
+    from backend.search.advanced.brief import filter_label
+    from tests.search.advanced.samples import NO_CONSULTING, REMOTE, STARTUP
+
+    assert filter_label(REMOTE) == "remote"
+    assert filter_label(NO_CONSULTING) == "no consulting"  # an avoid on a bool flips, no "avoid: no …"
+    assert filter_label(STARTUP) == "startup"  # inferred: the agent's own text
+    nlp = BriefItem(text="NLP role", kind="require", source="stated")
+    assert filter_label(nlp) == "NLP role"

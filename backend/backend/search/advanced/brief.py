@@ -22,7 +22,7 @@ from backend.search.advanced.vocabulary import (
     normalise_languages,
 )
 from backend.search.countries import canonical_country, same_country
-from backend.search.filters import SearchFilters
+from backend.search.filters import SearchFilters, describe
 
 # A company-size requirement stays possible as a text-only item: employee_count is not in the index.
 BriefField = Literal[
@@ -210,6 +210,17 @@ def hard_filters(brief: Brief, *, lifted: str | None = None) -> SearchFilters | 
         return None
     # The age window (a stated one included) is the variant's max_age_hours; a hard set adds no second one.
     return SearchFilters(semantic_query="", max_age_hours=None, **values)
+
+
+def filter_label(item: BriefItem) -> str:
+    """How the page lists the item among the active filters: a stated item with a field is a hard
+    filter, worded as basic search words it ("remote", "no consulting": filters.describe); any other
+    item is the agent's own text. (An avoid item with a field is a yes/no one, which _wanted flips.)"""
+    if item.source == "stated" and item.field is not None and item.field != WINDOW_FIELD:
+        attr, value = _wanted(item)
+        if labels := describe(SearchFilters(semantic_query="", max_age_hours=None, **{attr: value})).preferred:
+            return labels[0]
+    return f"avoid: {item.text}" if item.kind == "avoid" else item.text
 
 
 def _actual(item: BriefItem, fields: dict):

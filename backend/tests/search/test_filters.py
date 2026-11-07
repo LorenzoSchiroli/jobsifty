@@ -87,3 +87,22 @@ def test_build_clauses_country_combined_with_other_filters():
 def test_age_window_is_not_a_soft_clause():
     # the window is a hard filter applied by retrieval, never a boost
     assert build_clauses(SearchFilters(semantic_query="x", max_age_hours=24)) == []
+
+
+def test_describe_lists_soft_filters_as_preferred_and_the_window_as_required():
+    from backend.search.filters import describe
+
+    f = SearchFilters(semantic_query="ml", seniority=["mid", "senior"], is_consulting=False, country="DE",
+                      languages_required=["german"], max_age_hours=168)
+    out = describe(f)
+    assert out.required == ["posted in the last 7 days"]
+    assert out.preferred == ["mid or senior", "German required", "company in Germany", "no consulting"]
+
+
+def test_describe_puts_everything_in_required_when_strict_and_skips_what_is_not_filtered():
+    from backend.search.filters import describe
+
+    f = SearchFilters(semantic_query="ml", location_type="remote|hybrid", employment_type="full-time",
+                      industry="fintech", strict=True, max_age_hours=None)
+    out = describe(f)
+    assert (out.required, out.preferred) == (["full-time"], [])  # "a|b" and industry filter nothing

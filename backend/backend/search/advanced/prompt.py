@@ -5,7 +5,6 @@ from langchain_core.messages import AnyMessage, ToolMessage
 
 from backend.search.advanced.brief import Brief
 from backend.search.advanced.budget import (
-    CV_CHARS,
     MAX_PROBES,
     MAX_QUESTIONS,
     MAX_SEARCHES,
@@ -85,7 +84,7 @@ def system_prompt(state: AgentState, ctx: AgentContext) -> str:
     return "\n\n".join([
         RULES,
         window_rule(),
-        f"CV:\n{ctx.cv_text[:CV_CHARS]}",
+        ctx.cv_section(),
         f"Preference memory (inferred):\n{ctx.preference_memory or '—'}",
         f"Brief (stated items are locked):\n{_brief_text(state)}",
         f"Budget left: {left}",

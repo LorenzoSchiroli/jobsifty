@@ -123,6 +123,8 @@ async def test_run_without_question_returns_done(adv_client):
     assert result["fit_rationale"] == "remote ML" and body["searches"][0]["query"] == "ml engineer"
     assert (body["searches"][0]["matches"], body["searches"][0]["new_jobs"]) == (None, 2)
     assert body["searches"][0]["max_age_hours"] == 72  # the run's first window
+    # the same shape basic search returns: what the user stated is required, with the window used
+    assert body["filters"] == {"required": ["remote", "posted in the last 3 days"], "preferred": []}
     assert body["summary"] == "Good match."
 
 
@@ -177,14 +179,30 @@ async def test_shortlisted_job_gone_from_postgres_is_skipped(adv_client, env):
     assert body["status"] == "done" and body["results"] == []
 
 
-async def test_advanced_requires_cv(adv_client, env):
+async def test_advanced_streams_status_lines_then_the_result(adv_client):
+    import json
+
+    ac, _ = adv_client(SEARCH_THEN_FINISH, [shortlist_of(88)])
+    r = await ac.post("/jobs/search/advanced", json={"query": "remote ml"},
+                      headers={"Accept": "application/x-ndjson"})
+    lines = [json.loads(line) for line in r.text.splitlines()]
+    statuses = [line["status"] for line in lines[:-1]]
+    assert statuses == ["Reading your request", "Noting what you asked for", "Thinking about the next step",
+                        'Searching "ml engineer" · last 3 days', "Thinking about the next step",
+                        "Scoring the jobs found and writing the summary"]
+    assert lines[-1]["result"]["status"] == "done" and lines[-1]["result"]["results"][0]["fit_score"] == 88
+
+
+async def test_advanced_runs_without_a_cv(adv_client, env):
     factory, user_id = env
-    ac, _ = adv_client([], [])
+    ac, llm = adv_client(SEARCH_THEN_FINISH, [shortlist_of(70)])
     async with factory() as s:
         await s.execute(delete(ApplicantProfile).where(ApplicantProfile.user_id == user_id))
         await s.commit()
-    r = await ac.post("/jobs/search/advanced", json={"query": "x"})
-    assert r.status_code == 400 and "CV" in r.json()["detail"]
+    r = await ac.post("/jobs/search/advanced", json={"query": "remote ml"})
+    assert r.status_code == 200 and r.json()["status"] == "done"
+    prompts = "\n".join(str(m.content) for call in llm.calls for m in call)
+    assert "CV: none saved" in prompts and "5yr ML dev" not in prompts
 
 
 async def test_missing_llm_config_is_503(adv_client, monkeypatch):

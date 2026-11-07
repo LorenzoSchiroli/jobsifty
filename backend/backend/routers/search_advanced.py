@@ -1,10 +1,11 @@
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from langgraph.types import Command
 from opensearchpy import AsyncOpenSearch
 from pydantic import BaseModel
@@ -18,13 +19,15 @@ from backend.auth.dependencies import get_current_user
 from backend.database import get_session, get_session_factory
 from backend.models import ApplicantProfile, Job, User
 from backend.opensearch_client import get_opensearch
+from backend.progress import Report, ignore, stream_progress, wants_progress
 from backend.schemas import JobSearchResponse
-from backend.search.advanced.brief import Brief
+from backend.search.advanced.brief import WINDOW_FIELD, Brief, filter_label
 from backend.search.advanced.budget import WALL_CLOCK_SECONDS
 from backend.search.advanced.context import AgentContext
 from backend.search.advanced.finalize import filters_summary as summarize_filters
 from backend.search.advanced.llm import AgentLLM, get_agent_llm
 from backend.search.advanced.preference_memory import get_memory, update_memory_from_session
+from backend.search.filters import ActiveFilters, window_label
 from backend.search.models_lifecycle import get_biencoder, get_reranker
 
 router = APIRouter(prefix="/jobs/search/advanced", tags=["search-advanced"])
@@ -55,6 +58,7 @@ class AdvancedJobResult(JobSearchResponse):
 class AdvancedSearchResponse(BaseModel):
     status: Literal["done", "question", "partial"]
     thread_id: str
+    filters: ActiveFilters = ActiveFilters()  # as basic search shows them: stated required, inferred preferred
     question: Question | None = None
     brief: dict
     summary: str = ""
@@ -91,13 +95,12 @@ def get_llm() -> AgentLLM:
 
 
 async def _load_cv(session: AsyncSession, user: User) -> str:
+    """The user's saved CV, "" when none: the CV is optional, the agent then works from the request."""
     result = await session.execute(
         select(ApplicantProfile).where(ApplicantProfile.user_id == user.id)
     )
     profile = result.scalar_one_or_none()
-    if not profile or not profile.cv_text:
-        raise HTTPException(status_code=400, detail="No CV saved. Add your CV on the CV page first.")
-    return profile.cv_text
+    return (profile.cv_text or "") if profile else ""
 
 
 async def _distill_in_background(user_id: uuid.UUID, query: str, filters_summary: str,
@@ -134,6 +137,19 @@ async def _results(session: AsyncSession, shortlist: list[dict]) -> list[Advance
     return out
 
 
+def _active_filters(values: dict) -> ActiveFilters:
+    """The run's filters in basic search's terms: what the user stated is required, and so is the
+    widest posting window its searches used (probes left out); what the agent inferred is preferred.
+    The brief's window items are left out: the window used says it."""
+    brief = Brief.model_validate(values.get("brief") or {})
+    items = [i for i in brief.items if i.field != WINDOW_FIELD]
+    hours = [s["max_age_hours"] for s in values.get("searches") or []
+             if s.get("probe") is None and s.get("max_age_hours")]
+    window = [f"posted in the {window_label(max(hours))}"] if hours else []
+    return ActiveFilters(required=[*(filter_label(i) for i in items if i.source == "stated"), *window],
+                         preferred=[filter_label(i) for i in items if i.source == "inferred"])
+
+
 def _pending_interrupts(snap) -> list:
     return [i for task in snap.tasks for i in task.interrupts]
 
@@ -146,22 +162,26 @@ async def _delete_thread(checkpointer, thread_id: str) -> None:
 
 
 async def run_agent(graph, checkpointer, ctx: AgentContext, payload, thread_id: str, session: AsyncSession,
-                    background: BackgroundTasks) -> AdvancedSearchResponse:
-    """Runs the graph until a question or the end. The thread is deleted unless a question is open,
-    also when the run raises (durability="exit" saves on an error too); the error still propagates."""
+                    background: BackgroundTasks, report: Report = ignore) -> AdvancedSearchResponse:
+    """Runs the graph until a question or the end, reporting the steps' status lines. The thread is
+    deleted unless a question is open, also when the run raises (durability="exit" saves on an
+    error too); the error still propagates."""
     config = {"configurable": {"thread_id": thread_id}}
     question_open = False
     try:
-        await graph.ainvoke(payload, config, context=ctx, durability="exit")
+        async for event in graph.astream(payload, config, context=ctx, durability="exit", stream_mode="custom"):
+            if isinstance(event, dict) and event.get("status"):
+                report(event["status"])
         snap = await graph.aget_state(config)
         values = snap.values or {}
         brief = Brief.model_validate(values["brief"]).to_api() if values.get("brief") else {}
+        filters = _active_filters(values)
 
         if interrupts := _pending_interrupts(snap):
             value = interrupts[0].value
             question_open = True
             return AdvancedSearchResponse(
-                status="question", thread_id=thread_id, brief=brief,
+                status="question", thread_id=thread_id, brief=brief, filters=filters,
                 question=Question(text=value["question"], options=list(value.get("options") or [])),
             )
 
@@ -172,7 +192,7 @@ async def run_agent(graph, checkpointer, ctx: AgentContext, payload, thread_id: 
                               max_age_hours=s.get("max_age_hours"))
                     for s in values.get("searches") or []]
         response = AdvancedSearchResponse(
-            status=status, thread_id=thread_id, brief=brief, summary=values.get("summary", ""),
+            status=status, thread_id=thread_id, brief=brief, filters=filters, summary=values.get("summary", ""),
             searches=searches, results=results, usage=values.get("usage"),
         )
         if status == "done":
@@ -196,9 +216,15 @@ async def _context(session: AsyncSession, user: User, llm: AgentLLM, biencoder, 
     )
 
 
+async def _answer(request: Request, run: Callable[[Report], Awaitable[AdvancedSearchResponse]]):
+    """The response, or progress lines then the response (backend/progress.py)."""
+    return stream_progress(run) if wants_progress(request) else await run(ignore)
+
+
 @router.post("", response_model=AdvancedSearchResponse)
 async def start_advanced_search(
     body: AdvancedSearchRequest,
+    request: Request,
     background: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -213,12 +239,14 @@ async def start_advanced_search(
     thread_id = str(uuid.uuid4())
     payload = {"messages": [("human", body.query)], "user_id": str(current_user.id), "query": body.query,
                "brief": Brief().model_dump()}
-    return await run_agent(graph, checkpointer, ctx, payload, thread_id, session, background)
+    return await _answer(request, lambda report: run_agent(graph, checkpointer, ctx, payload, thread_id, session,
+                                                           background, report))
 
 
 @router.post("/resume", response_model=AdvancedSearchResponse)
 async def resume_advanced_search(
     body: ResumeRequest,
+    request: Request,
     background: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -237,4 +265,5 @@ async def resume_advanced_search(
         await _delete_thread(checkpointer, body.thread_id)
         raise HTTPException(status_code=404, detail="Search not found.")
     ctx = await _context(session, current_user, llm, biencoder, reranker, os_client)
-    return await run_agent(graph, checkpointer, ctx, Command(resume=body.answer), body.thread_id, session, background)
+    return await _answer(request, lambda report: run_agent(graph, checkpointer, ctx, Command(resume=body.answer),
+                                                           body.thread_id, session, background, report))

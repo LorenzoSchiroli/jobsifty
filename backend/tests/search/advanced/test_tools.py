@@ -34,7 +34,7 @@ async def test_update_brief_stores_brief_and_streams_it(run_tool):
     out = await run_tool("update_brief", {"items": [REMOTE.model_dump(), STARTUP.model_dump()], "notes": "PyTorch"})
     brief = Brief(**out.state["brief"])
     assert brief.items == [REMOTE, STARTUP] and brief.notes == "PyTorch"
-    assert out.events == [{"type": "brief", "brief": brief.to_api()}]
+    assert out.events == [{"status": "Noting what you asked for"}]
     assert isinstance(out.messages[-1], ToolMessage) and out.messages[-1].tool_call_id == "call-1"
 
 
@@ -84,7 +84,7 @@ async def test_search_log_entry_short_ids_and_stream(run_tool, patched_run_varia
     assert entry["header"].startswith('search 2 "ml" · locked: location_type=remote')
     assert out.state["short_ids"] == {"a1f3": JOB_A, "9c02": JOB_B}
     assert out.state["searches_run"] == 2
-    assert out.events == [{"type": "search", "line": entry["header"]}]
+    assert out.events == [{"status": 'Searching "ml" · last 7 days'}]
     assert "[a1f3] ML Engineer" in out.messages[-1].content
     assert patched_run_variant.call_args.kwargs["search_index"] == 2
 
@@ -215,7 +215,7 @@ async def test_inspect_known_id_shows_title_company_and_cut_text(run_tool):
     content = out.messages[-1].content
     assert content.startswith("[a1f3] ML Engineer · Acme\n" + "x" * INSPECT_CHARS + "\n")
     assert "x" * (INSPECT_CHARS + 1) not in content and "Unknown id: zzzz" in content
-    assert out.events == [{"type": "inspect", "ids": ["a1f3"]}]
+    assert out.events == [{"status": "Reading 1 job description"}]
 
 
 async def test_inspect_refuses_more_than_three(run_tool):
@@ -234,7 +234,7 @@ async def test_ask_user_pauses_then_applies_chosen_option(run_tool_with_resume):
     assert Brief(**out.state["brief"]).items[0].source == "inferred"
     assert out.state["questions_asked"] == 1
     assert out.messages[-1].content == "User chose: Allow hybrid"
-    assert out.events == [{"type": "brief", "brief": Brief(**out.state["brief"]).to_api()}]
+    assert out.events == []  # the question itself is what the user sees
     assert out.state["qa"] == [{"question": "Allow hybrid?", "options": ["Allow hybrid", "Keep remote only"],
                                 "answer": "Allow hybrid", "chosen": "Allow hybrid"}]
     assert "unlock_turn" not in out.state
