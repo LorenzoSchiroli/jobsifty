@@ -119,7 +119,7 @@ export default function Search() {
         {/* Stop while a request runs: closing it stops the work on the server too. Two keys, so two
             elements: a reused one would be a submit button again by the end of the Stop click, and submit. */}
         {loading
-          ? <button key="stop" type="button" className="search-btn" onClick={stop} style={{ whiteSpace: 'nowrap' }}>Stop</button>
+          ? <button key="stop" type="button" className="search-btn stop-btn" onClick={stop} style={{ whiteSpace: 'nowrap' }}>Stop</button>
           : <button key="search" type="submit" className="search-btn" style={{ whiteSpace: 'nowrap' }}>Search</button>}
       </form>
 

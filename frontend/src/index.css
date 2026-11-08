@@ -77,6 +77,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   color: #fff;
 }
 .search-form.agent .search-btn:hover:not(:disabled) { background: linear-gradient(90deg, #7174f5, #9a6cf8); }
+/* Stop, while a search runs: red in both modes (more specific than the agent gradient above) */
+.search-form .search-btn.stop-btn { background: #dc2626; border-color: #dc2626; color: #fff; }
+.search-form .search-btn.stop-btn:hover:not(:disabled) { background: #ef4444; border-color: #ef4444; }
 .mode-btn.agent-on { background: linear-gradient(90deg, #6366f1, #8b5cf6) !important; }
 
 @keyframes adv-border { to { background-position: 0 0, 300% 0; } }

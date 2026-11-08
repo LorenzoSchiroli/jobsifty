@@ -2,12 +2,13 @@
 
 **A job search engine that ranks openings against *you*, not against a keyword.**
 
-Jobsifty continuously scrapes job offers from several sources, has an LLM
-distil each posting into structured metadata, embeds it, and serves a hybrid
-**BM25 + k-NN** search endpoint with **cross-encoder reranking**. On top of that
-sits a LangGraph agent: an **advanced search** that searches in a loop, asks
-before relaxing anything you stated or to settle a trade-off the results show,
-and fit-scores every result against your CV.
+Jobsifty continuously scrapes job offers from several sources, parses each
+posting into structured metadata with rules, adds a short LLM summary, embeds
+it, and serves a hybrid **BM25 + k-NN** search endpoint with **cross-encoder
+reranking**. On top of that sits a LangGraph agent, **Agent mode**: it plans
+its own searches, loosens what you asked for as little as it can when too few
+jobs match, asks before a trade-off you may not accept, and fit-scores 10 jobs
+against your request, your CV (optional) and your remembered preferences.
 
 It is a full vertical slice, deliberately: scraping and LLM enrichment →
 retrieval and ranking → REST API and SPA → and the same stack deployed two
@@ -17,9 +18,9 @@ Fargate**, from one command.
 | | |
 |---|---|
 | **Retrieval** | OpenSearch hybrid search — BM25 + HNSW k-NN, score-normalised in a single round trip, then reranked by a cross-encoder |
-| **Models** | `multilingual-e5-small` (384-d chunk embeddings) + `mmarco-mMiniLMv2-L12` (multilingual rerank), both CPU-only; LLMs only for company judgement fields and offer summaries (a free-tier pool, `llmpool`: NVIDIA NIM, Gemini, Groq) and the agent (Groq through `ChatOpenAI`; it sees only the redacted CV) |
+| **Models** | `multilingual-e5-small` (384-d chunk embeddings) + `mmarco-mMiniLMv2-L12` (multilingual rerank), both CPU-only; LLMs only for company judgement fields and offer summaries (a free-tier pool, `llmpool`: NVIDIA NIM, Gemini, Groq) and the agent (the same pool, one `ChatOpenAI` per provider; it sees only the redacted CV) |
 | **Durability** | Postgres is the source of truth; the search index is derived and rebuildable, kept in sync by a transactional **outbox** |
-| **Agents** | LangGraph graphs checkpointed in Postgres — they interrupt, ask, and resume across HTTP requests |
+| **Agent** | A LangGraph tool-calling loop checkpointed in Postgres — it interrupts, asks, and resumes across HTTP requests |
 | **Infra** | OpenTofu + Helm (k3s on Hetzner) *and* OpenTofu + ECS Fargate (AWS), same images, same env contract, `deploy/scripts/run <target> up` |
 
 ---
@@ -29,9 +30,9 @@ Fargate**, from one command.
 ```mermaid
 flowchart TB
     SRC["Job sources<br/>jobspy · adzuna · arbeitnow · freehire"]
-    ING["ingestion · every 2h<br/>scrape → LLM parse → embed"]
+    ING["ingestion · every 2h<br/>scrape → rule parse + LLM summary → embed"]
     CLI["Clients<br/>React SPA"]
-    API["backend API<br/>FastAPI · JWT · search · agents"]
+    API["backend API<br/>FastAPI · JWT · search · agent"]
     PG[("Postgres<br/>source of truth + outbox")]
     WK["worker<br/>reconcile every 5 min"]
     OS[("OpenSearch<br/>derived index")]
@@ -68,9 +69,9 @@ a pool of free LLM providers in the same way).
 | Decision | Motivation |
 |----------|------------|
 | **Postgres is the source of truth, OpenSearch is derived** | A search index is a cache with opinions. Making it authoritative means a lost cluster is lost data, and every schema change becomes a migration you cannot roll back. Here the index can be dropped and rebuilt from Postgres at any time. |
-| **Transactional outbox instead of dual writes** | Writing to Postgres *and* OpenSearch in one request means either a distributed transaction or silent divergence when the second write fails. The job and its `outbox` row are committed atomically; the worker drains the outbox and additionally re-indexes any live job (≤30 days) missing from the index, so the system self-heals instead of drifting. |
+| **Transactional outbox instead of dual writes** | Writing to Postgres *and* OpenSearch in one request means either a distributed transaction or silent divergence when the second write fails. The job and its `outbox` row are committed atomically; the worker drains the outbox and additionally re-indexes any live job (posted within `JOB_LIVE_DAYS`, 14 days by default) missing from the index, so the system self-heals instead of drifting. |
 | **Ingestion talks to the public REST API, not to the database** | The pipeline holds no DB credentials and no ORM models. It is just another client, which is what lets it run as a CronJob on Kubernetes or a Fargate task on AWS with zero extra wiring — and what keeps validation in exactly one place. |
-| **LLMs only offline and on the opt-in agent path** | Parsing a posting is a batch job where a 2-second LLM call is free; a search request is not. The hot search path is regex + two small local models, so it is fast, cheap, deterministic and unit-testable. |
+| **LLMs only offline and on the opt-in agent path** | Summarising a posting is a batch job where a 2-second LLM call is free; a search request is not. The hot search path is regex + two small local models, so it is fast, cheap, deterministic and unit-testable. |
 | **CPU-only models** | `multilingual-e5-small` (384-d) and `mmarco-mMiniLMv2-L12` were benchmarked on CPU (e5-small embeds a 512-token chunk in ~57 ms, same as the previous `bge-small`; long-context and 0.5B+ models were 10–500× slower) and chosen to fit a demo budget with no GPU anywhere in the stack — the whole thing runs on a single small Hetzner x86 VPS and on `db.t4g.micro` / `t3.small.search`-class AWS resources. |
 | **uv workspace, three Python packages** | `backend`, `ingestion` and the shared `llmpool` share a lockfile and Python version but ship as separate images with separate dependency sets — the API image does not carry Playwright, the scraper does not carry SQLAlchemy models. |
 
@@ -92,7 +93,7 @@ flowchart TB
     E["2 · embed<br/>multilingual-e5-small → 384-d"]
     H["3 · hybrid retrieve<br/>OpenSearch: BM25 + k-NN, fused"]
     R["4 · rerank<br/>cross-encoder → top 20"]
-    D["5 · hydrate<br/>Postgres, by job_id"]
+    D["5 · hydrate<br/>Postgres, by job_id → {filters, results}"]
 
     Q --> P --> E --> H --> R --> D
 ```
@@ -122,7 +123,7 @@ flowchart TB
 |--------|------------|
 | **Hybrid BM25 + k-NN, not one or the other** | Lexical search nails the tokens that must match literally — `Kubernetes`, `SAP`, `PyTorch`, a specific certification. Dense retrieval catches the paraphrase — "ML engineer" ≈ "applied scientist". Job postings need both: they are keyword-dense *and* written in a hundred different dialects. |
 | **Fusion inside an OpenSearch search pipeline** | BM25 scores and cosine similarities live on incomparable scales, so they are min-max normalised before an arithmetic mean with 50/50 weights. Doing it server-side in the `hybrid` query means one round trip and one ranked list, instead of two queries merged in Python. |
-| **Filters are *soft* by default** | The filterable fields (`seniority`, `location_type`, `languages_required`, …) come from an LLM parse of free-text postings, so they are good but not perfect. A hard filter turns one bad extraction into a silently missing result. Instead the clauses are scored `should` clauses with `boost: 2.0` — matching documents win, near-misses still surface. Writing *"strictly"*, *"exactly"* or *"no exceptions"* flips `SearchFilters.strict`, which applies them as a real `post_filter` and raises the prefetch to 200 so the filter has candidates left to keep. |
+| **Filters are *soft* by default** | The filterable fields (`seniority`, `location_type`, `languages_required`, …) come from a rule-based parse of free-text postings, so they are good but not perfect. A hard filter turns one bad extraction into a silently missing result. Instead the clauses are scored `should` clauses with `boost: 2.0` — matching documents win, near-misses still surface. Writing *"strictly"*, *"exactly"* or *"no exceptions"* flips `SearchFilters.strict`, which applies them as a real `post_filter` and raises the prefetch to 200 so the filter has candidates left to keep. |
 | **Places are where the job is, in both modes** | *"In Munich"* means the job is in Munich, not that the company is based in Germany: a Munich job at a Serbian company is a Munich job. Each job's cities and countries are read from its location at indexing ("München, BY", "Greater Munich Area" and "Munich" are one city), and basic search and the agent filter on them alike, several at once (*"in Munich or Austria"*). The company's country is a filter only when asked for (*"company based in Germany"*). |
 | **The age window is always hard, 72 hours by default** | A posting a week old is usually already being interviewed for, so old jobs are left out rather than ranked lower. The window is on `posted_at` (the board's date, `created_at` when it gives none) and the query text changes it: *"last 2 weeks"*, *"today"*, *"this week"*. On the k-NN leg the date is the knn query's own filter on `chunks.posted_at` (each chunk carries the job's date), so the nearest neighbours are searched among recent jobs: a filter around the k-NN result would keep only the recent few of its top 100. |
 | **Cross-encoder rerank on the shortlist only** | The bi-encoder scores query and document independently — necessary, because embeddings must be computed at index time. A cross-encoder reads the pair jointly and is markedly more accurate, but costs one forward pass *per candidate*. Applying it to the top 20–200 retrieved hits buys most of the accuracy for a bounded, predictable cost. |
@@ -133,43 +134,55 @@ flowchart TB
 ### Advanced search — a tool-calling LangGraph agent (WIP)
 
 `POST /jobs/search/advanced` → optionally `POST /jobs/search/advanced/resume`
-with the answer to a question. Requires a saved CV. On the `/cv` page you upload
-a file (PDF/DOCX/TXT, text extracted and not stored) or write the CV; "Remove
-private info" (`backend/cv/redact.py`) replaces obvious personal data with
-placeholders such as `[EMAIL]` and `[PHONE]`, and `PUT /users/cv` answers 409
-with the findings until you confirm (saving empty text deletes the CV). LLM
-calls see only the saved text. Basic search uses neither the CV nor the
-preference memory. The UI calls this mode **Agent**; the CV is optional: without
-one the agent works from the request and the preference memory, and choosing
-Agent on the search page suggests adding one. The preference memory is
-read and edited on the `/preferences` page. The agent calls the LLM through
-`langchain-openai` `ChatOpenAI`, one per provider of the shared `llmpool` pool
-(`LLM_PROVIDERS` order, Groq on `GROQ_MODEL_LARGE`): a 429, an error or a
-malformed tool call moves the call to the next provider (Groq's
-`tool_use_failed` is first retried twice), and a provider paused by one
-request is skipped by the next. Every provider sees only the redacted CV.
+with the answer to a question. The UI calls this mode **Agent**. The CV is
+optional: without one the agent works from the request and the preference
+memory, and choosing Agent on the search page suggests adding one. On the `/cv`
+page you upload a file (PDF/DOCX/TXT, text extracted and not stored) or write
+the CV; "Remove private info" (`backend/cv/redact.py`) replaces obvious personal
+data with placeholders such as `[EMAIL]` and `[PHONE]`, and `PUT /users/cv`
+answers 409 with the findings until you confirm (saving empty text deletes the
+CV). LLM calls see only the saved text. The preference memory is read and edited
+on the `/preferences` page. Basic search uses neither the CV nor the preference
+memory.
+
+The agent calls the LLM through `langchain-openai` `ChatOpenAI`, one per provider
+of the shared `llmpool` pool (`LLM_PROVIDERS` order, Groq on `GROQ_MODEL_LARGE`).
+A 429, a server error or a timeout moves the call to the next provider (Groq's
+`tool_use_failed` / `json_validate_failed` is first retried twice on Groq), a
+bad key puts the provider out for an hour (an unknown model first gives way to
+its next one), and a provider paused by one request is skipped by the next.
+Each attempt gets a share of the call's remaining time, so a slow provider is
+cut while a fallback still fits.
 
 ```mermaid
 flowchart TB
     A["POST /jobs/search/advanced<br/>query · CV and memory in the run context"]
     L["agent turn<br/>one tool call"]
-    T["update_brief · search_jobs · inspect_job"]
+    T["update_brief · inspect_job<br/>search_jobs — 1–3 variants, may loosen<br/>stated items for that one search"]
     Q["ask_user — interrupt()<br/>question + options returned"]
-    F["finalize<br/>fit, gaps, trade-offs over the whole pool"]
+    G["gather_closest<br/>one soft-filter search<br/>when fewer than 10 jobs"]
+    F["finalize<br/>fit, gaps, trade-offs, misses<br/>over the whole pool"]
+    P["partial<br/>no provider answered or<br/>unparsed tool call"]
+    R["10 jobs<br/>matches first, then the closest,<br/>each with what it misses"]
     M[("preference memory")]
 
     A --> L
     L --> T --> L
     L --> Q
     Q -->|"POST /resume<br/>thread_id + answer"| L
-    L -->|"finish, or budget spent"| F
+    L -->|"finish, budget spent<br/>or time up"| G --> F --> R
+    L -->|"LLM failure"| P --> R
     F -->|"background: distil"| M
     M -.->|"next search"| A
 ```
 
+*Not drawn:* `partial` also runs `gather_closest`, and a failed or timed-out
+`finalize` ends `partial` too (without fit scores or a summary); the Stop button
+aborts the request and the server cancels the run.
+
 | Choice | Motivation |
 |--------|------------|
-| **A tool loop, one call per turn** | The model decides what to do next (update what it understood, search with 1–3 query variants, read a job, ask, finish) instead of following a fixed graph. One call per turn keeps every step observable and the budget countable. |
+| **A tool loop, one call per turn** | The model decides what to do next (update what it understood, search with 1–3 query variants and, if it judges so, a loosened requirement, read a job, ask, finish) instead of following a fixed graph. One call per turn keeps every step observable and the budget countable. |
 | **Stated vs inferred requirements** | What you typed is locked in the brief and every result must satisfy it; only you can relax it, by answering a question. A requirement that maps to an index field uses the index's own values (the tool schema lists them), so "on-site" or "English" filters what ingestion wrote rather than matching nothing. One no field carries ("an NLP or search role") only the LLM can judge, so the final step marks each job that misses it and code moves those jobs out of the matches: the model cannot note "no NLP focus" and still shortlist the job. What the agent inferred from your CV and past searches it may trade, and so is any preference ("preferably remote"): it ranks but is never locked, so results can include non-remote jobs. "In Munich" filters on where the job is (the index reads each job's city and country from its location, "München, BY" included), not where the company is based: a Munich job at a Serbian company is a Munich job. |
 | **A 3-day window (or the remembered one), widened as far as the agent judges** | An older posting has more applicants already, so a CV sent to it lands at the back of the queue. The agent starts at 72 hours, or at the window the preference memory states ("jobs from the last 2 weeks" starts at 2 weeks), and widens when results are too few or unsatisfying, by as much as it judges, up to `JOB_LIVE_DAYS` (the index holds nothing older); its notes tell the user. Fixed steps (3 → 7 → 14 days) were tried and dropped: how far to go depends on the request, which the agent reads and a ladder does not. A remembered window is a preference: no filter. A window the user states ("last 2 weeks"), which wins over a remembered one, is a stated requirement: searches use it, and the older jobs a wider search finds fill the result among the closest jobs, never as matches. |
 | **A hard budget: 6 turns, 9 searches, 2 questions, 4 minutes** | An agent loop is how a 3-second search becomes a 40-second one with an unbounded LLM bill. A spent budget goes straight to `finalize` and ends with a normal shortlist; every LLM call is cut at the deadline (45 s kept for finalize) and capped in output tokens. The answer is `partial` only when the assistant could not finish (no LLM provider answered, an unparsed answer, a failed or timed-out finalize): the most relevant jobs found, without fit scores or a summary. |
@@ -444,8 +457,8 @@ Offer sources: `jobspy`, `adzuna`, `arbeitnow`, `freehire` (default: all); what 
 
 | Path | What it is |
 |------|------------|
-| `backend/` | FastAPI service — REST API, Postgres (SQLAlchemy async), OpenSearch hybrid search, outbox worker, LangGraph agents |
-| `llmpool/` | Shared provider pool and LLM chat providers (ingestion's LLM calls) |
+| `backend/` | FastAPI service — REST API, Postgres (SQLAlchemy async), OpenSearch hybrid search, outbox worker, LangGraph agent |
+| `llmpool/` | Shared provider pool and LLM chat providers (ingestion's LLM calls; the agent's providers and their pause state) |
 | `ingestion/` | Pipeline — job scraping, rule-based offer parsing, company enrichment, chunked embedding, POST to the backend |
 | `frontend/` | React (Vite) SPA, served by nginx in Docker/k8s |
 | `deploy/helm/` | Helm chart for the whole stack + `values-local` / `values-cloud` / `values-hetzner` |
@@ -461,12 +474,13 @@ Offer sources: `jobspy`, `adzuna`, `arbeitnow`, `freehire` (default: all); what 
 | Endpoint | Notes |
 |----------|-------|
 | `POST /auth/register`, `POST /auth/login`, `GET /auth/me` | JWT bearer tokens |
-| `POST /jobs/`, `GET /jobs/{id}` | Ingestion writes here (`X-Ingest-Token`) |
-| `POST /companies/`, `GET /companies/{id}` | Ingestion writes here (`X-Ingest-Token`) |
-| `POST /jobs/search` | Hybrid search + rerank |
-| `POST /jobs/search/advanced`, `.../resume` | Agent search (WIP) |
+| `POST /jobs/`, `GET /jobs/`, `GET /jobs/stored`, `GET /jobs/{id}` | Ingestion writes here (`X-Ingest-Token`); a paged list (the backfill reads it) and the live jobs' URL/title/company, which ingestion skips |
+| `POST /companies/`, `GET /companies/pending`, `GET /companies/{id}` | Ingestion writes here (`X-Ingest-Token`); the companies due for enrichment |
+| `POST /jobs/search` | Hybrid search + rerank, `{filters, results}` |
+| `POST /jobs/search/advanced`, `.../resume` | Agent search (WIP): results (`done` / `partial`) or a question (`question`, `thread_id`) |
 | `POST /users/cv/extract`, `POST /users/cv/redact`, `PUT /users/cv`, `GET /users/cv` | CV text from a file, private-info removal, save with a confirm check (empty text deletes it), read |
 | `GET/PUT /me/preference-memory` | Per-user search preferences |
+| `Accept: application/x-ndjson` | On both searches: one JSON line per step, then the result (the progress line and Stop in the UI) |
 | `GET /health` | Liveness probe for k8s and the ALB |
 
 Most endpoints depend on `get_current_user`.
@@ -477,7 +491,7 @@ Most endpoints depend on `get_current_user`.
   review score, financial health score (1–5, only with evidence), consulting/startup
   flags, industry, country; `enriched_at` / `enrich_attempts` pace the enrichment retries, and data over a year old is re-enriched and replaced.
 - **`Job`** — unique by `url`; parsed fields (employment type, location type,
-  seniority, required languages) plus `chunks` JSONB (text + embedding each).
+  seniority, required languages) plus `chunks` JSONB (text + embedding each; the LLM summary chunk is flagged `summary`).
 - **`Outbox`** — transient sync table; `processed_at` is NULL until the worker
   drains it.
 - **`User`**, **`ApplicantProfile`**, **`PreferenceMemory`** —
@@ -496,7 +510,7 @@ runs it before rollout; on AWS it is the one-shot bootstrap RunTask.
 | Vector search | opensearch-py[async] |
 | Bi-encoder (embed) | sentence-transformers (`intfloat/multilingual-e5-small`) |
 | Cross-encoder (rerank) | sentence-transformers (`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`) |
-| LLM | Ingestion: `llmpool` OpenAI-compatible pool (NVIDIA NIM / Gemini / Groq); agent: `langchain-openai` `ChatOpenAI` against Groq's OpenAI-compatible API |
+| LLM | Ingestion: `llmpool` OpenAI-compatible pool (NVIDIA NIM / Gemini / Groq); agent: one `langchain-openai` `ChatOpenAI` per `llmpool` provider, tried in `LLM_PROVIDERS` order |
 | Agents / checkpointing | LangGraph + `langgraph-checkpoint-postgres` |
 | Auth | python-jose (JWT) + passlib[bcrypt] |
 | Scraping | python-jobspy, Playwright, trafilatura |
